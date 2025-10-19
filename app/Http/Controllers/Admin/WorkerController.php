@@ -5,9 +5,12 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\WorkerResource;
 use App\Models\Admin\Worker;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 
 class WorkerController extends CrudController
 {
@@ -19,7 +22,7 @@ class WorkerController extends CrudController
     /**
      * El modelo que manejará este controlador
      */
-    protected string $model = Worker::class;
+    protected string $model = \App\Models\Admin\Worker::class;
 
     /**
      * Relaciones que se cargarán en el index
@@ -28,7 +31,10 @@ class WorkerController extends CrudController
     {
         return [
             'company',
-            'user'
+            'user',
+            'roles',
+            'companies',
+            'locations'
         ];
     }
 
@@ -39,7 +45,10 @@ class WorkerController extends CrudController
     {
         return [
             'company',
-            'user'
+            'user',
+            'roles',
+            'companies',
+            'locations'
         ];
     }
 
@@ -68,13 +77,24 @@ class WorkerController extends CrudController
     {
         return $request->validate([
             'company_id' => 'required|exists:companies,id',
-            'user_id' => 'required|exists:users,id|unique:workers,user_id',
-            'employee_number' => 'required|string|max:50|unique:workers,employee_number',
             'position' => 'nullable|string|max:100',
             'department' => 'nullable|string|max:100',
             'hire_date' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0',
             'is_active' => 'boolean',
+
+            // Datos del usuario a crear
+            'user.name' => 'required|string|max:255',
+            'user.email' => 'required|string|email|max:255|unique:users,email',
+            'user.password' => 'required|string|min:8',
+
+            // Relaciones many-to-many
+            'role_ids' => 'nullable|array',
+            'role_ids.*' => 'exists:roles,id',
+            'company_ids' => 'nullable|array',
+            'company_ids.*' => 'exists:companies,id',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'exists:locations,id',
         ]);
     }
 
@@ -84,14 +104,26 @@ class WorkerController extends CrudController
     protected function validateUpdateData(Request $request, Model $model): array
     {
         return $request->validate([
-            'company_id' => 'required|exists:companies,id',
-            'user_id' => 'required|exists:users,id|unique:workers,user_id,' . $model->id,
-            'employee_number' => 'required|string|max:50|unique:workers,employee_number,' . $model->id,
+            'company_id' => 'nullable|exists:companies,id',
             'position' => 'nullable|string|max:100',
             'department' => 'nullable|string|max:100',
             'hire_date' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0',
             'is_active' => 'boolean',
+
+            // Datos del usuario (opcional en update)
+            'user' => 'nullable|array',
+            'user.name' => 'nullable|string|max:255',
+            'user.email' => 'nullable|string|email|max:255|unique:users,email,' . $model->user_id,
+            'user.password' => 'nullable|string|min:8',
+
+            // Relaciones many-to-many
+            'role_ids' => 'nullable|array',
+            'role_ids.*' => 'exists:roles,id',
+            'company_ids' => 'nullable|array',
+            'company_ids.*' => 'exists:companies,id',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'exists:locations,id',
         ]);
     }
 
@@ -100,9 +132,18 @@ class WorkerController extends CrudController
      */
     protected function processStoreData(array $validatedData, Request $request): array
     {
-        // Procesar datos antes de crear si es necesario
-        // Ejemplo: agregar company_id del usuario autenticado
-        // $validatedData['company_id'] = auth()->user()->company_id;
+        // Crear el usuario automáticamente
+        $user = User::create([
+            'name' => $validatedData['user']['name'],
+            'email' => $validatedData['user']['email'],
+            'password' => Hash::make($validatedData['user']['password']),
+        ]);
+
+        // Agregar el user_id al worker
+        $validatedData['user_id'] = $user->id;
+
+        // Remover datos del usuario que no pertenecen al worker
+        unset($validatedData['user']);
 
         return $validatedData;
     }
@@ -112,9 +153,26 @@ class WorkerController extends CrudController
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
-        // Procesar datos antes de actualizar si es necesario
-        // Ejemplo: no permitir cambiar company_id
-        // unset($validatedData['company_id']);
+        // Actualizar usuario si se proporcionan datos
+        if (isset($validatedData['user']['name']) || isset($validatedData['user']['email']) || isset($validatedData['user']['password'])) {
+            $userData = [];
+            if (isset($validatedData['user']['name'])) {
+                $userData['name'] = $validatedData['user']['name'];
+            }
+            if (isset($validatedData['user']['email'])) {
+                $userData['email'] = $validatedData['user']['email'];
+            }
+            if (isset($validatedData['user']['password'])) {
+                $userData['password'] = Hash::make($validatedData['user']['password']);
+            }
+
+            if (!empty($userData)) {
+                $model->user()->update($userData);
+            }
+        }
+
+        // Remover datos del usuario que no pertenecen al worker
+        unset($validatedData['user']);
 
         return $validatedData;
     }
@@ -123,7 +181,7 @@ class WorkerController extends CrudController
      * Manejo personalizado del proceso de creación/actualización
      * Usa transacciones para operaciones seguras
      */
-    protected function process($callback, array $data, $method = 'create'): Model
+    /*     protected function process($callback, array $data, $method = 'create'): Model
     {
         try {
             DB::beginTransaction();
@@ -140,14 +198,56 @@ class WorkerController extends CrudController
             throw $e;
         }
     }
-
+ */
     /**
-     * Acciones después de crear (opcional)
+     * Acciones después de crear un trabajador
      */
-    protected function afterStore(Model $model, Request $request): void
+    protected function afterStore(Model $worker, Request $request): void
     {
-        // Lógica adicional después de crear
-        // Ejemplo: crear relaciones, enviar notificaciones, etc.
+        Log::info('afterStore ejecutándose', [
+            'worker_id' => $worker->id,
+            'request_data' => $request->all()
+        ]);
+
+        try {
+            // Sincronizar roles
+            if ($request->has('role_ids') && is_array($request->role_ids)) {
+                Log::info('Sincronizando roles', ['role_ids' => $request->role_ids]);
+                $worker->roles()->sync($request->role_ids);
+                Log::info('Roles sincronizados exitosamente');
+            }
+
+            // Sincronizar empresas
+            if ($request->has('company_ids') && is_array($request->company_ids)) {
+                Log::info('Sincronizando empresas', ['company_ids' => $request->company_ids]);
+                $worker->companies()->sync($request->company_ids);
+                Log::info('Empresas sincronizadas exitosamente');
+            }
+
+            // Sincronizar sucursales
+            if ($request->has('location_ids') && is_array($request->location_ids)) {
+                Log::info('Sincronizando sucursales', ['location_ids' => $request->location_ids]);
+                $worker->locations()->sync($request->location_ids);
+                Log::info('Sucursales sincronizadas exitosamente');
+            }
+
+            // Recargar las relaciones para que aparezcan en la respuesta
+            $relations = $this->getShowRelations();
+            if (!empty($relations)) {
+                $worker->load($relations);
+                Log::info('Relaciones recargadas', ['relations' => $relations]);
+            }
+
+            Log::info('afterStore completado exitosamente');
+        } catch (\Exception $e) {
+            // Log del error pero no fallar la creación del trabajador
+            Log::error('Error sincronizando relaciones del trabajador: ' . $e->getMessage(), [
+                'exception' => $e,
+                'worker_id' => $worker->id,
+                'request_data' => $request->all()
+            ]);
+            throw $e; // Re-lanzar para debug
+        }
     }
 
     /**
@@ -155,8 +255,18 @@ class WorkerController extends CrudController
      */
     protected function afterUpdate(Model $model, Request $request): void
     {
-        // Lógica adicional después de actualizar
-        // Ejemplo: sincronizar relaciones, logs, etc.
+        // Sincronizar relaciones many-to-many
+        if ($request->has('role_ids')) {
+            $model->roles()->sync($request->role_ids);
+        }
+
+        if ($request->has('company_ids')) {
+            $model->companies()->sync($request->company_ids);
+        }
+
+        if ($request->has('location_ids')) {
+            $model->locations()->sync($request->location_ids);
+        }
     }
 
     /**

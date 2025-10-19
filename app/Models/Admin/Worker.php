@@ -3,14 +3,15 @@
 namespace App\Models\Admin;
 
 use App\Models\User;
+use App\Models\Admin\Location;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Worker extends Model
 {
     protected $fillable = [
         'company_id',
         'user_id',
-        'employee_number',
         'position',
         'department',
         'hire_date',
@@ -39,5 +40,21 @@ class Worker extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    // Relaciones many-to-many
+    public function roles(): BelongsToMany
+    {
+        return $this->belongsToMany(Role::class, 'worker_roles');
+    }
+
+    public function companies(): BelongsToMany
+    {
+        return $this->belongsToMany(Company::class, 'worker_companies');
+    }
+
+    public function locations(): BelongsToMany
+    {
+        return $this->belongsToMany(Location::class, 'worker_locations');
     }
 }

@@ -22,7 +22,6 @@ class WorkerResource extends Resources
 
         $item = [
             'id' => $resource->id,
-            'employee_number' => $resource->employee_number,
             'position' => $resource->position,
             'department' => $resource->department,
             'hire_date' => $resource->hire_date?->format('Y-m-d'),
@@ -54,6 +53,28 @@ class WorkerResource extends Resources
                     'email' => $resource->user?->email,
                 ];
             }
+        }
+
+        // Relaciones many-to-many
+        if ($resource->relationLoaded('roles')) {
+            $item['role_ids'] = $resource->roles->map(function ($role) {
+                return $role->id . "";
+            });
+        }
+
+        if ($resource->relationLoaded('companies')) {
+            $item['companies'] = $resource->companies->map(function ($company) {
+                return [
+                    'id' => $company->id,
+                    'name' => $company->name,
+                ];
+            });
+        }
+
+        if ($resource->relationLoaded('locations')) {
+            $item['location_ids'] = $resource->locations->map(function ($location) {
+                return $location->id;
+            });
         }
 
         // Campos adicionales según el contexto

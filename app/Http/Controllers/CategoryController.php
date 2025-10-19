@@ -3,22 +3,23 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CrudController;
-use App\Http\Resources\ProductResource;
-use App\Models\Product;
+use App\Http\Resources\CategoryResource;
+use App\Models\Category;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 
-class ProductController extends CrudController
+class CategoryController extends CrudController
 {
     /**
      * El resource que se usará para retornar en cada petición
      */
-    protected string $resource = ProductResource::class;
+    protected string $resource = CategoryResource::class;
 
     /**
      * El modelo que manejará este controlador
      */
-    protected string $model = Product::class;
+    protected string $model = Category::class;
 
     /**
      * Relaciones que se cargarán en el index
@@ -26,9 +27,7 @@ class ProductController extends CrudController
     protected function indexRelations(): array
     {
         return [
-            'company',
-            'category',
-            //'unit'
+            'company'
         ];
     }
 
@@ -38,9 +37,7 @@ class ProductController extends CrudController
     protected function getShowRelations(): array
     {
         return [
-            'company',
-            'category',
-            //'unit'
+            'company'
         ];
     }
 
@@ -49,14 +46,9 @@ class ProductController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
-        // Filtrar por empresa
+        // Filtrar por compañía
         if (isset($params['company_id'])) {
             $query->where('company_id', $params['company_id']);
-        }
-
-        // Filtrar por categoría
-        if (isset($params['category_id'])) {
-            $query->where('category_id', $params['category_id']);
         }
 
         // Filtrar por estado activo
@@ -64,11 +56,10 @@ class ProductController extends CrudController
             $query->where('is_active', $params['is_active']);
         }
 
-        // Búsqueda por nombre o código
+        // Búsqueda por nombre
         if (isset($params['search'])) {
             $query->where(function ($q) use ($params) {
                 $q->where('name', 'like', '%' . $params['search'] . '%')
-                    ->orWhere('code', 'like', '%' . $params['search'] . '%')
                     ->orWhere('description', 'like', '%' . $params['search'] . '%');
             });
         }
@@ -81,13 +72,8 @@ class ProductController extends CrudController
     {
         return $request->validate([
             'name' => 'required|string|max:150',
-            'description' => 'nullable|string',
-            'code' => 'required|string|max:50|unique:products,code',
-            'purchase_price' => 'nullable|numeric|min:0',
-            'sale_price' => 'nullable|numeric|min:0',
+            'description' => 'nullable|string|max:255',
             'company_id' => 'required|exists:companies,id',
-            'category_id' => 'nullable|exists:categories,id',
-            'unit_id' => 'nullable|exists:units,id',
             'is_active' => 'boolean',
         ]);
     }
@@ -99,13 +85,8 @@ class ProductController extends CrudController
     {
         return $request->validate([
             'name' => 'required|string|max:150',
-            'description' => 'nullable|string',
-            'code' => 'required|string|max:50|unique:products,code,' . $model->id,
-            'purchase_price' => 'nullable|numeric|min:0',
-            'sale_price' => 'nullable|numeric|min:0',
-            'company_id' => 'nullable',
-            'category_id' => 'nullable',
-            'unit_id' => 'nullable|exists:units,id',
+            'description' => 'nullable|string|max:255',
+            'company_id' => 'required|exists:companies,id',
             'is_active' => 'boolean',
         ]);
     }
@@ -118,14 +99,6 @@ class ProductController extends CrudController
         // Procesar datos antes de crear si es necesario
         // Ejemplo: agregar company_id del usuario autenticado
         // $validatedData['company_id'] = auth()->user()->company_id;
-        $companyIdArray = $request->input('company_id');
-        $companyId = is_array($companyIdArray) ? reset($companyIdArray) : $companyIdArray;
-
-        $categoryIdArray = $request->input('category_id');
-        $categoryId = is_array($categoryIdArray) ? reset($categoryIdArray) : $categoryIdArray;
-
-        $validatedData['company_id'] = $companyId;
-        $validatedData['category_id'] = $categoryId;
 
         return $validatedData;
     }
@@ -139,16 +112,29 @@ class ProductController extends CrudController
         // Ejemplo: no permitir cambiar company_id
         // unset($validatedData['company_id']);
 
-        $companyIdArray = $request->input('company_id');
-        $companyId = is_array($companyIdArray) ? reset($companyIdArray) : $companyIdArray;
-
-        $categoryIdArray = $request->input('category_id');
-        $categoryId = is_array($categoryIdArray) ? reset($categoryIdArray) : $categoryIdArray;
-
-        $validatedData['company_id'] = $companyId;
-        $validatedData['category_id'] = $categoryId;
-
         return $validatedData;
+    }
+
+    /**
+     * Manejo personalizado del proceso de creación/actualización
+     * Usa transacciones para operaciones seguras
+     */
+    protected function process($callback, array $data, $method = 'create'): Model
+    {
+        try {
+            DB::beginTransaction();
+
+            $model = $callback($data);
+
+            // Aquí puedes agregar lógica adicional específica del modelo
+            // Ejemplo: manejar relaciones, archivos, etc.
+
+            DB::commit();
+            return $model;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
     }
 
     /**
@@ -174,8 +160,14 @@ class ProductController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // TODO: Agregar validaciones cuando se implementen otras tablas
-        // Ejemplo: inventarios, órdenes, etc.
+        // Validaciones para eliminar
+        // Ejemplo:
+        // if ($model->orders()->exists()) {
+        //     return [
+        //         'can_delete' => false,
+        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
+        //     ];
+        // }
 
         return [
             'can_delete' => true,
