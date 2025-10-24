@@ -2,19 +2,27 @@
 
 namespace App\Http\Resources;
 
-use Illuminate\Http\Request;
-use Illuminate\Http\Resources\Json\JsonResource;
+use App\Constants\Files;
+use App\Models\ProductImage;
+use App\Utils\AppUploadUtil;
+use App\Models\Product;
+use App\Http\Resources\Resources;
 
-class ProductResource extends JsonResource
+class ProductResource extends Resources
 {
     /**
-     * Transform the resource into an array.
+     * Format the resource data
      *
-     * @return array<string, mixed>
+     * @param \Illuminate\Database\Eloquent\Model $resource
+     * @param array $data
+     * @param array $context
+     * @return array
      */
-    public function toArray(Request $request): array
+    protected function formatter(\Illuminate\Database\Eloquent\Model $resource, array $data, array $context): array
     {
-        return [
+        $editing = $this->getContext('editing', false);
+
+        $item = [
             'id' => $this->id,
             'name' => $this->name,
             'description' => $this->description,
@@ -42,7 +50,26 @@ class ProductResource extends JsonResource
             'unit_name' => $this->whenLoaded('unit', function () {
                 return $this->unit ? $this->unit->name : null;
             }),
-            'unit' => $this->whenLoaded('unit'),
+            'unit' => $this->whenLoaded('unit')
         ];
+
+        if ($editing) {
+            if ($this->relationLoaded('images')) {
+                $item["product_images"] = $this->images->map(function ($image) {
+                    return AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $image->image_path);
+                });
+            }
+            return $item;
+        }
+
+        if ($this->relationLoaded('mainImage')) {
+            $mainImage = $this->mainImage->image_path ?? null;
+
+            if ($mainImage) {
+                $item["main_image"] = AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $mainImage);
+            }
+        }
+
+        return $item;
     }
 }

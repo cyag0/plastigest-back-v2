@@ -48,6 +48,13 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('workers', WorkerController::class);
             Route::apiResource('categories', CategoryController::class);
             Route::apiResource('products', ProductController::class);
+
+            // Rutas adicionales para imágenes de productos
+            Route::prefix('products/{product}')->group(function () {
+                Route::get('images', [ProductController::class, 'getProductImages']);
+                Route::delete('images/{image}', [ProductController::class, 'deleteProductImage']);
+                Route::patch('images/order', [ProductController::class, 'updateImageOrder']);
+            });
         });
     });
 

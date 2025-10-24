@@ -52,4 +52,41 @@ class Product extends Model
     {
         return $this->belongsTo(Unit::class);
     } */
+
+    /**
+     * Get all images for the product.
+     */
+    public function images()
+    {
+        return $this->hasMany(ProductImage::class)->orderBy('sort_order');
+    }
+
+    /**
+     * Get the main image of the product.
+     */
+    public function mainImage()
+    {
+        return $this->hasOne(ProductImage::class)->where('image_type', 'main');
+    }
+
+    /**
+     * Get gallery images of the product.
+     */
+    public function galleryImages()
+    {
+        return $this->hasMany(ProductImage::class)
+            ->where('image_type', 'gallery')
+            ->where('show_in_catalog', true)
+            ->orderBy('sort_order');
+    }
+
+    /**
+     * Get public images of the product.
+     */
+    public function publicImages()
+    {
+        return $this->hasMany(ProductImage::class)
+            ->where('is_public', true)
+            ->orderBy('sort_order');
+    }
 }

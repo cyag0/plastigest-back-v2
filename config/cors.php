@@ -38,7 +38,9 @@ return [
     | Origins that are allowed to make CORS requests.
     | Para desarrollo, permitir todos los orígenes localhost.
     */
-    'allowed_origins' => ['*'],
+    'allowed_origins' => [
+        'http://localhost:8081/',
+    ],
 
     /*
     |--------------------------------------------------------------------------
