@@ -22,6 +22,23 @@ class ProductResource extends Resources
     {
         $editing = $this->getContext('editing', false);
 
+        // Get current location data from pivot table if available
+        $currentLocationActive = $this->is_active; // fallback to product's is_active
+        $currentStock = null;
+        $minimumStock = null;
+        $maximumStock = null;
+
+
+        if ($this->relationLoaded('locations') && isset($data["location_id"])) {
+            $currentLocation = $this->locations->where('id', $data["location_id"])->first();
+            if ($currentLocation) {
+                $currentLocationActive = $currentLocation->pivot->active ?? $this->is_active;
+                $currentStock = $currentLocation->pivot->current_stock ?? 0;
+                $minimumStock = $currentLocation->pivot->minimum_stock ?? 0;
+                $maximumStock = $currentLocation->pivot->maximum_stock ?? null;
+            }
+        }
+
         $item = [
             'id' => $this->id,
             'name' => $this->name,
@@ -29,28 +46,18 @@ class ProductResource extends Resources
             'code' => $this->code,
             'purchase_price' => $this->purchase_price,
             'sale_price' => $this->sale_price,
-            'company_id' => $this->company_id ? [$this->company_id . ""] : null,
-            'category_id' => $this->category_id ? [$this->category_id . ""] : null,
-            'unit_id' => $this->unit_id ? [$this->unit_id . ""] : null,
-            'is_active' => $this->is_active,
+            'company_id' => $this->company_id,
+            'category_id' => $this->category_id,
+            'unit_id' => $this->unit_id,
+            'supplier_id' => $this->supplier_id,
+            'product_type' => $this->product_type,
+            'is_active' => $currentLocationActive,
+            'for_sale' => $this->for_sale,
+            'current_stock' => $currentStock,
+            'minimum_stock' => $minimumStock,
+            'maximum_stock' => $maximumStock,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
-
-            // Relaciones
-            'company_name' => $this->whenLoaded('company', function () {
-                return $this->company->name;
-            }),
-            'company' => $this->whenLoaded('company'),
-
-            'category_name' => $this->whenLoaded('category', function () {
-                return $this->category ? $this->category->name : null;
-            }),
-            'category' => $this->whenLoaded('category'),
-
-            'unit_name' => $this->whenLoaded('unit', function () {
-                return $this->unit ? $this->unit->name : null;
-            }),
-            'unit' => $this->whenLoaded('unit')
         ];
 
         if ($editing) {
@@ -59,6 +66,18 @@ class ProductResource extends Resources
                     return AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $image->image_path);
                 });
             }
+
+            if ($this->relationLoaded('productIngredients')) {
+                $item['ingredients'] = $this->productIngredients->map(function ($productIngredient) {
+                    return [
+                        'id' => $productIngredient->id,
+                        'ingredient_id' => $productIngredient->ingredient_id,
+                        'quantity' => $productIngredient->quantity,
+                        'notes' => $productIngredient->notes,
+                    ];
+                });
+            }
+
             return $item;
         }
 
@@ -69,6 +88,8 @@ class ProductResource extends Resources
                 $item["main_image"] = AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $mainImage);
             }
         }
+
+
 
         return $item;
     }

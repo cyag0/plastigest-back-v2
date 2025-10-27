@@ -363,42 +363,37 @@ class {{ class }} extends CrudController
     }
 
     /**
-     * Procesar datos antes de crear (opcional)
-     */
-    protected function processStoreData(array $validatedData, Request $request): array
-    {
-        // Procesar datos antes de crear si es necesario
-        // Ejemplo: agregar company_id del usuario autenticado
-        // $validatedData[\'company_id\'] = auth()->user()->company_id;
-
-        return $validatedData;
-    }
-
-    /**
-     * Procesar datos antes de actualizar (opcional)
-     */
-    protected function processUpdateData(array $validatedData, Request $request, Model $model): array
-    {
-        // Procesar datos antes de actualizar si es necesario
-        // Ejemplo: no permitir cambiar company_id
-        // unset($validatedData[\'company_id\']);
-
-        return $validatedData;
-    }
-
-    /**
-     * Manejo personalizado del proceso de creación/actualización
+     * Manejo unificado del proceso de creación/actualización
+     * Este método maneja tanto store como update de forma unificada
      * Usa transacciones para operaciones seguras
      */
-    protected function process($callback, array $data, $method = \'create\'): Model
+    protected function process($callback, array $data, string $method = \'create\'): Model
     {
         try {
             DB::beginTransaction();
 
+            // El callback ejecuta el store() o update() del modelo
             $model = $callback($data);
 
             // Aquí puedes agregar lógica adicional específica del modelo
-            // Ejemplo: manejar relaciones, archivos, etc.
+            // que se ejecutará tanto para crear como para actualizar
+            //
+            // Ejemplos:
+            // - Manejar relaciones (sincronizar muchos a muchos)
+            // - Procesar archivos adjuntos
+            // - Actualizar campos calculados
+            // - Registrar logs de auditoría
+            // - Invalidar caché
+            // - Enviar notificaciones
+            //
+            // Diferencial por método si es necesario:
+            // if ($method === \'create\') {
+            //     // Lógica específica para creación
+            //     $this->handleCreationSpecificLogic($model, $data);
+            // } else if ($method === \'update\') {
+            //     // Lógica específica para actualización
+            //     $this->handleUpdateSpecificLogic($model, $data);
+            // }
 
             DB::commit();
             return $model;
@@ -406,24 +401,6 @@ class {{ class }} extends CrudController
             DB::rollBack();
             throw $e;
         }
-    }
-
-    /**
-     * Acciones después de crear (opcional)
-     */
-    protected function afterStore(Model $model, Request $request): void
-    {
-        // Lógica adicional después de crear
-        // Ejemplo: crear relaciones, enviar notificaciones, etc.
-    }
-
-    /**
-     * Acciones después de actualizar (opcional)
-     */
-    protected function afterUpdate(Model $model, Request $request): void
-    {
-        // Lógica adicional después de actualizar
-        // Ejemplo: sincronizar relaciones, logs, etc.
     }
 
     /**
@@ -486,6 +463,7 @@ class {{ class }} extends CrudController
         $this->line("   • handleQuery() - Custom filters");
         $this->line("   • validateStoreData() - Store validation");
         $this->line("   • validateUpdateData() - Update validation");
+        $this->line("   • process() - Unified business logic for create/update");
         $this->line('');
         $this->line("3. Customize the {$resourceName}:");
         $this->line("   • Add fields to formatter() method");

@@ -16,10 +16,12 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->web(prepend: [
             \Illuminate\Http\Middleware\HandleCors::class,
         ]);
-        
+
         $middleware->api(prepend: [
             \Illuminate\Http\Middleware\HandleCors::class,
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
+            \App\Http\Middleware\SetCurrentCompany::class,
+            \App\Http\Middleware\SetCurrentLocation::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

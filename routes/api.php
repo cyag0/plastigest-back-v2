@@ -8,6 +8,9 @@ use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\PurchaseController;
+use App\Http\Controllers\SupplierController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -48,12 +51,39 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('workers', WorkerController::class);
             Route::apiResource('categories', CategoryController::class);
             Route::apiResource('products', ProductController::class);
+            Route::apiResource('suppliers', SupplierController::class);
 
             // Rutas adicionales para imágenes de productos
             Route::prefix('products/{product}')->group(function () {
                 Route::get('images', [ProductController::class, 'getProductImages']);
                 Route::delete('images/{image}', [ProductController::class, 'deleteProductImage']);
                 Route::patch('images/order', [ProductController::class, 'updateImageOrder']);
+            });
+
+            // Purchase Management Routes
+            Route::apiResource('purchases', PurchaseController::class);
+
+            // Inventory Management Routes
+            Route::prefix('inventory')->group(function () {
+                // Movements
+                Route::post('movements', [InventoryController::class, 'processMovement']);
+                Route::get('movements', [InventoryController::class, 'getMovements']);
+                Route::get('movements/{id}', [InventoryController::class, 'getMovement']);
+
+                // Transfers
+                Route::post('transfers', [InventoryController::class, 'createTransfer']);
+                Route::get('transfers', [InventoryController::class, 'getTransfers']);
+                Route::get('transfers/{id}', [InventoryController::class, 'getTransfer']);
+                Route::patch('transfers/{id}/approve', [InventoryController::class, 'approveTransfer']);
+                Route::patch('transfers/{id}/confirm', [InventoryController::class, 'confirmTransfer']);
+
+                // Stock queries
+                Route::get('stock/current', [InventoryController::class, 'getCurrentStock']);
+
+                // Reports
+                Route::get('reports/inventory', [InventoryController::class, 'getInventoryReport']);
+                Route::get('reports/kardex', [InventoryController::class, 'getKardexReport']);
+                Route::get('reports/dashboard', [InventoryController::class, 'getDashboardStats']);
             });
         });
     });

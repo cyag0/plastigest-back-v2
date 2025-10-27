@@ -213,6 +213,8 @@ class AppUploadUtil
             'errors' => []
         ];
 
+        $currentFilesNames = [];
+
         // 1. Guardar nuevos archivos
         foreach ($newFiles as $index => $file) {
             if ($file instanceof UploadedFile) {
@@ -230,18 +232,28 @@ class AppUploadUtil
                 } else {
                     $result['errors'][] = $saveResult['error'];
                 }
+            } else {
+                $currentFilesNames[] = $file['name'];
             }
         }
 
         // 2. Eliminar archivos antiguos por nombres
         if (!empty($oldFileNames)) {
-            $deleteResult = self::deleteMultipleFilesByNames($path, $oldFileNames);
-            $result['deleted'] = $oldFileNames;
+            // Determinar qué archivos antiguos ya no están en la lista actual
+            $toDelete = array_values(array_diff($oldFileNames, $currentFilesNames));
 
-            if (!empty($deleteResult['failed'])) {
-                $result['errors'] = array_merge($result['errors'], [
-                    'Failed to delete: ' . implode(', ', $deleteResult['failed'])
-                ]);
+            if (!empty($toDelete)) {
+                $deleteResult = self::deleteMultipleFilesByNames($path, $toDelete);
+                $result['deleted'] = $toDelete;
+
+                if (!empty($deleteResult['failed'])) {
+                    $result['errors'] = array_merge($result['errors'], [
+                        'Failed to delete: ' . implode(', ', $deleteResult['failed'])
+                    ]);
+                }
+            } else {
+                // No hay archivos para eliminar
+                $result['deleted'] = [];
             }
         }
 
