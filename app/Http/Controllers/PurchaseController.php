@@ -30,6 +30,7 @@ class PurchaseController extends CrudController
         return [
             'details.product',
             'location',
+            'supplier',
             'user'
         ];
     }
@@ -79,25 +80,20 @@ class PurchaseController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         return $request->validate([
+            // Campos principales del formulario
+            'company_id' => 'required|exists:companies,id',
             'location_origin_id' => 'required|exists:locations,id',
-            'movement_date' => 'required|date',
-            'document_number' => 'nullable|string|max:50',
-            'status' => 'nullable|in:open,closed',
-
-            // Información del proveedor
-            'supplier_name' => 'required|string|max:255',
-            'supplier_phone' => 'nullable|string|max:20',
-            'supplier_email' => 'nullable|email|max:255',
-            'supplier_address' => 'nullable|string',
-
+            'purchase_date' => 'required|date',
+            'supplier_id' => 'required|exists:suppliers,id',
+            'status' => 'nullable|in:draft,ordered,in_transit,received',
             'comments' => 'nullable|string',
 
-            // Detalles de la compra
-            'details' => 'required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
-            'details.*.quantity' => 'required|numeric|min:0.001',
-            'details.*.unit_cost' => 'required|numeric|min:0',
-            'details.*.notes' => 'nullable|string',
+            // Productos seleccionados para la compra
+            'purchase_items' => 'required|array|min:1',
+            'purchase_items.*.product_id' => 'required|exists:products,id',
+            'purchase_items.*.quantity' => 'required|numeric|min:0.001',
+            'purchase_items.*.unit_price' => 'required|numeric|min:0',
+            'purchase_items.*.total_price' => 'required|numeric|min:0',
         ]);
     }
 
@@ -106,55 +102,27 @@ class PurchaseController extends CrudController
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
+        // Verificar si la compra puede editarse
+        if ($model->status !== 'draft' && $model->status !== \App\Enums\PurchaseStatus::DRAFT) {
+            throw new \Exception('Solo se pueden editar compras en estado de borrador');
+        }
+
         return $request->validate([
-            'location_origin_id' => 'sometimes|exists:locations,id',
-            'movement_date' => 'sometimes|date',
-            'document_number' => 'nullable|string|max:50',
-            'status' => 'sometimes|in:open,closed',
-
-            // Información del proveedor
-            'supplier_name' => 'sometimes|string|max:255',
-            'supplier_phone' => 'nullable|string|max:20',
-            'supplier_email' => 'nullable|email|max:255',
-            'supplier_address' => 'nullable|string',
-
+            // Campos principales del formulario
+            'company_id' => 'sometimes|exists:companies,id',
+            'location_origin_id' => 'exists:locations,id',
+            'purchase_date' => 'sometimes|date',
+            'supplier_id' => 'exists:suppliers,id',
+            'status' => 'sometimes|in:draft,ordered,in_transit,received',
             'comments' => 'nullable|string',
 
-            // Detalles de la compra
-            'details' => 'sometimes|array|min:1',
-            'details.*.id' => 'sometimes|exists:movements_details,id',
-            'details.*.product_id' => 'required|exists:products,id',
-            'details.*.quantity' => 'required|numeric|min:0.001',
-            'details.*.unit_cost' => 'required|numeric|min:0',
-            'details.*.notes' => 'nullable|string',
+            // Productos seleccionados para la compra
+            'purchase_items' => 'sometimes|array|min:1',
+            'purchase_items.*.product_id' => 'required|exists:products,id',
+            'purchase_items.*.quantity' => 'required|numeric|min:0.001',
+            'purchase_items.*.unit_price' => 'required|numeric|min:0',
+            'purchase_items.*.total_price' => 'required|numeric|min:0',
         ]);
-    }
-
-    /**
-     * Procesar datos antes de crear (opcional)
-     */
-    protected function processStoreData(array $validatedData, Request $request): array
-    {
-        // Agregar company_id y user_id del usuario autenticado
-        $validatedData['company_id'] = Auth::user()->company_id ?? 1; // Temporal
-        $validatedData['user_id'] = Auth::id() ?? 1; // Temporal
-
-        // Establecer valores por defecto
-        $validatedData['status'] = $validatedData['status'] ?? 'open';
-
-        return $validatedData;
-    }
-
-    /**
-     * Procesar datos antes de actualizar (opcional)
-     */
-    protected function processUpdateData(array $validatedData, Request $request, Model $model): array
-    {
-        // No permitir cambiar company_id y user_id
-        unset($validatedData['company_id']);
-        unset($validatedData['user_id']);
-
-        return $validatedData;
     }
 
     /**
@@ -166,89 +134,68 @@ class PurchaseController extends CrudController
         try {
             DB::beginTransaction();
 
-            // Extraer detalles para procesamiento separado
-            $details = $data['details'] ?? [];
-            unset($data['details']);
+            // Extraer purchase_items para procesamiento separado
+            $purchaseItems = $data['purchase_items'] ?? [];
+            unset($data['purchase_items']);
 
-            // Procesar información del proveedor
-            if (isset($data['supplier_name'])) {
-                $supplierInfo = [
-                    'name' => $data['supplier_name'],
-                    'phone' => $data['supplier_phone'] ?? null,
-                    'email' => $data['supplier_email'] ?? null,
-                    'address' => $data['supplier_address'] ?? null,
-                ];
-
-                // Guardar info del proveedor en comments si no hay comments
-                if (empty($data['comments'])) {
-                    $data['comments'] = 'SUPPLIER:' . json_encode($supplierInfo);
-                }
-
-                // Limpiar campos individuales del proveedor
-                unset($data['supplier_name'], $data['supplier_phone'], $data['supplier_email'], $data['supplier_address']);
+            // Mapear campos del formulario a la estructura de movements
+            if (isset($data['purchase_date'])) {
+                $data['movement_date'] = $data['purchase_date'];
+                unset($data['purchase_date']);
             }
 
-            // Crear o actualizar el modelo principal
+            // Establecer valores por defecto para movements
+            $data['movement_type'] = 'entry';
+            $data['movement_reason'] = 'purchase';
+            $data['reference_type'] = 'purchase_order';
+            $data['user_id'] = Auth::id() ?? 1;
+
+            // Establecer status por defecto si no se proporciona
+            if (!isset($data['status'])) {
+                $data['status'] = 'draft';
+            }
+
+            if (isset($data['comments'])) {
+                $data['notes'] = $data['comments'];
+            }
+
             $purchase = $callback($data);
 
-            // Calcular total
+            // Calcular total y manejar detalles
             $totalAmount = 0;
 
             if ($method === 'create') {
-                // Para crear: agregar todos los detalles
-                foreach ($details as $detail) {
-                    $detailModel = $purchase->details()->create([
-                        'product_id' => $detail['product_id'],
-                        'quantity' => $detail['quantity'],
-                        'unit_cost' => $detail['unit_cost'],
-                        'total_cost' => $detail['quantity'] * $detail['unit_cost'],
-                        'notes' => $detail['notes'] ?? null,
+                // Para crear: agregar todos los purchase_items como detalles
+                foreach ($purchaseItems as $item) {
+                    $detail = $purchase->details()->create([
+                        'product_id' => $item['product_id'],
+                        'quantity' => $item['quantity'],
+                        'unit_cost' => $item['unit_price'],
+                        'total_cost' => $item['total_price'],
+                        'comments' => null,
                     ]);
 
-                    $totalAmount += $detailModel->total_cost;
+                    $totalAmount += $item['total_price'];
                 }
             } else {
-                // Para actualizar: manejar detalles existentes y nuevos
-                $existingDetailIds = [];
+                // Para actualizar: eliminar detalles existentes y crear nuevos
+                $purchase->details()->delete();
 
-                foreach ($details as $detail) {
-                    if (isset($detail['id'])) {
-                        // Actualizar detalle existente
-                        $existingDetailIds[] = $detail['id'];
-                        $detailModel = $purchase->details()->findOrFail($detail['id']);
-                        $detailModel->update([
-                            'product_id' => $detail['product_id'],
-                            'quantity' => $detail['quantity'],
-                            'unit_cost' => $detail['unit_cost'],
-                            'total_cost' => $detail['quantity'] * $detail['unit_cost'],
-                            'notes' => $detail['notes'] ?? null,
-                        ]);
-                    } else {
-                        // Crear nuevo detalle
-                        $detailModel = $purchase->details()->create([
-                            'product_id' => $detail['product_id'],
-                            'quantity' => $detail['quantity'],
-                            'unit_cost' => $detail['unit_cost'],
-                            'total_cost' => $detail['quantity'] * $detail['unit_cost'],
-                            'notes' => $detail['notes'] ?? null,
-                        ]);
-                        $existingDetailIds[] = $detailModel->id;
-                    }
+                foreach ($purchaseItems as $item) {
+                    $detail = $purchase->details()->create([
+                        'product_id' => $item['product_id'],
+                        'quantity' => $item['quantity'],
+                        'unit_cost' => $item['unit_price'],
+                        'total_cost' => $item['total_price'],
+                        'comments' => null,
+                    ]);
 
-                    $totalAmount += $detailModel->total_cost;
+                    $totalAmount += $item['total_price'];
                 }
-
-                // Eliminar detalles que no están en la actualización
-                $purchase->details()->whereNotIn('id', $existingDetailIds)->delete();
             }
 
             // Actualizar total de la compra
             $purchase->update(['total_cost' => $totalAmount]);
-
-            // Si la compra está cerrada, integrar con inventario
-            if ($purchase->status === 'closed') {
-                $this->integrateWithInventory($purchase);
-            }
 
             DB::commit();
             return $purchase;
@@ -259,60 +206,158 @@ class PurchaseController extends CrudController
     }
 
     /**
-     * Integrar compra cerrada con el sistema de inventario
-     */
-    private function integrateWithInventory(Purchase $purchase): void
-    {
-        // Solo integrar si aún no se ha integrado
-        if (!$purchase->inventory_integrated) {
-            $inventoryService = app(\App\Services\InventoryService::class);
-
-            $movementData = [
-                'company_id' => $purchase->company_id,
-                'location_id' => $purchase->location_origin_id,
-                'movement_type' => 'entry',
-                'movement_reason' => 'purchase',
-                'document_number' => $purchase->document_number,
-                'reference_id' => $purchase->id,
-                'reference_type' => 'purchase_order',
-                'movement_date' => $purchase->movement_date,
-                'notes' => "Compra integrada: {$purchase->purchase_number}",
-                'products' => []
-            ];
-
-            foreach ($purchase->details as $detail) {
-                $movementData['products'][] = [
-                    'product_id' => $detail->product_id,
-                    'quantity' => $detail->quantity,
-                    'unit_cost' => $detail->unit_cost,
-                    'notes' => $detail->notes
-                ];
-            }
-
-            $inventoryService->processMovement($movementData);
-
-            // Marcar como integrado (necesitaríamos agregar este campo)
-            // $purchase->update(['inventory_integrated' => true]);
-        }
-    }
-
-    /**
      * Validar si se puede eliminar (opcional)
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        // No se puede eliminar compras que han sido recibidas (afectan stock)
+        if ($model->status === \App\Enums\PurchaseStatus::RECEIVED || $model->status === 'received') {
+            return [
+                'can_delete' => false,
+                'message' => 'No se puede eliminar una compra recibida porque afecta el stock'
+            ];
+        }
 
         return [
             'can_delete' => true,
             'message' => ''
         ];
+    }
+
+    /**
+     * Validar si se puede editar una compra
+     */
+    protected function canUpdate(Model $model): array
+    {
+        // Solo se pueden editar compras en borrador
+        if ($model->status !== \App\Enums\PurchaseStatus::DRAFT && $model->status !== 'draft') {
+            return [
+                'can_update' => false,
+                'message' => 'Solo se pueden editar compras en estado de borrador'
+            ];
+        }
+
+        return [
+            'can_update' => true,
+            'message' => ''
+        ];
+    }
+
+    /**
+     * Override del método update para verificar permisos de edición
+     */
+    public function update(Request $request, $id)
+    {
+        $model = $this->model::findOrFail($id);
+
+        $canUpdate = $this->canUpdate($model);
+        if (!$canUpdate['can_update']) {
+            return response()->json([
+                'success' => false,
+                'message' => $canUpdate['message']
+            ], 422);
+        }
+
+        return parent::update($request, $id);
+    }
+
+    /**
+     * Avanzar al siguiente estado en el flujo
+     */
+    public function advance(Request $request, $id)
+    {
+        try {
+            $purchase = Purchase::findOrFail($id);
+
+            if ($purchase->advanceStatus()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => "Estado actualizado a {$purchase->status->label()}",
+                    'data' => new $this->resource($purchase->load($this->getShowRelations()))
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No se puede avanzar al siguiente estado'
+            ], 400);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 400);
+        }
+    }
+
+    /**
+     * Retroceder al estado anterior en el flujo
+     */
+    public function revert(Request $request, $id)
+    {
+        try {
+            $purchase = Purchase::findOrFail($id);
+
+            if ($purchase->revertStatus()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => "Estado revertido a {$purchase->status->label()}",
+                    'data' => new $this->resource($purchase->load($this->getShowRelations()))
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No se puede retroceder al estado anterior'
+            ], 400);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 400);
+        }
+    }
+
+    /**
+     * Transicionar a un estado específico
+     */
+    public function transitionTo(Request $request, $id)
+    {
+        $request->validate([
+            'status' => 'required|string|in:draft,ordered,in_transit,received'
+        ]);
+
+        try {
+            $purchase = Purchase::findOrFail($id);
+            $newStatus = \App\Enums\PurchaseStatus::from($request->status);
+
+            if ($purchase->transitionTo($newStatus)) {
+                return response()->json([
+                    'success' => true,
+                    'message' => "Estado actualizado a {$purchase->status->label()}",
+                    'data' => new $this->resource($purchase->load($this->getShowRelations()))
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No se puede realizar la transición'
+            ], 400);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 400);
+        }
+    }
+
+    /**
+     * Obtener información de estados disponibles
+     */
+    public function statusInfo()
+    {
+        return response()->json([
+            'success' => true,
+            'data' => \App\Enums\PurchaseStatus::options()
+        ]);
     }
 }

@@ -63,6 +63,14 @@ Route::middleware('auth:sanctum')->group(function () {
             // Purchase Management Routes
             Route::apiResource('purchases', PurchaseController::class);
 
+            // Purchase Status Management Routes
+            Route::prefix('purchases')->group(function () {
+                Route::post('{id}/advance', [PurchaseController::class, 'advance']);
+                Route::post('{id}/revert', [PurchaseController::class, 'revert']);
+                Route::post('{id}/transition', [PurchaseController::class, 'transitionTo']);
+                Route::get('status/info', [PurchaseController::class, 'statusInfo']);
+            });
+
             // Inventory Management Routes
             Route::prefix('inventory')->group(function () {
                 // Movements

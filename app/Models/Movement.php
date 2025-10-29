@@ -15,16 +15,21 @@ class Movement extends Model
 
     protected $fillable = [
         'company_id',
-        'location_id',
+        'location_origin_id',
+        'location_destination_id',
+        'supplier_id',
+        'customer_id',
         'movement_type',
         'movement_reason',
         'document_number',
         'reference_id',
         'reference_type',
-        'total_amount',
+        'total_cost',
+        'status',
         'user_id',
         'movement_date',
-        'notes'
+        'notes',
+        'comments'
     ];
 
     protected $casts = [

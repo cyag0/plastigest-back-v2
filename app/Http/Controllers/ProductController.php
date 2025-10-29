@@ -97,8 +97,8 @@ class ProductController extends CrudController
             });
         }
 
-        if (isset($params['product_type'])) {
-            $query->where('product_type', $params['product_type']);
+        if (isset($params['product_type']) && is_array($params['product_type'])) {
+            $query->whereIn('product_type', $params['product_type']);
         }
     }
 

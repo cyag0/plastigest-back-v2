@@ -28,9 +28,10 @@ class ProductResource extends Resources
         $minimumStock = null;
         $maximumStock = null;
 
+        $locationId =  isset($data["location_id"]) ? $data["location_id"] : (current_location_id() ?? null);
 
-        if ($this->relationLoaded('locations') && isset($data["location_id"])) {
-            $currentLocation = $this->locations->where('id', $data["location_id"])->first();
+        if ($this->relationLoaded('locations') && $locationId) {
+            $currentLocation = $this->locations->where('id', $locationId)->first();
             if ($currentLocation) {
                 $currentLocationActive = $currentLocation->pivot->active ?? $this->is_active;
                 $currentStock = $currentLocation->pivot->current_stock ?? 0;
@@ -53,9 +54,9 @@ class ProductResource extends Resources
             'product_type' => $this->product_type,
             'is_active' => $currentLocationActive,
             'for_sale' => $this->for_sale,
-            'current_stock' => $currentStock,
-            'minimum_stock' => $minimumStock,
-            'maximum_stock' => $maximumStock,
+            'current_stock' => (int) $currentStock ?? 0,
+            'minimum_stock' => (int) $minimumStock,
+            'maximum_stock' => (int) $maximumStock,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];
@@ -72,7 +73,7 @@ class ProductResource extends Resources
                     return [
                         'id' => $productIngredient->id,
                         'ingredient_id' => $productIngredient->ingredient_id,
-                        'quantity' => $productIngredient->quantity,
+                        'quantity' => (int) $productIngredient->quantity,
                         'notes' => $productIngredient->notes,
                     ];
                 });
