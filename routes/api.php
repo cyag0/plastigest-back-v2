@@ -8,9 +8,12 @@ use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\PurchaseController;
+use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
+use App\Http\Controllers\UsageController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -70,6 +73,22 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('{id}/transition', [PurchaseController::class, 'transitionTo']);
                 Route::get('status/info', [PurchaseController::class, 'statusInfo']);
             });
+
+            // Production Management Routes
+            Route::apiResource('productions', ProductionController::class);
+
+            // Sales Management Routes
+            Route::apiResource('sales', SaleController::class);
+
+            // Sale Status Management Routes
+            Route::prefix('sales')->group(function () {
+                Route::post('{id}/advance-status', [SaleController::class, 'advanceStatus']);
+                Route::post('{id}/revert-status', [SaleController::class, 'revertStatus']);
+                Route::post('{id}/cancel', [SaleController::class, 'cancel']);
+            });
+
+            // Usage Management Routes (Uso interno de productos)
+            Route::apiResource('usages', UsageController::class);
 
             // Inventory Management Routes
             Route::prefix('inventory')->group(function () {

@@ -75,6 +75,8 @@ class ProductResource extends Resources
                         'ingredient_id' => $productIngredient->ingredient_id,
                         'quantity' => (int) $productIngredient->quantity,
                         'notes' => $productIngredient->notes,
+                        'ingredient_name' => $productIngredient->ingredient?->name,
+                        'ingredient_code' => $productIngredient->ingredient?->code,
                     ];
                 });
             }

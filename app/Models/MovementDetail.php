@@ -11,6 +11,11 @@ class MovementDetail extends Model
 {
     use HasFactory;
 
+    /**
+     * Especificar el nombre de la tabla
+     */
+    protected $table = 'movements_details';
+
     protected $fillable = [
         'movement_id',
         'product_id',
@@ -21,7 +26,7 @@ class MovementDetail extends Model
         'new_stock',
         'batch_number',
         'expiry_date',
-        'notes'
+        'notes',
     ];
 
     protected $casts = [

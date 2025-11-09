@@ -29,12 +29,14 @@ class Movement extends Model
         'user_id',
         'movement_date',
         'notes',
-        'comments'
+        'comments',
+        'content'
     ];
 
     protected $casts = [
         'total_amount' => 'decimal:2',
-        'movement_date' => 'datetime'
+        'movement_date' => 'datetime',
+        'content' => 'json'
     ];
 
     public function company(): BelongsTo
