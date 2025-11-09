@@ -1,13 +1,16 @@
 <?php
 
 use App\Http\Controllers\Admin\CompanyController;
+use App\Http\Controllers\Admin\CustomerController;
 use App\Http\Controllers\Admin\LocationController;
 use App\Http\Controllers\Admin\PermissionsController;
 use App\Http\Controllers\Admin\RolesController;
 use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CustomerNoteController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\UnitController;
 
 /*
 |--------------------------------------------------------------------------
@@ -44,6 +47,12 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('companies', CompanyController::class);
             Route::apiResource('locations', LocationController::class);
             Route::apiResource('workers', WorkerController::class);
+            Route::apiResource('customers', CustomerController::class);
+            Route::apiResource('units', UnitController::class);
+            
+            // Rutas de notas de clientes
+            Route::apiResource('customer-notes', CustomerNoteController::class);
+            Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
         });
     });
 
@@ -52,7 +61,12 @@ Route::middleware('auth:sanctum')->group(function () {
         return $request->user();
     });
 
+    
+
+
     // Aquí puedes agregar más rutas protegidas
     // Ejemplo:
     // Route::apiResource('products', ProductController::class);
+    
+
 });
