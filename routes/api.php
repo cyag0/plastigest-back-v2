@@ -14,11 +14,12 @@ use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
-use App\Http\Controllers\UsageController;
+use App\Http\Controllers\AdjustmentController;
 use App\Http\Controllers\CustomerNoteController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\UnitController;
+use App\Http\Controllers\UnitControllerV2;
 
 /*
 |--------------------------------------------------------------------------
@@ -90,8 +91,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('{id}/cancel', [SaleController::class, 'cancel']);
             });
 
-            // Usage Management Routes (Uso interno de productos)
-            Route::apiResource('usages', UsageController::class);
+            // Adjustment Management Routes (Ajustes de inventario: mermas, extravíos, etc.)
+            Route::apiResource('adjustments', AdjustmentController::class);
 
             // Inventory Management Routes
             Route::prefix('inventory')->group(function () {
@@ -116,7 +117,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('reports/dashboard', [InventoryController::class, 'getDashboardStats']);
             });
             Route::apiResource('customers', CustomerController::class);
-            Route::apiResource('units', UnitController::class);
+            Route::apiResource('units', UnitControllerV2::class);
 
             // Rutas de notas de clientes
             Route::apiResource('customer-notes', CustomerNoteController::class);

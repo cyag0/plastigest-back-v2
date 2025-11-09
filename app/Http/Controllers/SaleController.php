@@ -150,6 +150,14 @@ class SaleController extends CrudController
                 'notes' => $data['notes'] ?? null,
             ];
 
+            // Agregar document_number y comments a content
+            if (isset($data['document_number'])) {
+                $content['document_number'] = $data['document_number'];
+            }
+            if (isset($data['comments'])) {
+                $content['comments'] = $data['comments'];
+            }
+
             // Si es efectivo, agregar monto recibido
             if ($data['payment_method'] === 'efectivo') {
                 $content['received_amount'] = $data['received_amount'] ?? 0;
@@ -162,8 +170,6 @@ class SaleController extends CrudController
                 'location_origin_id' => $data['location_id'],
                 'location_destination_id' => $data['location_id'],
                 'movement_date' => $data['movement_date'],
-                'document_number' => $data['document_number'] ?? null,
-                'comments' => $data['comments'] ?? null,
                 'content' => $content,
                 'company_id' => $data['company_id'] ?? null,
                 'user_id' => $user->id,

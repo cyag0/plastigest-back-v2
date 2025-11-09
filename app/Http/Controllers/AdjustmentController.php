@@ -3,25 +3,25 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CrudController;
-use App\Http\Resources\UsageResource;
-use App\Models\Usage;
-use App\Models\UsageDetail;
+use App\Http\Resources\AdjustmentResource;
+use App\Models\Adjustment;
+use App\Models\AdjustmentDetail;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
-class UsageController extends CrudController
+class AdjustmentController extends CrudController
 {
     /**
      * El resource que se usará para retornar en cada petición
      */
-    protected string $resource = UsageResource::class;
+    protected string $resource = AdjustmentResource::class;
 
     /**
      * El modelo que manejará este controlador
      */
-    protected string $model = Usage::class;
+    protected string $model = Adjustment::class;
 
     /**
      * Relaciones que se cargarán en el index
@@ -73,11 +73,12 @@ class UsageController extends CrudController
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
 
-            // Información adicional del uso
+            // Información adicional del ajuste
+            'adjustment_type' => 'required|in:increase,decrease',
             'reason' => 'nullable|string|max:255',
-            'used_by' => 'nullable|string|max:255',
+            'adjusted_by' => 'nullable|string|max:255',
 
-            // Detalles del uso
+            // Detalles del ajuste
             'details' => 'required|array|min:1',
             'details.*.product_id' => 'required|exists:products,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
@@ -97,11 +98,12 @@ class UsageController extends CrudController
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
 
-            // Información adicional del uso
+            // Información adicional del ajuste
+            'adjustment_type' => 'sometimes|required|in:increase,decrease',
             'reason' => 'nullable|string|max:255',
-            'used_by' => 'nullable|string|max:255',
+            'adjusted_by' => 'nullable|string|max:255',
 
-            // Detalles del uso
+            // Detalles del ajuste
             'details' => 'sometimes|required|array|min:1',
             'details.*.product_id' => 'required|exists:products,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
@@ -119,19 +121,26 @@ class UsageController extends CrudController
 
             // Preparar datos del content
             $content = [
+                'adjustment_type' => $data['adjustment_type'],
                 'reason' => $data['reason'] ?? null,
-                'used_by' => $data['used_by'] ?? null,
+                'adjusted_by' => $data['adjusted_by'] ?? null,
             ];
+
+            // Agregar document_number y comments a content
+            if (isset($data['document_number'])) {
+                $content['document_number'] = $data['document_number'];
+            }
+            if (isset($data['comments'])) {
+                $content['comments'] = $data['comments'];
+            }
 
             $user = Auth::user();
 
-            // Preparar datos del uso
-            $usageData = [
+            // Preparar datos del ajuste
+            $adjustmentData = [
                 'location_origin_id' => $data['location_id'],
                 'location_destination_id' => $data['location_id'],
                 'movement_date' => $data['movement_date'],
-                'document_number' => $data['document_number'] ?? null,
-                'comments' => $data['comments'] ?? null,
                 'content' => $content,
                 'company_id' => $data['company_id'] ?? null,
                 'user_id' => $user->id,
@@ -142,22 +151,22 @@ class UsageController extends CrudController
             foreach ($data['details'] as $detail) {
                 $totalCost += $detail['quantity'] * $detail['unit_price'];
             }
-            $usageData['total_cost'] = $totalCost;
+            $adjustmentData['total_cost'] = $totalCost;
 
-            // Crear o actualizar uso
-            $usage = $callback($usageData);
+            // Crear o actualizar ajuste
+            $adjustment = $callback($adjustmentData);
 
             // Manejar detalles
             if (isset($data['details'])) {
                 // Si es actualización, eliminar detalles existentes
                 if ($method === 'update') {
-                    $usage->details()->delete();
+                    $adjustment->details()->delete();
                 }
 
                 // Crear nuevos detalles
                 foreach ($data['details'] as $detail) {
-                    UsageDetail::create([
-                        'movement_id' => $usage->id,
+                    AdjustmentDetail::create([
+                        'movement_id' => $adjustment->id,
                         'product_id' => $detail['product_id'],
                         'quantity' => $detail['quantity'],
                         'unit_cost' => $detail['unit_price'],
@@ -168,14 +177,14 @@ class UsageController extends CrudController
 
             // Validar y actualizar stock automáticamente (solo al crear)
             if ($method === 'create') {
-                $usage->validateAndUpdateStock();
+                $adjustment->validateAndUpdateStock();
             }
 
             // Recargar relaciones
-            $usage->load($this->getShowRelations());
+            $adjustment->load($this->getShowRelations());
 
             DB::commit();
-            return $usage;
+            return $adjustment;
         } catch (\Exception $e) {
             DB::rollBack();
             throw $e;
@@ -187,10 +196,10 @@ class UsageController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // No se pueden eliminar usos ya que afectan el stock inmediatamente
+        // No se pueden eliminar ajustes ya que afectan el stock inmediatamente
         return [
             'can_delete' => false,
-            'message' => 'No se pueden eliminar registros de uso de productos'
+            'message' => 'No se pueden eliminar registros de ajuste de inventario'
         ];
     }
 }

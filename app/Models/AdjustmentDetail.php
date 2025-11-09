@@ -6,10 +6,10 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * UsageDetail Model - Detalles de uso interno de productos
+ * AdjustmentDetail Model - Detalles de ajustes de inventario
  * Usa la tabla movements_details
  */
-class UsageDetail extends Model
+class AdjustmentDetail extends Model
 {
     /**
      * La tabla asociada al modelo
@@ -37,11 +37,11 @@ class UsageDetail extends Model
     ];
 
     /**
-     * Obtener el uso al que pertenece este detalle
+     * Obtener el ajuste al que pertenece este detalle
      */
-    public function usage(): BelongsTo
+    public function adjustment(): BelongsTo
     {
-        return $this->belongsTo(Usage::class, 'movement_id');
+        return $this->belongsTo(Adjustment::class, 'movement_id');
     }
 
     /**

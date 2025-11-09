@@ -12,10 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('movements', function (Blueprint $table) {
-            // Columna JSON para información extra del movimiento
-            // Para ventas: método de pago, datos del cliente, etc.
-            // Para compras: información del proveedor, etc.
-            $table->json('content')->nullable()->after('notes');
+            $table->dropColumn('notes');
         });
     }
 
@@ -25,7 +22,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('movements', function (Blueprint $table) {
-            $table->dropColumn('content');
+            $table->text('notes')->nullable();
         });
     }
 };

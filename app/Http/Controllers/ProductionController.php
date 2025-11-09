@@ -128,6 +128,16 @@ class ProductionController extends CrudController
                 unset($data['production_date']);
             }
 
+            // Mover comments a content
+            $content = [];
+            if (isset($data['comments'])) {
+                $content['comments'] = $data['comments'];
+                unset($data['comments']);
+            }
+            if (!empty($content)) {
+                $data['content'] = $content;
+            }
+
             // Establecer valores por defecto para movements
             $data['movement_type'] = 'production';
             $data['movement_reason'] = 'production';
@@ -146,7 +156,6 @@ class ProductionController extends CrudController
                 'quantity' => $quantity,
                 'unit_cost' => 0, // Se puede calcular el costo basado en ingredientes
                 'total_cost' => 0,
-                'comments' => 'Producto terminado',
             ]);
 
             // Procesar la producción: restar ingredientes y agregar producto final

@@ -21,15 +21,12 @@ class Movement extends Model
         'customer_id',
         'movement_type',
         'movement_reason',
-        'document_number',
-        'reference_id',
         'reference_type',
         'total_cost',
         'status',
         'user_id',
         'movement_date',
         'notes',
-        'comments',
         'content'
     ];
 

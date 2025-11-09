@@ -68,10 +68,6 @@ class PurchaseController extends CrudController
         if (isset($params['end_date'])) {
             $query->where('movement_date', '<=', $params['end_date']);
         }
-
-        if (isset($params['document_number'])) {
-            $query->where('document_number', 'like', '%' . $params['document_number'] . '%');
-        }
     }
 
     /**
@@ -86,6 +82,7 @@ class PurchaseController extends CrudController
             'purchase_date' => 'required|date',
             'supplier_id' => 'required|exists:suppliers,id',
             'status' => 'nullable|in:draft,ordered,in_transit,received',
+            'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
 
             // Productos seleccionados para la compra
@@ -114,6 +111,7 @@ class PurchaseController extends CrudController
             'purchase_date' => 'sometimes|date',
             'supplier_id' => 'exists:suppliers,id',
             'status' => 'sometimes|in:draft,ordered,in_transit,received',
+            'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
 
             // Productos seleccionados para la compra
@@ -155,8 +153,18 @@ class PurchaseController extends CrudController
                 $data['status'] = 'draft';
             }
 
+            // Mover document_number y comments a content
+            $content = [];
+            if (isset($data['document_number'])) {
+                $content['document_number'] = $data['document_number'];
+                unset($data['document_number']);
+            }
             if (isset($data['comments'])) {
-                $data['notes'] = $data['comments'];
+                $content['comments'] = $data['comments'];
+                unset($data['comments']);
+            }
+            if (!empty($content)) {
+                $data['content'] = $content;
             }
 
             $purchase = $callback($data);
@@ -172,7 +180,6 @@ class PurchaseController extends CrudController
                         'quantity' => $item['quantity'],
                         'unit_cost' => $item['unit_price'],
                         'total_cost' => $item['total_price'],
-                        'comments' => null,
                     ]);
 
                     $totalAmount += $item['total_price'];
@@ -187,7 +194,6 @@ class PurchaseController extends CrudController
                         'quantity' => $item['quantity'],
                         'unit_cost' => $item['unit_price'],
                         'total_cost' => $item['total_price'],
-                        'comments' => null,
                     ]);
 
                     $totalAmount += $item['total_price'];

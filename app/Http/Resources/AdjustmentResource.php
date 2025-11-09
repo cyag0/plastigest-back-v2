@@ -3,15 +3,15 @@
 namespace App\Http\Resources;
 
 use App\Http\Resources\Resources;
-use App\Models\Usage;
+use App\Models\Adjustment;
 use Illuminate\Database\Eloquent\Model;
 
-class UsageResource extends Resources
+class AdjustmentResource extends Resources
 {
     /**
      * Format the resource data
      *
-     * @param Usage $resource
+     * @param Adjustment $resource
      * @param array $data
      * @param array $context
      * @return array
@@ -22,12 +22,13 @@ class UsageResource extends Resources
 
         $item = [
             'id' => $resource->id,
-            'usage_number' => $resource->usage_number,
-            'usage_date' => $resource->usage_date,
+            'adjustment_number' => $resource->adjustment_number,
+            'adjustment_date' => $resource->adjustment_date,
             'status' => $resource->status,
             'total_cost' => $resource->total_cost,
+            'adjustment_type' => $resource->adjustment_type,
             'reason' => $resource->reason,
-            'used_by' => $resource->used_by,
+            'adjusted_by' => $resource->adjusted_by,
             'content' => $resource->content,
         ];
 
