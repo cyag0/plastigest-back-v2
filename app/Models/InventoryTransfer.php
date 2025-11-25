@@ -9,6 +9,9 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 
+/**
+ * @mixin IdeHelperInventoryTransfer
+ */
 class InventoryTransfer extends Model
 {
     use HasFactory;

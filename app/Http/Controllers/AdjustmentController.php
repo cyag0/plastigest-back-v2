@@ -70,19 +70,16 @@ class AdjustmentController extends CrudController
             'location_id' => 'required|exists:locations,id',
             'company_id' => 'required|exists:companies,id',
             'movement_date' => 'required|date',
-            'document_number' => 'nullable|string|max:255',
-            'comments' => 'nullable|string',
+            'movement_reason' => 'required|in:adjustment,return,damage,loss,shrinkage',
 
-            // Información adicional del ajuste
-            'adjustment_type' => 'required|in:increase,decrease',
-            'reason' => 'nullable|string|max:255',
-            'adjusted_by' => 'nullable|string|max:255',
+            // Comentarios
+            'content.comments' => 'nullable|string',
 
             // Detalles del ajuste
             'details' => 'required|array|min:1',
             'details.*.product_id' => 'required|exists:products,id',
+            'details.*.unit_id' => 'required|exists:units,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
-            'details.*.unit_price' => 'required|numeric|min:0',
         ]);
     }
 
@@ -95,19 +92,16 @@ class AdjustmentController extends CrudController
             'location_id' => 'sometimes|required|exists:locations,id',
             'company_id' => 'required|exists:companies,id',
             'movement_date' => 'sometimes|required|date',
-            'document_number' => 'nullable|string|max:255',
-            'comments' => 'nullable|string',
+            'movement_reason' => 'sometimes|required|in:adjustment,return,damage,loss,shrinkage',
 
-            // Información adicional del ajuste
-            'adjustment_type' => 'sometimes|required|in:increase,decrease',
-            'reason' => 'nullable|string|max:255',
-            'adjusted_by' => 'nullable|string|max:255',
+            // Comentarios
+            'content.comments' => 'nullable|string',
 
             // Detalles del ajuste
             'details' => 'sometimes|required|array|min:1',
             'details.*.product_id' => 'required|exists:products,id',
+            'details.*.unit_id' => 'required|exists:units,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
-            'details.*.unit_price' => 'required|numeric|min:0',
         ]);
     }
 
@@ -119,39 +113,29 @@ class AdjustmentController extends CrudController
         try {
             DB::beginTransaction();
 
+            $user = Auth::user();
+
+            // Determinar si es incremento o decremento basado en movement_reason
+            $isIncrement = in_array($data['movement_reason'], ['adjustment']); // Solo 'adjustment' puede ser incremento
+            $movementType = $isIncrement ? 'entry' : 'exit';
+
             // Preparar datos del content
             $content = [
-                'adjustment_type' => $data['adjustment_type'],
-                'reason' => $data['reason'] ?? null,
-                'adjusted_by' => $data['adjusted_by'] ?? null,
+                'comments' => $data['content']['comments'] ?? null,
             ];
-
-            // Agregar document_number y comments a content
-            if (isset($data['document_number'])) {
-                $content['document_number'] = $data['document_number'];
-            }
-            if (isset($data['comments'])) {
-                $content['comments'] = $data['comments'];
-            }
-
-            $user = Auth::user();
 
             // Preparar datos del ajuste
             $adjustmentData = [
                 'location_origin_id' => $data['location_id'],
                 'location_destination_id' => $data['location_id'],
                 'movement_date' => $data['movement_date'],
+                'movement_type' => $movementType,
+                'movement_reason' => $data['movement_reason'],
                 'content' => $content,
                 'company_id' => $data['company_id'] ?? null,
                 'user_id' => $user->id,
+                'status' => 'closed', // Siempre cerrado
             ];
-
-            // Calcular total
-            $totalCost = 0;
-            foreach ($data['details'] as $detail) {
-                $totalCost += $detail['quantity'] * $detail['unit_price'];
-            }
-            $adjustmentData['total_cost'] = $totalCost;
 
             // Crear o actualizar ajuste
             $adjustment = $callback($adjustmentData);
@@ -163,21 +147,66 @@ class AdjustmentController extends CrudController
                     $adjustment->details()->delete();
                 }
 
-                // Crear nuevos detalles
+                // Crear nuevos detalles con conversión de unidades
                 foreach ($data['details'] as $detail) {
+                    // Obtener información del producto y unidad
+                    $product = \App\Models\Product::findOrFail($detail['product_id']);
+                    $unit = \App\Models\Unit::findOrFail($detail['unit_id']);
+
+                    // Convertir cantidad a unidad base
+                    $quantityInBaseUnit = $detail['quantity'];
+                    if ($unit->base_unit_id !== null) {
+                        // Es una unidad derivada, convertir a base
+                        $quantityInBaseUnit = $detail['quantity'] * $unit->factor_to_base;
+                    }
+
+                    // Obtener stock actual
+                    $productLocation = DB::table('product_location')
+                        ->where('product_id', $detail['product_id'])
+                        ->where('location_id', $data['location_id'])
+                        ->first();
+
+                    $previousStock = $productLocation->current_stock ?? 0;
+
+                    // Calcular nuevo stock
+                    $newStock = $isIncrement
+                        ? $previousStock + $quantityInBaseUnit
+                        : $previousStock - $quantityInBaseUnit;
+
+                    // Validar stock suficiente para decrementos
+                    if (!$isIncrement && $newStock < 0) {
+                        throw new \Exception(
+                            "Stock insuficiente para el producto '{$product->name}'. " .
+                                "Stock disponible: {$previousStock}, " .
+                                "Cantidad a restar: {$quantityInBaseUnit}"
+                        );
+                    }
+
+                    // Crear detalle
                     AdjustmentDetail::create([
                         'movement_id' => $adjustment->id,
                         'product_id' => $detail['product_id'],
-                        'quantity' => $detail['quantity'],
-                        'unit_cost' => $detail['unit_price'],
-                        'total_cost' => $detail['quantity'] * $detail['unit_price'],
+                        'unit_id' => $detail['unit_id'],
+                        'quantity' => $quantityInBaseUnit, // Guardar en unidad base
+                        'previous_stock' => $previousStock,
+                        'new_stock' => $newStock,
+                        'unit_cost' => 0, // No manejamos costos en ajustes
+                        'total_cost' => 0,
                     ]);
-                }
-            }
 
-            // Validar y actualizar stock automáticamente (solo al crear)
-            if ($method === 'create') {
-                $adjustment->validateAndUpdateStock();
+                    // Actualizar stock
+                    if ($isIncrement) {
+                        DB::table('product_location')
+                            ->where('product_id', $detail['product_id'])
+                            ->where('location_id', $data['location_id'])
+                            ->increment('current_stock', $quantityInBaseUnit);
+                    } else {
+                        DB::table('product_location')
+                            ->where('product_id', $detail['product_id'])
+                            ->where('location_id', $data['location_id'])
+                            ->decrement('current_stock', $quantityInBaseUnit);
+                    }
+                }
             }
 
             // Recargar relaciones

@@ -49,12 +49,26 @@ class ProductController extends CrudController
             'category',
             'supplier',
             'locations',
+            'unit',
             'productIngredients.ingredient',
             'images' => function ($query) {
                 $query->orderBy('sort_order');
             },
             //'unit'
         ];
+    }
+
+    /**
+     * Override del método show para incluir unidades disponibles
+     */
+    public function show($id)
+    {
+        $product = Product::with($this->getShowRelations())->findOrFail($id);
+        
+        // Agregar unidades disponibles al producto
+        $product->available_units = $product->availableUnits();
+        
+        return new ProductResource($product);
     }
 
     /**

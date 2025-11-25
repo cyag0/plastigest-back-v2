@@ -18,10 +18,10 @@ class CustomerNoteController extends Controller
         $companyId = $request->input('company_id');
 
         $notes = CustomerNote::query()
-            ->when($customerId, function($query) use ($customerId) {
+            ->when($customerId, function ($query) use ($customerId) {
                 $query->where('customer_id', $customerId);
             })
-            ->when($companyId, function($query) use ($companyId) {
+            ->when($companyId, function ($query) use ($companyId) {
                 $query->where('company_id', $companyId);
             })
             ->where('is_active', true)
@@ -61,7 +61,7 @@ class CustomerNoteController extends Controller
     public function show($id): JsonResponse
     {
         $note = CustomerNote::findOrFail($id);
-        
+
         return response()->json([
             'data' => new CustomerNoteResource($note)
         ]);
@@ -73,18 +73,13 @@ class CustomerNoteController extends Controller
     public function update(Request $request, $id): JsonResponse
     {
         $note = CustomerNote::findOrFail($id);
-        
-        // Debug: ver qué datos llegan
-        \Log::info('Update request data:', $request->all());
-        
+
         $validated = $request->validate([
             'description' => 'sometimes|required|string',
             'amount' => 'sometimes|required|numeric|min:0',
             'status' => 'sometimes|required|in:pending,paid',
             'due_date' => 'nullable|date',
         ]);
-
-        \Log::info('Validated data:', $validated);
 
         // Solo actualizar los campos validados
         $note->update($validated);

@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * PurchaseDetail Model - Wrapper para movements_details relacionados con compras
+ *
+ * @mixin IdeHelperPurchaseDetail
  */
 class PurchaseDetail extends MovementDetail
 {

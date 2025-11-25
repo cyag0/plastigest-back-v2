@@ -4,31 +4,50 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
+/**
+ * @mixin IdeHelperUnit
+ */
 class Unit extends Model
 {
     use HasFactory;
 
     protected $fillable = [
         'name',
-        'symbol',
-        'description',
-        'type',
-        'is_base',
-        'conversion_rate',
+        'abbreviation',
         'company_id',
-        'is_active'
+        'base_unit_id',
+        'factor_to_base',
     ];
 
     protected $casts = [
-        'is_active' => 'boolean',
-        'is_base' => 'boolean',
-        'conversion_rate' => 'decimal:6',
+        'factor_to_base' => 'decimal:2',
     ];
 
+    /**
+     * Relación con la compañía
+     */
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    /**
+     * Relación con la unidad base (autorreferencial)
+     */
+    public function baseUnit(): BelongsTo
+    {
+        return $this->belongsTo(Unit::class, 'base_unit_id');
+    }
+
+    /**
+     * Unidades derivadas de esta unidad base
+     */
+    public function derivedUnits(): HasMany
+    {
+        return $this->hasMany(Unit::class, 'base_unit_id');
     }
 }

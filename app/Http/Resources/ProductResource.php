@@ -61,6 +61,38 @@ class ProductResource extends Resources
             'updated_at' => $this->updated_at,
         ];
 
+        if ($this->relationLoaded('category')) {
+            if (!$editing) {
+                $item['category_name'] = $this->category?->name;
+            } else {
+                $item['category'] = [
+                    'id' => $this->category?->id,
+                    'name' => $this->category?->name,
+                ];
+            }
+        }
+
+        if ($resource->relationLoaded('unit')) {
+            $item['unit'] = [
+                'id' => $this->unit?->id,
+                'name' => $this->unit?->name,
+                'abbreviation' => $this->unit?->abbreviation,
+            ];
+        }
+
+        // Agregar unidades disponibles (base + derivadas)
+        if (isset($this->available_units)) {
+            $item['available_units'] = $this->available_units->map(function ($unit) {
+                return [
+                    'id' => $unit->id,
+                    'name' => $unit->name,
+                    'abbreviation' => $unit->abbreviation,
+                    'base_unit_id' => $unit->base_unit_id,
+                    'factor_to_base' => $unit->factor_to_base,
+                ];
+            });
+        }
+
         if ($editing) {
             if ($this->relationLoaded('images')) {
                 $item["product_images"] = $this->images->map(function ($image) {

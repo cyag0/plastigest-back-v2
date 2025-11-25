@@ -7,6 +7,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
+/**
+ * @mixin IdeHelperMovementDetail
+ */
 class MovementDetail extends Model
 {
     use HasFactory;
@@ -19,6 +22,7 @@ class MovementDetail extends Model
     protected $fillable = [
         'movement_id',
         'product_id',
+        'unit_id',
         'quantity',
         'unit_cost',
         'total_cost',
@@ -30,12 +34,12 @@ class MovementDetail extends Model
     ];
 
     protected $casts = [
-        'quantity' => 'decimal:3',
+        'quantity' => 'decimal:2',
         'unit_cost' => 'decimal:2',
         'total_cost' => 'decimal:2',
-        'previous_stock' => 'decimal:3',
-        'new_stock' => 'decimal:3',
-        'expiry_date' => 'date'
+        'previous_stock' => 'decimal:2',
+        'new_stock' => 'decimal:2',
+        'expiry_date' => 'date',
     ];
 
     public function movement(): BelongsTo

@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 /**
  * AdjustmentDetail Model - Detalles de ajustes de inventario
  * Usa la tabla movements_details
+ *
+ * @mixin IdeHelperAdjustmentDetail
  */
 class AdjustmentDetail extends Model
 {
@@ -31,7 +33,7 @@ class AdjustmentDetail extends Model
      * Los atributos que deben ser casteados
      */
     protected $casts = [
-        'quantity' => 'decimal:3',
+        'quantity' => 'decimal:2',
         'unit_cost' => 'decimal:2',
         'total_cost' => 'decimal:2',
     ];

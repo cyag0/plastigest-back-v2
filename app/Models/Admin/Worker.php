@@ -7,6 +7,9 @@ use App\Models\Admin\Location;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
+/**
+ * @mixin IdeHelperWorker
+ */
 class Worker extends Model
 {
     protected $fillable = [

@@ -2,31 +2,52 @@
 
 namespace App\Http\Resources\Admin;
 
-use Illuminate\Http\Request;
-use Illuminate\Http\Resources\Json\JsonResource;
+use App\Http\Resources\Resources;
+use App\Models\Unit;
+use Illuminate\Database\Eloquent\Model;
 
-class UnitResource extends JsonResource
+class UnitResource extends Resources
 {
     /**
-     * Transform the resource into an array.
+     * Format the resource data
      *
-     * @return array<string, mixed>
+     * @param Unit $resource
+     * @param array $data
+     * @param array $context
+     * @return array
      */
-    public function toArray(Request $request): array
+    public function formatter(Model $resource, array $data, array $context): array
     {
-        return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'symbol' => $this->symbol,
-            'description' => $this->description,
-            'type' => $this->type,
-            'is_base' => $this->is_base,
-            'conversion_rate' => $this->conversion_rate,
-            'company_id' => $this->company_id,
-            'company_name' => $this->whenLoaded('company', fn() => $this->company->name),
-            'is_active' => $this->is_active,
-            'created_at' => $this->created_at?->toDateTimeString(),
-            'updated_at' => $this->updated_at?->toDateTimeString(),
+        $item = [
+            'id' => $resource->id,
+            'name' => $resource->name,
+            'abbreviation' => $resource->abbreviation,
+            'company_id' => $resource->company_id,
+            'description' => "N/A",
+            'base_unit_id' => $resource->base_unit_id,
+            'factor_to_base' => $resource->factor_to_base,
+            'created_at' => $resource->created_at,
+
+            'conversion' => isset($resource->base_unit_id)
         ];
+
+        if ($resource->relationLoaded('baseUnit') && $resource->baseUnit) {
+            $item['base_unit'] = [
+                'id' => $resource->baseUnit->id,
+                'name' => $resource->baseUnit->name,
+                'abbreviation' => $resource->baseUnit->abbreviation,
+            ];
+
+            $item['description'] = "1 {$resource->abbreviation} = {$resource->factor_to_base} {$resource->baseUnit->abbreviation}";
+        } else {
+            $item['base_unit'] = null;
+        }
+
+
+        if ($resource->relationLoaded('company')) {
+            $item['company_name'] = $resource->company->name;
+        }
+
+        return $item;
     }
 }

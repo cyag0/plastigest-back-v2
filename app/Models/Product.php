@@ -6,6 +6,9 @@ use App\Models\Admin\Location;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * @mixin IdeHelperProduct
+ */
 class Product extends Model
 {
     use HasFactory;
@@ -64,10 +67,10 @@ class Product extends Model
     /**
      * Get the unit that owns the product.
      */
-    /*     public function unit()
+    public function unit()
     {
         return $this->belongsTo(Unit::class);
-    } */
+    }
 
     /**
      * Get the supplier that owns the product.
@@ -75,6 +78,17 @@ class Product extends Model
     public function supplier()
     {
         return $this->belongsTo(Supplier::class);
+    }
+
+    /**
+     * Get available units for this product (base unit + derived units)
+     */
+    public function availableUnits()
+    {
+        return Unit::where(function ($query) {
+            $query->where('id', $this->unit_id)
+                  ->orWhere('base_unit_id', $this->unit_id);
+        })->get();
     }
 
     /**

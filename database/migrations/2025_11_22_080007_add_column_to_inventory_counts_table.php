@@ -11,11 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('units', function (Blueprint $table) {
-            $table->id();
-            $table->string('name', 100);
-            $table->string('abbreviation', 20);
-            $table->timestamps();
+        Schema::table('inventory_counts', function (Blueprint $table) {
+            //
+            $table->json('content')->nullable(); // Snapshot de productos al momento del conteo
         });
     }
 
@@ -24,6 +22,9 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('units');
+        Schema::table('inventory_counts', function (Blueprint $table) {
+            //
+            $table->dropColumn('content');
+        });
     }
 };

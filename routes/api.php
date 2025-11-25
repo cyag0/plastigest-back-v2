@@ -20,6 +20,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\UnitController;
 use App\Http\Controllers\UnitControllerV2;
+use App\Http\Controllers\InventoryCountController;
+use App\Http\Controllers\InventoryCountDetailController;
 
 /*
 |--------------------------------------------------------------------------
@@ -122,6 +124,10 @@ Route::middleware('auth:sanctum')->group(function () {
             // Rutas de notas de clientes
             Route::apiResource('customer-notes', CustomerNoteController::class);
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
+
+            // Rutas de conteo de inventario
+            Route::apiResource('inventory-counts', InventoryCountController::class);
+            Route::apiResource('inventory-counts-details', InventoryCountDetailController::class);
         });
     });
 

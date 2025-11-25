@@ -6,6 +6,9 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * @mixin IdeHelperProductImage
+ */
 class ProductImage extends Model
 {
     protected $fillable = [
