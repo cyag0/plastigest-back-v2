@@ -22,6 +22,7 @@ use App\Http\Controllers\UnitController;
 use App\Http\Controllers\UnitControllerV2;
 use App\Http\Controllers\InventoryCountController;
 use App\Http\Controllers\InventoryCountDetailController;
+use App\Http\Controllers\DeviceTokenController;
 
 /*
 |--------------------------------------------------------------------------
@@ -39,6 +40,11 @@ Route::prefix('auth')->group(function () {
     Route::post('register', [AuthController::class, 'register']);
     Route::post('login', [AuthController::class, 'login']);
 });
+
+// Ruta pública para descargar PDFs con URL firmada
+Route::get('inventory-counts/{id}/pdf', [InventoryCountController::class, 'generatePdf'])
+    ->name('inventory-counts.pdf')
+    ->middleware('signed');
 
 // Rutas protegidas (requieren autenticación)
 Route::middleware('auth:sanctum')->group(function () {
@@ -126,6 +132,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
 
             // Rutas de conteo de inventario
+            Route::get('inventory-counts/{id}/pdf-url', [InventoryCountController::class, 'generatePdfUrl']);
             Route::apiResource('inventory-counts', InventoryCountController::class);
             Route::apiResource('inventory-counts-details', InventoryCountDetailController::class);
         });
@@ -134,6 +141,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // Ruta para obtener el usuario autenticado
     Route::get('/user', function (Request $request) {
         return $request->user();
+    });
+
+    // Rutas de tokens de dispositivos (notificaciones push)
+    Route::prefix('device-tokens')->group(function () {
+        Route::post('register', [DeviceTokenController::class, 'register']);
+        Route::post('deactivate', [DeviceTokenController::class, 'deactivate']);
+        Route::get('/', [DeviceTokenController::class, 'index']);
+        Route::delete('{id}', [DeviceTokenController::class, 'destroy']);
     });
 
 

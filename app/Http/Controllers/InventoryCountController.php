@@ -12,6 +12,8 @@ use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\URL;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class InventoryCountController extends CrudController
 {
@@ -216,5 +218,66 @@ class InventoryCountController extends CrudController
             'can_delete' => true,
             'message' => ''
         ];
+    }
+
+    /**
+     * Generar URL firmada para el PDF
+     */
+    public function generatePdfUrl($id)
+    {
+        try {
+            // Verificar que el inventario existe
+            $inventoryCount = InventoryCount::findOrFail($id);
+
+            // Generar URL firmada que expira en 1 hora
+            $signedUrl = URL::temporarySignedRoute(
+                'inventory-counts.pdf',
+                now()->addHour(),
+                ['id' => $id]
+            );
+
+            return response()->json([
+                'url' => $signedUrl,
+                'expires_at' => now()->addHour()->toISOString(),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al generar URL del PDF: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Generar PDF del conteo de inventario
+     */
+    public function generatePdf($id)
+    {
+        try {
+            // Obtener el inventario con todas sus relaciones
+            $inventoryCount = InventoryCount::with([
+                'location',
+                'user',
+                'details.product.unit',
+            ])->findOrFail($id);
+
+            // Obtener la compañía actual
+            $company = CurrentCompany::get();
+
+            // Generar el PDF
+            $pdf = Pdf::loadView('pdf.inventory-count', [
+                'inventoryCount' => $inventoryCount,
+                'company' => $company,
+            ]);
+
+            // Configurar el PDF
+            $pdf->setPaper('letter', 'portrait');
+
+            // Retornar el PDF para descarga
+            return $pdf->download('inventario-' . $inventoryCount->id . '-' . now()->format('Y-m-d') . '.pdf');
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al generar el PDF: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
