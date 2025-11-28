@@ -208,4 +208,32 @@ class Product extends Model
             ->where('is_public', true)
             ->orderBy('sort_order');
     }
+
+    /**
+     * Get packages of the product.
+     */
+    public function packages()
+    {
+        return $this->hasMany(ProductPackage::class)->orderBy('sort_order');
+    }
+
+    /**
+     * Get active packages of the product.
+     */
+    public function activePackages()
+    {
+        return $this->hasMany(ProductPackage::class)
+            ->where('is_active', true)
+            ->orderBy('sort_order');
+    }
+
+    /**
+     * Get default package of the product.
+     */
+    public function defaultPackage()
+    {
+        return $this->hasOne(ProductPackage::class)
+            ->where('is_default', true)
+            ->where('is_active', true);
+    }
 }

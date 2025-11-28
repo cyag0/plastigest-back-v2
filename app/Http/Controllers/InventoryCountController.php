@@ -272,8 +272,9 @@ class InventoryCountController extends CrudController
             // Configurar el PDF
             $pdf->setPaper('letter', 'portrait');
 
-            // Retornar el PDF para descarga
-            return $pdf->download('inventario-' . $inventoryCount->id . '-' . now()->format('Y-m-d') . '.pdf');
+            // Retornar el PDF como stream (no forzar descarga)
+            // Esto permite que el frontend maneje la descarga correctamente
+            return $pdf->stream('inventario-' . $inventoryCount->id . '-' . now()->format('Y-m-d') . '.pdf');
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al generar el PDF: ' . $e->getMessage()

@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UserResource;
 use App\Models\User;
+use App\Support\CurrentCompany;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class UserController extends CrudController
 {
@@ -26,10 +28,7 @@ class UserController extends CrudController
      */
     protected function indexRelations(): array
     {
-        return [
-            // Agregar aquí las relaciones para el índice
-            // Ejemplo: 'category', 'unit'
-        ];
+        return [];
     }
 
     /**
@@ -37,10 +36,7 @@ class UserController extends CrudController
      */
     protected function getShowRelations(): array
     {
-        return [
-            // Agregar aquí las relaciones para el show
-            // Ejemplo: 'category', 'unit', 'suppliers'
-        ];
+        return [];
     }
 
     /**
@@ -48,11 +44,18 @@ class UserController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
-        // Implementar filtros específicos del modelo
-        // Ejemplo:
-        // if (isset($params['category_id'])) {
-        //     $query->where('category_id', $params['category_id']);
-        // }
+        // Filtrar usuarios por la compañía actual
+        $company = CurrentCompany::get();
+        if ($company) {
+            $query->whereHas('companies', function ($q) use ($company) {
+                $q->where('company_id', $company->id);
+            });
+        }
+
+        // Filtros adicionales
+        if (isset($params['is_active'])) {
+            $query->where('is_active', $params['is_active']);
+        }
     }
 
     /**
@@ -61,10 +64,17 @@ class UserController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         return $request->validate([
-            // Agregar aquí las reglas de validación para crear
-            // Ejemplo:
-            // 'name' => 'required|string|max:255',
-            // 'email' => 'required|email|unique:users,email',
+            'name' => 'required|string|max:255',
+            'email' => 'required|email|unique:users,email',
+            'password' => 'required|string|min:8',
+
+            // Relaciones many-to-many opcionales
+            'role_ids' => 'nullable|array',
+            'role_ids.*' => 'exists:roles,id',
+            'company_ids' => 'nullable|array',
+            'company_ids.*' => 'exists:companies,id',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'exists:locations,id',
         ]);
     }
 
@@ -74,90 +84,118 @@ class UserController extends CrudController
     protected function validateUpdateData(Request $request, Model $model): array
     {
         return $request->validate([
-            // Agregar aquí las reglas de validación para actualizar
-            // Ejemplo:
-            // 'name' => 'required|string|max:255',
-            // 'email' => 'required|email|unique:users,email,' . $model->id,
+            'name' => 'sometimes|required|string|max:255',
+            'email' => 'sometimes|required|email|unique:users,email,' . $model->id,
+            'password' => 'nullable|string|min:8',
+
+            // Relaciones many-to-many opcionales
+            'role_ids' => 'nullable|array',
+            'role_ids.*' => 'exists:roles,id',
+            'company_ids' => 'nullable|array',
+            'company_ids.*' => 'exists:companies,id',
+            'location_ids' => 'nullable|array',
+            'location_ids.*' => 'exists:locations,id',
         ]);
     }
 
     /**
-     * Procesar datos antes de crear (opcional)
+     * Procesar datos antes de crear
      */
     protected function processStoreData(array $validatedData, Request $request): array
     {
-        // Procesar datos antes de crear si es necesario
-        // Ejemplo: agregar company_id del usuario autenticado
-        // $validatedData['company_id'] = auth()->user()->company_id;
+        // Hashear la contraseña
+        if (isset($validatedData['password'])) {
+            $validatedData['password'] = Hash::make($validatedData['password']);
+        }
+
+        // Agregar la compañía actual si no se proporcionó
+        $company = CurrentCompany::get();
+        if ($company && !isset($validatedData['company_ids'])) {
+            $validatedData['company_ids'] = [$company->id];
+        }
 
         return $validatedData;
     }
 
     /**
-     * Procesar datos antes de actualizar (opcional)
+     * Procesar datos antes de actualizar
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
-        // Procesar datos antes de actualizar si es necesario
-        // Ejemplo: no permitir cambiar company_id
-        // unset($validatedData['company_id']);
+        // Hashear la contraseña solo si se proporciona
+        if (isset($validatedData['password'])) {
+            $validatedData['password'] = Hash::make($validatedData['password']);
+        } else {
+            unset($validatedData['password']);
+        }
 
         return $validatedData;
     }
 
     /**
-     * Manejo personalizado del proceso de creación/actualización
-     * Usa transacciones para operaciones seguras
+     * Acciones después de crear
      */
-    protected function process($callback, array $data, $method = 'create'): Model
+    protected function afterStore(Model $user, Request $request): void
     {
-        try {
-            DB::beginTransaction();
+        // Sincronizar roles
+        if ($request->has('role_ids') && is_array($request->role_ids)) {
+            $user->roles()->sync($request->role_ids);
+        }
 
-            $model = $callback($data);
+        // Sincronizar empresas
+        if ($request->has('company_ids') && is_array($request->company_ids)) {
+            $user->companies()->sync($request->company_ids);
+        }
 
-            // Aquí puedes agregar lógica adicional específica del modelo
-            // Ejemplo: manejar relaciones, archivos, etc.
+        // Sincronizar sucursales
+        if ($request->has('location_ids') && is_array($request->location_ids)) {
+            $user->locations()->sync($request->location_ids);
+        }
 
-            DB::commit();
-            return $model;
-        } catch (\Exception $e) {
-            DB::rollBack();
-            throw $e;
+        // Recargar las relaciones
+        $relations = $this->getShowRelations();
+        if (!empty($relations)) {
+            $user->load($relations);
         }
     }
 
     /**
-     * Acciones después de crear (opcional)
+     * Acciones después de actualizar
      */
-    protected function afterStore(Model $model, Request $request): void
+    protected function afterUpdate(Model $user, Request $request): void
     {
-        // Lógica adicional después de crear
-        // Ejemplo: crear relaciones, enviar notificaciones, etc.
+        // Sincronizar relaciones many-to-many
+        if ($request->has('role_ids')) {
+            $user->roles()->sync($request->role_ids);
+        }
+
+        if ($request->has('company_ids')) {
+            $user->companies()->sync($request->company_ids);
+        }
+
+        if ($request->has('location_ids')) {
+            $user->locations()->sync($request->location_ids);
+        }
+
+        // Recargar las relaciones
+        $relations = $this->getShowRelations();
+        if (!empty($relations)) {
+            $user->load($relations);
+        }
     }
 
     /**
-     * Acciones después de actualizar (opcional)
-     */
-    protected function afterUpdate(Model $model, Request $request): void
-    {
-        // Lógica adicional después de actualizar
-        // Ejemplo: sincronizar relaciones, logs, etc.
-    }
-
-    /**
-     * Validar si se puede eliminar (opcional)
+     * Validar si se puede eliminar
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        // No permitir eliminar si tiene workers asociados
+        if ($model->workers()->exists()) {
+            return [
+                'can_delete' => false,
+                'message' => 'No se puede eliminar porque tiene trabajadores asociados'
+            ];
+        }
 
         return [
             'can_delete' => true,

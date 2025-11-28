@@ -15,6 +15,7 @@ use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\AdjustmentController;
+use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\CustomerNoteController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -60,7 +61,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('permissions/by-resource', [PermissionsController::class, 'getPermissionsByResource']);
             Route::apiResource('permissions', PermissionsController::class);
             Route::apiResource('roles', RolesController::class);
-            Route::apiResource('users', RolesController::class);
+            Route::apiResource('users', UserController::class);
             Route::apiResource('companies', CompanyController::class);
             Route::apiResource('locations', LocationController::class);
             Route::apiResource('workers', WorkerController::class);
@@ -75,6 +76,12 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::patch('images/order', [ProductController::class, 'updateImageOrder']);
             });
 
+            // Product Packages Routes
+            Route::apiResource('product-packages', \App\Http\Controllers\ProductPackageController::class);
+            Route::post('product-packages/search-barcode', [\App\Http\Controllers\ProductPackageController::class, 'searchByBarcode']);
+            Route::post('product-packages/generate-barcode', [\App\Http\Controllers\ProductPackageController::class, 'generateBarcode']);
+
+            Route::get('purchases/stats', [PurchaseController::class, 'purchaseStats']);
             // Purchase Management Routes
             Route::apiResource('purchases', PurchaseController::class);
 
@@ -119,11 +126,25 @@ Route::middleware('auth:sanctum')->group(function () {
                 // Stock queries
                 Route::get('stock/current', [InventoryController::class, 'getCurrentStock']);
 
-                // Reports
+                // Reports (Legacy - deprecated, use /reports instead)
                 Route::get('reports/inventory', [InventoryController::class, 'getInventoryReport']);
                 Route::get('reports/kardex', [InventoryController::class, 'getKardexReport']);
                 Route::get('reports/dashboard', [InventoryController::class, 'getDashboardStats']);
             });
+
+            // Reports Routes (New consolidated reports)
+            Route::prefix('reports')->group(function () {
+                Route::get('dashboard', [App\Http\Controllers\ReportController::class, 'dashboard']);
+                Route::get('inventory-stats', [App\Http\Controllers\ReportController::class, 'inventoryStats']);
+                Route::get('recent-movements', [App\Http\Controllers\ReportController::class, 'recentMovements']);
+                Route::get('movements-by-type', [App\Http\Controllers\ReportController::class, 'movementsByType']);
+                Route::get('top-products', [App\Http\Controllers\ReportController::class, 'topProducts']);
+                Route::get('sales-trend', [App\Http\Controllers\ReportController::class, 'salesTrend']);
+                Route::get('sales-by-location', [App\Http\Controllers\ReportController::class, 'salesByLocation']);
+                Route::get('low-stock-products', [App\Http\Controllers\ReportController::class, 'lowStockProducts']);
+                Route::get('payment-methods', [App\Http\Controllers\ReportController::class, 'paymentMethods']);
+            });
+
             Route::apiResource('customers', CustomerController::class);
             Route::apiResource('units', UnitControllerV2::class);
 

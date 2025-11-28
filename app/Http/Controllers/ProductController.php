@@ -64,10 +64,10 @@ class ProductController extends CrudController
     public function show($id)
     {
         $product = Product::with($this->getShowRelations())->findOrFail($id);
-        
+
         // Agregar unidades disponibles al producto
         $product->available_units = $product->availableUnits();
-        
+
         return new ProductResource($product);
     }
 
@@ -93,6 +93,18 @@ class ProductController extends CrudController
                 $query->whereHas('locations', function ($q) use ($params, $locationId) {
                     $q->where('location_id', $locationId)
                         ->where('product_location.active', $params['is_active']);
+                });
+            }
+        }
+
+        // Filtrar por stock bajo
+        if (isset($params['low_stock']) && $params['low_stock']) {
+            $locationId = $params['location_id'] ?? current_location_id();
+            if ($locationId) {
+                $query->whereHas('locations', function ($q) use ($locationId) {
+                    $q->where('location_id', $locationId)
+                        ->whereRaw('product_location.current_stock < product_location.minimum_stock')
+                        ->where('product_location.minimum_stock', '>', 0);
                 });
             }
         }
