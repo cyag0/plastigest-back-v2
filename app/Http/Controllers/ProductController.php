@@ -6,11 +6,19 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\ProductResource;
 use App\Models\Product;
 use App\Models\ProductImage;
+use App\Models\Movement;
+use App\Models\MovementDetail;
+use App\Models\ProductKardex;
 use App\Constants\Files;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
+use Exception;
 
 class ProductController extends CrudController
 {
@@ -538,6 +546,135 @@ class ProductController extends CrudController
         $product->locations()->syncWithoutDetaching([
             $locationId => $pivotData
         ]);
+    }
+
+    /**
+     * Agregar stock a un producto existente
+     */
+    public function addStock(Request $request, int $id): JsonResponse
+    {
+        try {
+            $validator = Validator::make($request->all(), [
+                'location_id' => 'required|exists:locations,id',
+                'quantity' => 'required|numeric|min:0.001',
+                'unit_cost' => 'required|numeric|min:0',
+                'reason' => 'required|string|max:255',
+                'notes' => 'nullable|string|max:500',
+                'batch_number' => 'nullable|string|max:100',
+                'expiry_date' => 'nullable|date|after_or_equal:today',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'message' => 'Validación fallida',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+
+            $product = Product::findOrFail($id);
+            $locationId = $request->location_id;
+            $quantity = $request->quantity;
+            $unitCost = $request->unit_cost;
+            
+            DB::beginTransaction();
+
+            // Verificar/crear relación product_location
+            $productLocation = DB::table('product_location')
+                ->where('product_id', $id)
+                ->where('location_id', $locationId)
+                ->first();
+
+            $previousStock = $productLocation ? $productLocation->current_stock : 0;
+
+            if ($productLocation) {
+                // Incrementar stock existente
+                DB::table('product_location')
+                    ->where('product_id', $id)
+                    ->where('location_id', $locationId)
+                    ->increment('current_stock', $quantity);
+            } else {
+                // Crear nueva relación con stock
+                DB::table('product_location')->insert([
+                    'product_id' => $id,
+                    'location_id' => $locationId,
+                    'current_stock' => $quantity,
+                    'minimum_stock' => 0,
+                    'maximum_stock' => 0,
+                    'average_cost' => $unitCost,
+                    'last_movement_at' => now(),
+                    'active' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            // Crear movimiento de entrada para trazabilidad
+            $movement = Movement::create([
+                'company_id' => $product->company_id,
+                'location_destination_id' => $locationId,
+                'movement_type' => 'entry',
+                'movement_reason' => 'stock_adjustment',
+                'document_number' => 'ADJ-' . now()->format('YmdHis'),
+                'user_id' => Auth::id(),
+                'movement_date' => now(),
+                'status' => 'closed',
+                'notes' => $request->reason
+            ]);
+
+            // Crear detalle del movimiento
+            $movementDetail = MovementDetail::create([
+                'movement_id' => $movement->id,
+                'product_id' => $id,
+                'quantity' => $quantity,
+                'unit_cost' => $unitCost,
+                'total_cost' => $quantity * $unitCost,
+                'batch_number' => $request->batch_number,
+                'notes' => $request->notes,
+            ]);
+
+            // Registrar en kardex
+            ProductKardex::create([
+                'company_id' => $product->company_id,
+                'location_id' => $locationId,
+                'product_id' => $id,
+                'movement_id' => $movement->id,
+                'movement_detail_id' => $movementDetail->id,
+                'operation_type' => 'entry',
+                'operation_reason' => 'stock_adjustment',
+                'quantity' => $quantity,
+                'unit_cost' => $unitCost,
+                'total_cost' => $quantity * $unitCost,
+                'previous_stock' => $previousStock,
+                'new_stock' => $previousStock + $quantity,
+                'running_average_cost' => $unitCost,
+                'document_number' => $movement->document_number,
+                'batch_number' => $request->batch_number,
+                'expiry_date' => $request->expiry_date,
+                'user_id' => Auth::id(),
+                'operation_date' => now()
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Stock agregado exitosamente',
+                'data' => [
+                    'product_id' => $id,
+                    'location_id' => $locationId,
+                    'quantity_added' => $quantity,
+                    'new_stock' => $previousStock + $quantity,
+                    'movement_id' => $movement->id
+                ]
+            ]);
+
+        } catch (Exception $e) {
+            DB::rollBack();
+            Log::error('Error agregando stock: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Error agregando stock',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 
     /**

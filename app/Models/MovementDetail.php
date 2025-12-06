@@ -26,7 +26,6 @@ class MovementDetail extends Model
         'new_stock',
         'batch_number',
         'expiry_date',
-        'notes',
     ];
 
     protected $casts = [

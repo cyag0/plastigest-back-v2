@@ -28,6 +28,7 @@ class LocationResource extends Resources
             'phone' => $resource->phone,
             'email' => $resource->email,
             'company_id' => $resource->company_id,
+            'is_main' => $resource->is_main ?? false,
         ];
 
         // Campos adicionales según el contexto

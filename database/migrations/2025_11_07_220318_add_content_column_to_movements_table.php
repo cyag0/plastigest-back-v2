@@ -15,7 +15,7 @@ return new class extends Migration
             // Columna JSON para información extra del movimiento
             // Para ventas: método de pago, datos del cliente, etc.
             // Para compras: información del proveedor, etc.
-            $table->json('content')->nullable()->after('notes');
+            $table->json('content')->nullable();
         });
     }
 

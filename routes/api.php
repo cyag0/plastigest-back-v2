@@ -16,6 +16,7 @@ use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\AdjustmentController;
 use App\Http\Controllers\CustomerNoteController;
+use App\Http\Controllers\InventoryTransferController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\UnitController;
@@ -122,6 +123,26 @@ Route::middleware('auth:sanctum')->group(function () {
             // Rutas de notas de clientes
             Route::apiResource('customer-notes', CustomerNoteController::class);
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
+
+            // Rutas de consulta rápida (deben ir antes del apiResource para evitar conflictos)
+            Route::get('inventory-transfers-pending-requests', [InventoryTransferController::class, 'pendingRequests']);
+            Route::get('inventory-transfers-in-transit', [InventoryTransferController::class, 'inTransit']);
+            
+            // Rutas para el flujo de módulos específicos (deben ir antes del apiResource)
+            Route::get('inventory-transfers/petitions', [InventoryTransferController::class, 'petitions']);
+            Route::get('inventory-transfers/shipments', [InventoryTransferController::class, 'shipments']);
+            Route::get('inventory-transfers/receipts', [InventoryTransferController::class, 'receipts']);
+
+            // Rutas de transferencias de inventario (apiResource debe ir después de las rutas específicas)
+            Route::apiResource('inventory-transfers', InventoryTransferController::class);
+            
+            // Rutas de workflow
+            Route::prefix('inventory-transfers/{id}')->group(function () {
+                Route::post('approve', [InventoryTransferController::class, 'approve']);
+                Route::post('reject', [InventoryTransferController::class, 'reject']);
+                Route::post('ship', [InventoryTransferController::class, 'ship']);
+                Route::post('receive', [InventoryTransferController::class, 'receive']);
+            });
         });
     });
 

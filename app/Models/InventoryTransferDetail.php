@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class InventoryTransferDetail extends Model
@@ -11,28 +12,38 @@ class InventoryTransferDetail extends Model
     use HasFactory;
 
     protected $fillable = [
-        'inventory_transfer_id',
+        'transfer_id',
         'product_id',
-        'requested_quantity',
-        'approved_quantity',
-        'confirmed_quantity',
+        'quantity_requested',
+        'quantity_shipped',
+        'quantity_received',
         'unit_cost',
         'total_cost',
-        'status',
-        'notes'
+        'batch_number',
+        'expiry_date',
+        'notes',
+        'damage_report',
+        'has_difference',
+        'difference',
     ];
 
     protected $casts = [
-        'requested_quantity' => 'decimal:3',
-        'approved_quantity' => 'decimal:3',
-        'confirmed_quantity' => 'decimal:3',
+        'quantity_requested' => 'decimal:3',
+        'quantity_shipped' => 'decimal:3',
+        'quantity_received' => 'decimal:3',
         'unit_cost' => 'decimal:2',
-        'total_cost' => 'decimal:2'
+        'total_cost' => 'decimal:2',
+        'expiry_date' => 'date',
+        'has_difference' => 'boolean',
+        'difference' => 'decimal:3',
     ];
 
-    public function inventoryTransfer(): BelongsTo
+    /**
+     * Relaciones
+     */
+    public function transfer(): BelongsTo
     {
-        return $this->belongsTo(InventoryTransfer::class);
+        return $this->belongsTo(InventoryTransfer::class, 'transfer_id');
     }
 
     public function product(): BelongsTo
@@ -40,24 +51,48 @@ class InventoryTransferDetail extends Model
         return $this->belongsTo(Product::class);
     }
 
-    // Scopes
-    public function scopeByStatus($query, $status)
+    /**
+     * Relación con los envíos (productos realmente enviados)
+     */
+    public function shipments(): HasMany
     {
-        return $query->where('status', $status);
+        return $this->hasMany(InventoryTransferShipment::class, 'transfer_detail_id');
     }
 
-    public function scopePending($query)
+    /**
+     * Calcular diferencia entre lo enviado y lo recibido
+     */
+    public function getDifferenceAttribute(): float
     {
-        return $query->where('status', 'pending');
+        return $this->quantity_shipped - $this->quantity_received;
     }
 
-    public function scopeApproved($query)
+    /**
+     * Verificar si tiene faltante
+     */
+    public function getHasDifferenceAttribute(): bool
     {
-        return $query->where('status', 'approved');
+        return $this->difference > 0;
     }
 
-    public function scopeCompleted($query)
+    /**
+     * Calcular el total basado en cantidad solicitada
+     */
+    public function calculateTotal(): void
     {
-        return $query->where('status', 'completed');
+        $this->total_cost = $this->quantity_requested * $this->unit_cost;
+    }
+
+    /**
+     * Boot del modelo
+     */
+    protected static function booted()
+    {
+        static::saving(function ($model) {
+            // Calcular total automáticamente si cambia quantity_requested o unit_cost
+            if ($model->isDirty(['quantity_requested', 'unit_cost'])) {
+                $model->calculateTotal();
+            }
+        });
     }
 }
