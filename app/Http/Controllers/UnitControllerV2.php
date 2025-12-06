@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UnitResource;
 use App\Models\Unit;
+use App\Models\UnitConversion;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -28,7 +29,8 @@ class UnitControllerV2 extends CrudController
     protected function indexRelations(): array
     {
         return [
-            'company'
+            'company',
+            'baseUnit',
         ];
     }
 
@@ -38,7 +40,8 @@ class UnitControllerV2 extends CrudController
     protected function getShowRelations(): array
     {
         return [
-            'company'
+            'company',
+            'baseUnit',
         ];
     }
 
@@ -47,24 +50,24 @@ class UnitControllerV2 extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
+        /** @var \Illuminate\Database\Eloquent\Builder $query */
+        $query;
+
         // Filtro por compañía
         if (isset($params['company_id'])) {
             $query->where('company_id', $params['company_id']);
         }
 
-        // Filtro por estado activo
-        if (isset($params['is_active'])) {
-            $query->where('is_active', $params['is_active']);
+        if (isset($params["only_base"])) {
+            $query->where('base_unit_id', null);
         }
 
-        // Filtro por tipo
-        if (isset($params['type'])) {
-            $query->where('type', $params['type']);
-        }
-
-        // Solo unidades base
-        if (isset($params['is_base'])) {
-            $query->where('is_base', $params['is_base']);
+        // Filtro para obtener unidad base + derivadas de un producto
+        if (isset($params['product_unit_id'])) {
+            $query->where(function ($q) use ($params) {
+                $q->where('id', $params['product_unit_id'])
+                  ->orWhere('base_unit_id', $params['product_unit_id']);
+            });
         }
     }
 
@@ -73,33 +76,12 @@ class UnitControllerV2 extends CrudController
      */
     protected function validateStoreData(Request $request): array
     {
-        // Normalizar is_active
-        if ($request->has('is_active')) {
-            $val = $request->input('is_active');
-            if (!is_bool($val)) {
-                $val = in_array(strtolower((string)$val), ['1', 'true', 'yes', 'on'], true);
-            }
-            $request->merge(['is_active' => (bool)$val]);
-        }
-
-        // Normalizar is_base
-        if ($request->has('is_base')) {
-            $val = $request->input('is_base');
-            if (!is_bool($val)) {
-                $val = in_array(strtolower((string)$val), ['1', 'true', 'yes', 'on'], true);
-            }
-            $request->merge(['is_base' => (bool)$val]);
-        }
-
         return $request->validate([
             'name' => 'required|string|max:100',
-            'symbol' => 'required|string|max:10',
-            'description' => 'nullable|string',
-            'type' => 'required|in:quantity,length,weight,volume,other',
-            'is_base' => 'boolean',
-            'conversion_rate' => 'required|numeric|min:0.000001',
-            'is_active' => 'boolean',
-            'company_id' => 'required|exists:companies,id'
+            'abbreviation' => 'required|string|max:20',
+            'company_id' => 'required|exists:companies,id',
+            'base_unit_id' => 'nullable|exists:units,id',
+            'factor_to_base' => 'nullable|numeric|min:0.000001',
         ]);
     }
 
@@ -108,33 +90,12 @@ class UnitControllerV2 extends CrudController
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        // Normalizar is_active
-        if ($request->has('is_active')) {
-            $val = $request->input('is_active');
-            if (!is_bool($val)) {
-                $val = in_array(strtolower((string)$val), ['1', 'true', 'yes', 'on'], true);
-            }
-            $request->merge(['is_active' => (bool)$val]);
-        }
-
-        // Normalizar is_base
-        if ($request->has('is_base')) {
-            $val = $request->input('is_base');
-            if (!is_bool($val)) {
-                $val = in_array(strtolower((string)$val), ['1', 'true', 'yes', 'on'], true);
-            }
-            $request->merge(['is_base' => (bool)$val]);
-        }
-
         return $request->validate([
             'name' => 'sometimes|required|string|max:100',
-            'symbol' => 'sometimes|required|string|max:10',
-            'description' => 'nullable|string',
-            'type' => 'sometimes|required|in:quantity,length,weight,volume,other',
-            'is_base' => 'boolean',
-            'conversion_rate' => 'sometimes|required|numeric|min:0.000001',
-            'is_active' => 'boolean',
-            'company_id' => 'sometimes|required|exists:companies,id'
+            'abbreviation' => 'sometimes|required|string|max:20',
+            'company_id' => 'sometimes|required|exists:companies,id',
+            'base_unit_id' => 'nullable|exists:units,id',
+            'factor_to_base' => 'nullable|numeric|min:0.000001',
         ]);
     }
 
@@ -146,48 +107,20 @@ class UnitControllerV2 extends CrudController
         try {
             DB::beginTransaction();
 
-            // Normalizar company_id si viene como array
-            $data["company_id"] = isset($data["company_id"][0]) ? $data["company_id"][0] : $data["company_id"];
 
-            // Validar unidad base única por tipo y compañía
-            if (($data['is_base'] ?? false) && $method === 'create') {
-                $existingBase = Unit::where('company_id', $data['company_id'])
-                    ->where('type', $data['type'])
-                    ->where('is_base', true)
-                    ->exists();
-
-                if ($existingBase) {
-                    throw new \Exception('Ya existe una unidad base para el tipo ' . $data['type']);
-                }
-
-                // Si es base, el conversion_rate debe ser 1
-                $data['conversion_rate'] = 1.000000;
+            // Si no viene base_unit_id, se asume unidad base -> factor 1
+            if (!isset($data['base_unit_id'])) {
+                $data['factor_to_base'] = 1;
             }
 
-            // Para update, verificar si está cambiando a unidad base
-            if (($data['is_base'] ?? false) && $method === 'update') {
-                $model = Unit::find($data['id'] ?? null);
-
-                if ($model) {
-                    $existingBase = Unit::where('company_id', $model->company_id)
-                        ->where('type', $data['type'] ?? $model->type)
-                        ->where('is_base', true)
-                        ->where('id', '!=', $model->id)
-                        ->exists();
-
-                    if ($existingBase) {
-                        throw new \Exception('Ya existe una unidad base para el tipo ' . ($data['type'] ?? $model->type));
-                    }
-
-                    // Si es base, el conversion_rate debe ser 1
-                    $data['conversion_rate'] = 1.000000;
-                }
-            }
-
-            // El callback ejecuta el store() o update() del modelo
+            /** @var Unit $model */
             $model = $callback($data);
 
             DB::commit();
+
+            // Recargar relaciones
+            $model->load($this->getShowRelations());
+
             return $model;
         } catch (\Exception $e) {
             DB::rollBack();
@@ -213,5 +146,25 @@ class UnitControllerV2 extends CrudController
             'can_delete' => true,
             'message' => ''
         ];
+    }
+
+    /**
+     * Hook ejecutado antes de eliminar
+     */
+    protected function beforeDestroy(Model $model): void
+    {
+        // Eliminar conversiones relacionadas antes de eliminar la unidad
+        UnitConversion::where('from_unit_id', $model->id)
+            ->orWhere('to_unit_id', $model->id)
+            ->delete();
+    }
+
+    /**
+     * Hook ejecutado después de eliminar (opcional)
+     */
+    protected function afterDestroy(Model $model): void
+    {
+        // Aquí puedes ejecutar lógica adicional después de eliminar
+        // Por ejemplo: limpiar cache, enviar notificaciones, etc.
     }
 }

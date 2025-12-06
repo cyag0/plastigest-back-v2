@@ -6,6 +6,9 @@ use App\Models\Admin\Company;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @mixin IdeHelperSupplier
+ */
 class Supplier extends Model
 {
     /**

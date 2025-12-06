@@ -26,6 +26,7 @@ class CategoryResource extends Resources
             'description' => $resource->description,
             'company_id' => $resource->company_id,
             'is_active' => $resource->is_active ?? true,
+            'created_at' => $resource->created_at ? \Illuminate\Support\Carbon::parse($resource->created_at)->format('Y-m-d') : null,
         ];
 
         // Campos adicionales según el contexto

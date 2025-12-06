@@ -12,6 +12,8 @@ use Exception;
 
 /**
  * Production Model - Wrapper para movements con movement_type = 'production' y movement_reason = 'production'
+ *
+ * @mixin IdeHelperProduction
  */
 class Production extends Movement
 {

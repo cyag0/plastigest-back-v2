@@ -12,6 +12,8 @@ use Exception;
 
 /**
  * Purchase Model - Wrapper para movements con movement_type = 'entry' y movement_reason = 'purchase'
+ *
+ * @mixin IdeHelperPurchase
  */
 class Purchase extends Movement
 {

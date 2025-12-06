@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * SaleDetail Model - Wrapper para movement_details relacionados con ventas
+ *
+ * @mixin IdeHelperSaleDetail
  */
 class SaleDetail extends MovementDetail
 {

@@ -6,6 +6,9 @@ use App\Models\Admin\Location;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
+/**
+ * @mixin IdeHelperProduct
+ */
 class Product extends Model
 {
     use HasFactory;
@@ -64,10 +67,10 @@ class Product extends Model
     /**
      * Get the unit that owns the product.
      */
-    /*     public function unit()
+    public function unit()
     {
         return $this->belongsTo(Unit::class);
-    } */
+    }
 
     /**
      * Get the supplier that owns the product.
@@ -75,6 +78,17 @@ class Product extends Model
     public function supplier()
     {
         return $this->belongsTo(Supplier::class);
+    }
+
+    /**
+     * Get available units for this product (base unit + derived units)
+     */
+    public function availableUnits()
+    {
+        return Unit::where(function ($query) {
+            $query->where('id', $this->unit_id)
+                  ->orWhere('base_unit_id', $this->unit_id);
+        })->get();
     }
 
     /**
@@ -193,5 +207,33 @@ class Product extends Model
         return $this->hasMany(ProductImage::class)
             ->where('is_public', true)
             ->orderBy('sort_order');
+    }
+
+    /**
+     * Get packages of the product.
+     */
+    public function packages()
+    {
+        return $this->hasMany(ProductPackage::class)->orderBy('sort_order');
+    }
+
+    /**
+     * Get active packages of the product.
+     */
+    public function activePackages()
+    {
+        return $this->hasMany(ProductPackage::class)
+            ->where('is_active', true)
+            ->orderBy('sort_order');
+    }
+
+    /**
+     * Get default package of the product.
+     */
+    public function defaultPackage()
+    {
+        return $this->hasOne(ProductPackage::class)
+            ->where('is_default', true)
+            ->where('is_active', true);
     }
 }

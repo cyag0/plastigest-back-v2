@@ -13,6 +13,9 @@ use App\Enums\TransferStatus;
 use Illuminate\Support\Facades\DB;
 use Exception;
 
+/**
+ * @mixin IdeHelperInventoryTransfer
+ */
 class InventoryTransfer extends Model
 {
     use HasFactory;

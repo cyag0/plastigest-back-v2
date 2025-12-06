@@ -11,6 +11,8 @@ use Exception;
 /**
  * Adjustment Model - Wrapper para movements con movement_reason = 'adjustment'
  * Representa ajustes de inventario (mermas, extravíos, ajustes, etc.)
+ *
+ * @mixin IdeHelperAdjustment
  */
 class Adjustment extends Movement
 {
@@ -34,14 +36,17 @@ class Adjustment extends Movement
     {
         parent::booted();
 
-        // Automáticamente filtrar solo ajustes
+        // Automáticamente filtrar ajustes (incluye adjustment, return, damage, loss, shrinkage)
         static::addGlobalScope('adjustment_scope', function (Builder $builder) {
-            $builder->where('movement_reason', 'adjustment');
+            $builder->whereIn('movement_reason', ['adjustment', 'return', 'damage', 'loss', 'shrinkage']);
         });
 
         // Establecer valores por defecto al crear
         static::creating(function ($model) {
-            $model->movement_reason = 'adjustment';
+            // NO sobrescribir movement_reason si ya está definido
+            if (!$model->movement_reason) {
+                $model->movement_reason = 'adjustment';
+            }
             $model->reference_type = 'adjustment';
             $model->status = 'closed'; // Siempre cerrado, afecta stock inmediatamente
         });
@@ -92,7 +97,8 @@ class Adjustment extends Movement
      */
     public function getAdjustmentTypeAttribute(): ?string
     {
-        return $this->content['adjustment_type'] ?? null;
+        // Determinar tipo basado en movement_reason
+        return in_array($this->movement_reason, ['adjustment']) ? 'increment' : 'decrement';
     }
 
     /**
@@ -100,65 +106,14 @@ class Adjustment extends Movement
      */
     public function getReasonAttribute(): ?string
     {
-        return $this->content['reason'] ?? null;
+        return $this->movement_reason;
     }
 
     /**
-     * Accessor para obtener el usuario que realizó el ajuste
+     * Accessor para obtener comentarios
      */
-    public function getAdjustedByAttribute(): ?string
+    public function getCommentsAttribute(): ?string
     {
-        return $this->content['adjusted_by'] ?? null;
-    }
-
-    /**
-     * Validar stock y actualizar cuando se registra el ajuste
-     */
-    public function validateAndUpdateStock(): void
-    {
-        $adjustmentType = $this->content['adjustment_type'] ?? 'decrease';
-
-        foreach ($this->details as $detail) {
-            // Buscar la relación product_location
-            $productLocation = DB::table('product_location')
-                ->where('product_id', $detail->product_id)
-                ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                ->first();
-
-            if (!$productLocation) {
-                throw new Exception(
-                    "El producto '{$detail->product->name}' no existe en la ubicación seleccionada"
-                );
-            }
-
-            if ($adjustmentType === 'decrease') {
-                // Validar que hay suficiente stock para decrementar
-                if ($productLocation->current_stock < $detail->quantity) {
-                    throw new Exception(
-                        "Stock insuficiente para el producto '{$detail->product->name}'. " .
-                            "Stock disponible: {$productLocation->current_stock}, " .
-                            "Cantidad a decrementar: {$detail->quantity}"
-                    );
-                }
-
-                // Decrementar stock
-                DB::table('product_location')
-                    ->where('product_id', $detail->product_id)
-                    ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                    ->decrement('current_stock', $detail->quantity);
-
-                // Establecer movement_type como exit
-                $this->movement_type = 'exit';
-            } else {
-                // Incrementar stock
-                DB::table('product_location')
-                    ->where('product_id', $detail->product_id)
-                    ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                    ->increment('current_stock', $detail->quantity);
-
-                // Establecer movement_type como entry
-                $this->movement_type = 'entry';
-            }
-        }
+        return $this->content['comments'] ?? null;
     }
 }

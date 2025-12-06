@@ -12,6 +12,8 @@ use Exception;
 
 /**
  * Sale Model - Wrapper para movements con movement_type = 'exit' y movement_reason = 'sale'
+ *
+ * @mixin IdeHelperSale
  */
 class Sale extends Movement
 {

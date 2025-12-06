@@ -2,9 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Admin\Customer;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @mixin IdeHelperCustomerNote
+ */
 class CustomerNote extends Model
 {
     protected $fillable = [

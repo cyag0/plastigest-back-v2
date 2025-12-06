@@ -34,6 +34,7 @@ class PurchaseResource extends Resources
             'location_id' => $resource->location_destination_id ?? $resource->location_id,
             'supplier_id' => $resource->supplier_id,
             'comments' => $resource->comments ?? $resource->notes,
+            'created_at' => $resource->created_at,
         ];
 
         if ($resource->relationLoaded('details')) {

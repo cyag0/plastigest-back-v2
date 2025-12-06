@@ -3,11 +3,16 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+
+use App\Models\Admin\Worker;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
+/**
+ * @mixin IdeHelperUser
+ */
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
@@ -47,5 +52,22 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    public function worker()
+    {
+        return $this->hasOne(Worker::class);
+    }
+
+    public function companies()
+    {
+        return $this->hasManyThrough(
+            Company::class,
+            Worker::class,
+            'user_id', // Foreign key on Worker table...
+            'id', // Foreign key on Company table...
+            'id', // Local key on User table...
+            'company_id' // Local key on Worker table...
+        );
     }
 }

@@ -77,16 +77,12 @@ class WorkerController extends CrudController
     {
         return $request->validate([
             'company_id' => 'required|exists:companies,id',
+            'user_id' => 'required|exists:users,id',
             'position' => 'nullable|string|max:100',
             'department' => 'nullable|string|max:100',
             'hire_date' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0',
             'is_active' => 'boolean',
-
-            // Datos del usuario a crear
-            'user.name' => 'required|string|max:255',
-            'user.email' => 'required|string|email|max:255|unique:users,email',
-            'user.password' => 'required|string|min:8',
 
             // Relaciones many-to-many
             'role_ids' => 'nullable|array',
@@ -105,17 +101,12 @@ class WorkerController extends CrudController
     {
         return $request->validate([
             'company_id' => 'nullable|exists:companies,id',
+            'user_id' => 'nullable|exists:users,id',
             'position' => 'nullable|string|max:100',
             'department' => 'nullable|string|max:100',
             'hire_date' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0',
             'is_active' => 'boolean',
-
-            // Datos del usuario (opcional en update)
-            'user' => 'nullable|array',
-            'user.name' => 'nullable|string|max:255',
-            'user.email' => 'nullable|string|email|max:255|unique:users,email,' . $model->user_id,
-            'user.password' => 'nullable|string|min:8',
 
             // Relaciones many-to-many
             'role_ids' => 'nullable|array',
@@ -132,19 +123,7 @@ class WorkerController extends CrudController
      */
     protected function processStoreData(array $validatedData, Request $request): array
     {
-        // Crear el usuario automáticamente
-        $user = User::create([
-            'name' => $validatedData['user']['name'],
-            'email' => $validatedData['user']['email'],
-            'password' => Hash::make($validatedData['user']['password']),
-        ]);
-
-        // Agregar el user_id al worker
-        $validatedData['user_id'] = $user->id;
-
-        // Remover datos del usuario que no pertenecen al worker
-        unset($validatedData['user']);
-
+        // Solo devolver los datos del worker
         return $validatedData;
     }
 
@@ -153,27 +132,7 @@ class WorkerController extends CrudController
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
-        // Actualizar usuario si se proporcionan datos
-        if (isset($validatedData['user']['name']) || isset($validatedData['user']['email']) || isset($validatedData['user']['password'])) {
-            $userData = [];
-            if (isset($validatedData['user']['name'])) {
-                $userData['name'] = $validatedData['user']['name'];
-            }
-            if (isset($validatedData['user']['email'])) {
-                $userData['email'] = $validatedData['user']['email'];
-            }
-            if (isset($validatedData['user']['password'])) {
-                $userData['password'] = Hash::make($validatedData['user']['password']);
-            }
-
-            if (!empty($userData)) {
-                $model->user()->update($userData);
-            }
-        }
-
-        // Remover datos del usuario que no pertenecen al worker
-        unset($validatedData['user']);
-
+        // Solo devolver los datos del worker
         return $validatedData;
     }
 

@@ -8,6 +8,9 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 
+/**
+ * @mixin IdeHelperProductKardex
+ */
 class ProductKardex extends Model
 {
     use HasFactory;

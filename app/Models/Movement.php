@@ -9,6 +9,9 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 
+/**
+ * @mixin IdeHelperMovement
+ */
 class Movement extends Model
 {
     use HasFactory;

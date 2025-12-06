@@ -15,8 +15,11 @@ use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\AdjustmentController;
+use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\CustomerNoteController;
 use App\Http\Controllers\InventoryTransferController;
+use App\Http\Controllers\InventoryCountController;
+use App\Http\Controllers\InventoryCountDetailController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\UnitController;
@@ -143,6 +146,11 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('ship', [InventoryTransferController::class, 'ship']);
                 Route::post('receive', [InventoryTransferController::class, 'receive']);
             });
+
+            // Rutas de conteo de inventario
+            Route::get('inventory-counts/{id}/pdf-url', [InventoryCountController::class, 'generatePdfUrl']);
+            Route::apiResource('inventory-counts', InventoryCountController::class);
+            Route::apiResource('inventory-counts-details', InventoryCountDetailController::class);
         });
     });
 

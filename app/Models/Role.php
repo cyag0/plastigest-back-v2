@@ -6,6 +6,9 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
+/**
+ * @mixin IdeHelperRole
+ */
 class Role extends Model
 {
     protected $fillable = [
@@ -30,8 +33,8 @@ class Role extends Model
     /**
      * The workers that belong to this role.
      */
-    public function workers(): BelongsToMany
+    /* public function workers(): BelongsToMany
     {
         return $this->belongsToMany(Worker::class, 'worker_roles');
-    }
+    } */
 }
