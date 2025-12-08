@@ -120,7 +120,7 @@ class InventoryCountDetailController extends CrudController
             if ($method === 'create') {
                 $inventoryCount = $detail->inventoryCount;
                 if ($inventoryCount->status === 'planning') {
-                    $inventoryCount->status = 'in_progress';
+                    $inventoryCount->status = 'counting';
                     $inventoryCount->save();
                 }
             }

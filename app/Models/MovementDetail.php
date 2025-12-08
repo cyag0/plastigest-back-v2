@@ -51,6 +51,11 @@ class MovementDetail extends Model
         return $this->belongsTo(Product::class);
     }
 
+    public function unit(): BelongsTo
+    {
+        return $this->belongsTo(Unit::class);
+    }
+
     public function kardexRecords(): HasMany
     {
         return $this->hasMany(ProductKardex::class);

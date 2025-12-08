@@ -21,6 +21,7 @@ enum Resources: string
     case REPORTS = 'reports';
     case DASHBOARD = 'dashboard';
     case SETTINGS = 'settings';
+    case WORKERS = 'workers';
 
     /**
      * Obtener el label legible del recurso
@@ -45,6 +46,7 @@ enum Resources: string
             self::REPORTS => 'Reportes',
             self::DASHBOARD => 'Panel Principal',
             self::SETTINGS => 'Configuración',
+            self::WORKERS => 'Trabajadores',
         };
     }
 
@@ -71,6 +73,7 @@ enum Resources: string
             self::REPORTS => 'Generación de reportes',
             self::DASHBOARD => 'Tablero de control principal',
             self::SETTINGS => 'Configuraciones del sistema',
+            self::WORKERS => 'Gestión de trabajadores de la empresa',
         };
     }
 
@@ -97,6 +100,7 @@ enum Resources: string
             self::REPORTS => 'chart-line',
             self::DASHBOARD => 'view-dashboard',
             self::SETTINGS => 'cog',
+            self::WORKERS => 'account-hard-hat',
         };
     }
 

@@ -10,6 +10,8 @@ use App\Models\Movement;
 use App\Models\MovementDetail;
 use App\Models\ProductKardex;
 use App\Constants\Files;
+use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -19,6 +21,8 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Exception;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Picqer\Barcode\BarcodeGeneratorPNG;
 
 class ProductController extends CrudController
 {
@@ -59,6 +63,7 @@ class ProductController extends CrudController
             'locations',
             'unit',
             'productIngredients.ingredient',
+            'mainImage',
             'images' => function ($query) {
                 $query->orderBy('sort_order');
             },
@@ -84,9 +89,15 @@ class ProductController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
+        $location = CurrentLocation::get();
+        $locationId = $location ? $location->id : (isset($params['location_id']) ? $params['location_id'] : null);
+
         // Filtrar por empresa
         if (isset($params['company_id'])) {
-            $query->where('company_id', $params['company_id']);
+            $company = CurrentCompany::get();
+            $companyId = $company ? $company->id : (isset($params['company_id']) ? $params['company_id'] : null);
+
+            $query->where('company_id', $companyId);
         }
 
         // Filtrar por categoría
@@ -96,7 +107,7 @@ class ProductController extends CrudController
 
         // Filtrar por estado activo en la ubicación actual
         if (isset($params['is_active'])) {
-            $locationId = $params['location_id'] ?? current_location_id();
+
             if ($locationId) {
                 $query->whereHas('locations', function ($q) use ($params, $locationId) {
                     $q->where('location_id', $locationId)
@@ -107,7 +118,6 @@ class ProductController extends CrudController
 
         // Filtrar por stock bajo
         if (isset($params['low_stock']) && $params['low_stock']) {
-            $locationId = $params['location_id'] ?? current_location_id();
             if ($locationId) {
                 $query->whereHas('locations', function ($q) use ($locationId) {
                     $q->where('location_id', $locationId)
@@ -277,6 +287,8 @@ class ProductController extends CrudController
         // Remover is_active ya que ahora se maneja en el pivot table
         unset($validatedData['is_active']);
 
+        Log::info('Mensaje informativo', ['data' => $request->all()]);
+
         return $validatedData;
     }
 
@@ -285,6 +297,7 @@ class ProductController extends CrudController
      */
     protected function afterStore(Model $model, Request $request): void
     {
+
         // Procesar imágenes del producto si se enviaron
         $this->handleProductImages($model, $request);
 
@@ -300,6 +313,7 @@ class ProductController extends CrudController
      */
     protected function afterUpdate(Model $model, Request $request): void
     {
+
         // Procesar imágenes del producto si se enviaron
         $this->handleProductImages($model, $request, true);
 
@@ -361,15 +375,19 @@ class ProductController extends CrudController
     {
         $data = $request->all();
         $newImages = $data['product_images'] ?? [];
-
         // Verificar si se enviaron imágenes
         if (empty($newImages)) {
             return;
         }
 
         if ($isUpdate) {
-            $existingImages = $product->images;
-            $oldFileNames = $existingImages->pluck('image_path')->toArray(); // Solo nombres, no paths completos
+            $existingImages = $product->images ?? null;
+            $oldFileNames = $existingImages ? $existingImages->pluck('image_path')->toArray() : []; // Solo nombres, no paths completos
+
+            Log::info('Manejo de imágenes en actualización', [
+                'oldFileNames' => $oldFileNames,
+                'newImagesCount' => count($newImages)
+            ]);
 
             // Reemplazar archivos usando la utilidad (por nombres)
             $result = AppUploadUtil::syncFilesByNames(
@@ -601,7 +619,7 @@ class ProductController extends CrudController
             $locationId = $request->location_id;
             $quantity = $request->quantity;
             $unitCost = $request->unit_cost;
-            
+
             DB::beginTransaction();
 
             // Verificar/crear relación product_location
@@ -692,7 +710,6 @@ class ProductController extends CrudController
                     'movement_id' => $movement->id
                 ]
             ]);
-
         } catch (Exception $e) {
             DB::rollBack();
             Log::error('Error agregando stock: ' . $e->getMessage());
@@ -731,6 +748,159 @@ class ProductController extends CrudController
                     ]);
                 }
             }
+        }
+    }
+
+    /**
+     * Generar URL firmada para el PDF de etiquetas
+     */
+    public function generatePdfUrl(Request $request, $productId)
+    {
+        try {
+            // Validar quantity
+            $quantity = $request->input('quantity') ?? $request->query('quantity', 1);
+
+            validator(['quantity' => $quantity], [
+                'quantity' => 'required|integer|min:1|max:100'
+            ])->validate();
+
+            // Verificar que el producto existe
+            $product = Product::findOrFail($productId);
+
+            // Generar URL firmada que expira en 1 hora
+            $signedUrl = \Illuminate\Support\Facades\URL::temporarySignedRoute(
+                'products.labels.pdf',
+                now()->addHour(),
+                ['product' => $productId, 'quantity' => $quantity]
+            );
+
+            return response()->json([
+                'url' => $signedUrl,
+                'expires_at' => now()->addHour()->toISOString(),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al generar URL del PDF: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Genera etiquetas de código de barras para impresión térmica
+     */
+    public function printLabels(Request $request, $productId)
+    {
+        try {
+            // Aceptar quantity desde query params o body
+            $quantity = $request->input('quantity') ?? $request->query('quantity');
+
+            $validated = validator(['quantity' => $quantity], [
+                'quantity' => 'required|integer|min:1|max:100'
+            ])->validate();
+
+            $product = Product::findOrFail($productId);
+            $quantity = $validated['quantity'];
+
+            // Generar código de barras como imagen base64
+            $generator = new BarcodeGeneratorPNG();
+            $barcodeData = $generator->getBarcode($product->code, $generator::TYPE_CODE_128);
+            $barcodeBase64 = base64_encode($barcodeData);
+
+            // HTML optimizado para impresora térmica (58mm típicamente)
+            $html = '
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Etiquetas - ' . htmlspecialchars($product->name) . '</title>
+    <style>
+        @page {
+            size: 58mm auto;
+            margin: 2mm;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            width: 58mm;
+            font-size: 10pt;
+        }
+        .label {
+            page-break-after: always;
+            padding: 3mm;
+            text-align: center;
+            border: 1px dashed #ccc;
+            margin-bottom: 2mm;
+        }
+        .label:last-child {
+            page-break-after: auto;
+            margin-bottom: 0;
+        }
+        .product-name {
+            font-weight: bold;
+            font-size: 11pt;
+            margin-bottom: 2mm;
+            word-wrap: break-word;
+        }
+        .product-code {
+            font-size: 9pt;
+            margin-bottom: 2mm;
+            color: #333;
+        }
+        .barcode-container {
+            margin: 2mm 0;
+        }
+        .barcode-image {
+            width: 100%;
+            max-width: 50mm;
+            height: auto;
+        }
+        .price {
+            font-size: 12pt;
+            font-weight: bold;
+            margin-top: 2mm;
+        }
+    </style>
+</head>
+<body>';
+
+            // Generar etiquetas según la cantidad solicitada
+            for ($i = 0; $i < $quantity; $i++) {
+                $html .= '
+    <div class="label">
+        <div class="product-name">' . htmlspecialchars($product->name) . '</div>
+        <div class="product-code">Código: ' . htmlspecialchars($product->code) . '</div>
+        <div class="barcode-container">
+            <img src="data:image/png;base64,' . $barcodeBase64 . '" alt="Barcode" class="barcode-image">
+        </div>';
+
+                if ($product->sale_price) {
+                    $html .= '
+        <div class="price">$' . number_format($product->sale_price, 2) . '</div>';
+                }
+
+                $html .= '
+    </div>';
+            }
+
+            $html .= '
+</body>
+</html>';
+
+            // Generar PDF
+            $pdf = Pdf::loadHTML($html);
+
+            // Configurar el tamaño de página para impresora térmica de 58mm
+            $pdf->setPaper([0, 0, 165, 500], 'portrait'); // 58mm = 165 puntos aproximadamente
+
+            return $pdf->stream('etiquetas-' . $product->code . '.pdf');
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al generar el PDF: ' . $e->getMessage()
+            ], 500);
         }
     }
 }

@@ -6,12 +6,17 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\SaleResource;
 use App\Models\Sale;
 use App\Models\SaleDetail;
+use App\Models\Product;
 use App\Enums\SaleStatus;
+use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
+use App\Services\NotificationService;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class SaleController extends CrudController
 {
@@ -79,12 +84,6 @@ class SaleController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         return $request->validate([
-            'location_id' => 'required|exists:locations,id',
-            'company_id' => 'required|exists:companies,id',
-            'movement_date' => 'required|date',
-            'document_number' => 'nullable|string|max:255',
-            'comments' => 'nullable|string',
-
             // Información del cliente (opcional)
             'customer_name' => 'nullable|string|max:255',
             'customer_phone' => 'nullable|string|max:20',
@@ -92,8 +91,9 @@ class SaleController extends CrudController
 
             // Método de pago
             'payment_method' => 'required|in:efectivo,tarjeta,transferencia',
-            'received_amount' => 'required_if:payment_method,efectivo|nullable|numeric|min:0',
             'notes' => 'nullable|string',
+            'document_number' => 'nullable|string|max:255',
+            'comments' => 'nullable|string',
 
             // Detalles de la venta
             'details' => 'required|array|min:1',
@@ -109,12 +109,6 @@ class SaleController extends CrudController
     protected function validateUpdateData(Request $request, Model $model): array
     {
         return $request->validate([
-            'location_id' => 'sometimes|required|exists:locations,id',
-            'company_id' => 'required|exists:companies,id',
-            'movement_date' => 'sometimes|required|date',
-            'document_number' => 'nullable|string|max:255',
-            'comments' => 'nullable|string',
-
             // Información del cliente (opcional)
             'customer_name' => 'nullable|string|max:255',
             'customer_phone' => 'nullable|string|max:20',
@@ -122,8 +116,9 @@ class SaleController extends CrudController
 
             // Método de pago
             'payment_method' => 'sometimes|required|in:efectivo,tarjeta,transferencia',
-            'received_amount' => 'required_if:payment_method,efectivo|nullable|numeric|min:0',
             'notes' => 'nullable|string',
+            'document_number' => 'nullable|string|max:255',
+            'comments' => 'nullable|string',
 
             // Detalles de la venta
             'details' => 'sometimes|required|array|min:1',
@@ -140,6 +135,12 @@ class SaleController extends CrudController
     {
         try {
             DB::beginTransaction();
+
+            $user = Auth::user();
+
+            // Obtener company y location del contexto
+            $company = CurrentCompany::get();
+            $location = CurrentLocation::get();
 
             // Preparar datos del content
             $content = [
@@ -158,20 +159,14 @@ class SaleController extends CrudController
                 $content['comments'] = $data['comments'];
             }
 
-            // Si es efectivo, agregar monto recibido
-            if ($data['payment_method'] === 'efectivo') {
-                $content['received_amount'] = $data['received_amount'] ?? 0;
-            }
-
-            $user = Auth::user();
 
             // Preparar datos de la venta
             $saleData = [
-                'location_origin_id' => $data['location_id'],
-                'location_destination_id' => $data['location_id'],
-                'movement_date' => $data['movement_date'],
+                'location_origin_id' => $location->id,
+                'location_destination_id' => $location->id,
+                'movement_date' => $data['movement_date'] ?? now()->toDateString(),
                 'content' => $content,
-                'company_id' => $data['company_id'] ?? null,
+                'company_id' => $company->id,
                 'user_id' => $user->id,
             ];
 
@@ -183,12 +178,12 @@ class SaleController extends CrudController
             $saleData['total_cost'] = $totalCost;
 
             // Validar monto recibido para efectivo
-            if ($data['payment_method'] === 'efectivo' && isset($data['received_amount'])) {
+            /* if ($data['payment_method'] === 'efectivo' && isset($data['received_amount'])) {
                 if ($data['received_amount'] < $totalCost) {
                     throw new \Exception('El monto recibido debe ser mayor o igual al total de la venta');
                 }
             }
-
+ */
             // Crear o actualizar venta
             /** @var Sale $sale */
             $sale = $callback($saleData);
@@ -216,6 +211,9 @@ class SaleController extends CrudController
             if ($method === 'create') {
                 // Usar transitionTo que maneja validación y actualización de stock
                 $sale->transitionTo(SaleStatus::CLOSED);
+
+                // Verificar stock bajo después de la venta
+                $this->checkLowStockAndNotify($sale);
             }
 
             // Recargar relaciones
@@ -330,5 +328,393 @@ class SaleController extends CrudController
             'can_delete' => true,
             'message' => ''
         ];
+    }
+
+    /**
+     * Obtener estadísticas y reportes de ventas
+     */
+    public function salesStats(Request $request)
+    {
+        try {
+            $locationId = $request->input('location_id') ?? current_location_id();
+            $startDate = $request->input('start_date');
+            $endDate = $request->input('end_date');
+
+            // Query base
+            $query = Sale::where('location_origin_id', $locationId);
+
+            if ($startDate) {
+                $query->where('movement_date', '>=', $startDate);
+            }
+            if ($endDate) {
+                $query->where('movement_date', '<=', $endDate);
+            }
+
+            // Estadísticas generales
+            $totalSales = (clone $query)->count();
+            $totalAmount = (clone $query)->sum('total_cost');
+            $averageAmount = $totalSales > 0 ? $totalAmount / $totalSales : 0;
+
+            // Ventas del día
+            $todaySales = (clone $query)
+                ->whereDate('movement_date', now()->toDateString())
+                ->count();
+            $todayAmount = (clone $query)
+                ->whereDate('movement_date', now()->toDateString())
+                ->sum('total_cost');
+
+            // Ventas por estado
+            $byStatus = (clone $query)
+                ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_cost) as total'))
+                ->groupBy('status')
+                ->get()
+                ->mapWithKeys(function ($item) {
+                    // Convertir enum a string si es necesario
+                    $statusValue = $item->status instanceof \BackedEnum ? $item->status->value : $item->status;
+
+                    $statusLabel = match ($statusValue) {
+                        'draft' => 'Borrador',
+                        'processed' => 'Procesada',
+                        'closed' => 'Cerrada',
+                        'cancelled' => 'Cancelada',
+                        default => $statusValue
+                    };
+
+                    return [$statusValue => [
+                        'label' => $statusLabel,
+                        'count' => $item->count,
+                        'total' => (float) $item->total,
+                    ]];
+                });
+
+            // Ventas por método de pago
+            $byPaymentMethod = (clone $query)
+                ->select(DB::raw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.payment_method')) as payment_method"))
+                ->selectRaw('COUNT(*) as count')
+                ->selectRaw('SUM(total_cost) as total')
+                ->groupBy('payment_method')
+                ->get()
+                ->mapWithKeys(function ($item) {
+                    $methodLabel = match ($item->payment_method) {
+                        'efectivo' => 'Efectivo',
+                        'tarjeta' => 'Tarjeta',
+                        'transferencia' => 'Transferencia',
+                        default => $item->payment_method ?? 'Sin especificar'
+                    };
+
+                    return [$item->payment_method ?? 'unknown' => [
+                        'label' => $methodLabel,
+                        'count' => $item->count,
+                        'total' => (float) $item->total,
+                    ]];
+                });
+
+            // Productos más vendidos
+            $topProducts = DB::table('movements_details')
+                ->join('movements', 'movements_details.movement_id', '=', 'movements.id')
+                ->join('products', 'movements_details.product_id', '=', 'products.id')
+                ->where('movements.location_origin_id', $locationId)
+                ->where('movements.movement_type', 'exit')
+                ->where('movements.movement_reason', 'sale')
+                ->when($startDate, function ($q) use ($startDate) {
+                    return $q->where('movements.movement_date', '>=', $startDate);
+                })
+                ->when($endDate, function ($q) use ($endDate) {
+                    return $q->where('movements.movement_date', '<=', $endDate);
+                })
+                ->select(
+                    'products.id',
+                    'products.name',
+                    DB::raw('SUM(movements_details.quantity) as total_quantity'),
+                    DB::raw('SUM(movements_details.total_cost) as total_amount')
+                )
+                ->groupBy('products.id', 'products.name')
+                ->orderByDesc('total_amount')
+                ->limit(10)
+                ->get()
+                ->map(function ($item) {
+                    return [
+                        'product_id' => $item->id,
+                        'product_name' => $item->name,
+                        'quantity_sold' => (float) $item->total_quantity,
+                        'total_amount' => (float) $item->total_amount,
+                    ];
+                });
+
+            // Tendencia de ventas (últimos 6 meses)
+            $sixMonthsAgo = now()->subMonths(6)->startOfMonth();
+            $salesTrend = (clone $query)
+                ->where('movement_date', '>=', $sixMonthsAgo)
+                ->select(
+                    DB::raw('DATE_FORMAT(movement_date, "%Y-%m") as month'),
+                    DB::raw('COUNT(*) as count'),
+                    DB::raw('SUM(total_cost) as total')
+                )
+                ->groupBy('month')
+                ->orderBy('month')
+                ->get()
+                ->map(function ($item) {
+                    return [
+                        'month' => $item->month,
+                        'count' => $item->count,
+                        'total' => (float) $item->total,
+                    ];
+                });
+
+            // Ventas completadas y canceladas
+            $closedCount = (clone $query)
+                ->where('status', 'closed')
+                ->count();
+
+            $cancelledCount = (clone $query)
+                ->where('status', 'cancelled')
+                ->count();
+
+            // Venta promedio por día
+            $daysInRange = $startDate && $endDate
+                ? max(1, now()->parse($endDate)->diffInDays(now()->parse($startDate)) + 1)
+                : 30; // Default 30 días si no hay rango
+
+            $averagePerDay = $totalAmount / $daysInRange;
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'overview' => [
+                        'total_sales' => $totalSales,
+                        'total_amount' => (float) $totalAmount,
+                        'average_amount' => (float) $averageAmount,
+                        'closed_count' => $closedCount,
+                        'cancelled_count' => $cancelledCount,
+                        'average_per_day' => (float) $averagePerDay,
+                        'today_sales' => $todaySales,
+                        'today_amount' => (float) $todayAmount,
+                    ],
+                    'by_status' => $byStatus,
+                    'by_payment_method' => $byPaymentMethod,
+                    'top_products' => $topProducts,
+                    'sales_trend' => $salesTrend,
+                ]
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener estadísticas: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Verificar stock bajo y enviar notificaciones
+     */
+    protected function checkLowStockAndNotify(Sale $sale): void
+    {
+        try {
+            $locationId = $sale->location_origin_id;
+            $companyId = $sale->company_id;
+
+            foreach ($sale->details as $detail) {
+
+                $productLocation = DB::table('product_location')
+                    ->where('product_id', $detail->product_id)
+                    ->where('location_id', $locationId)
+                    ->first();
+
+                if (!$productLocation || !$productLocation->minimum_stock) {
+                    continue;
+                }
+
+                $currentStock = $productLocation->current_stock ?? 0;
+                $minimumStock = $productLocation->minimum_stock;
+
+                // Si el stock actual es menor al mínimo, enviar notificación
+                if ($currentStock < $minimumStock) {
+                    $product = Product::find($detail->product_id);
+
+                    NotificationService::notifyLowStock(
+                        $companyId,
+                        $locationId,
+                        $product,
+                        $currentStock,
+                        $minimumStock
+                    );
+                }
+            }
+        } catch (\Exception $e) {
+            // Log error pero no fallar la venta
+            Log::error('Error al verificar stock bajo: ' . $e->getMessage(), [
+                'sale_id' => $sale->id,
+                'exception' => $e,
+            ]);
+        }
+    }
+
+    /**
+     * Obtener información de corte de caja por fecha
+     */
+    public function cashRegister(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'date' => 'required|date',
+                'location_id' => 'nullable|exists:locations,id',
+                'company_id' => 'nullable|exists:companies,id',
+            ]);
+
+            $date = $validated['date'];
+            $locationId = $validated['location_id'] ?? CurrentLocation::get()?->id;
+            $company = CurrentCompany::get();
+
+            // Si no hay compañía del contexto, usar la del parámetro o la del usuario
+            $companyId = $validated['company_id'] ?? $company?->id ?? Auth::user()?->company_id ?? 1;
+
+            // Obtener todas las ventas del día (closed y processed)
+            $sales = Sale::where('company_id', $companyId)
+                ->when($locationId, function ($q) use ($locationId) {
+                    $q->where('location_origin_id', $locationId);
+                })
+                ->whereDate('movement_date', $date)
+                ->whereIn('status', ['closed', 'processed'])
+                ->with(['details.product'])
+                ->get();
+
+            // Calcular totales por método de pago
+            $paymentMethods = [
+                'efectivo' => 0,
+                'tarjeta' => 0,
+                'transferencia' => 0,
+            ];
+
+            $totalSales = 0;
+            $totalProducts = 0;
+            $salesCount = $sales->count();
+
+            foreach ($sales as $sale) {
+                $saleTotal = $sale->details->sum(function ($detail) {
+                    return $detail->quantity * $detail->unit_cost;
+                });
+
+                $totalSales += $saleTotal;
+                $totalProducts += $sale->details->sum('quantity');
+
+                $paymentMethod = $sale->content['payment_method'] ?? 'efectivo';
+                if (isset($paymentMethods[$paymentMethod])) {
+                    $paymentMethods[$paymentMethod] += $saleTotal;
+                }
+            }
+
+            // Productos más vendidos del día
+            $topProducts = [];
+            $productSales = [];
+
+            foreach ($sales as $sale) {
+                foreach ($sale->details as $detail) {
+                    $productId = $detail->product_id;
+                    if (!isset($productSales[$productId])) {
+                        $productSales[$productId] = [
+                            'product' => $detail->product,
+                            'quantity' => 0,
+                            'total' => 0,
+                        ];
+                    }
+                    $productSales[$productId]['quantity'] += $detail->quantity;
+                    $productSales[$productId]['total'] += $detail->quantity * $detail->unit_cost;
+                }
+            }
+
+            // Ordenar por cantidad vendida
+            usort($productSales, function ($a, $b) {
+                return $b['quantity'] <=> $a['quantity'];
+            });
+
+            $topProducts = array_slice($productSales, 0, 5);
+
+            // Ventas por hora
+            $salesByHour = [];
+            for ($i = 0; $i < 24; $i++) {
+                $salesByHour[$i] = [
+                    'hour' => $i,
+                    'count' => 0,
+                    'total' => 0,
+                ];
+            }
+
+            foreach ($sales as $sale) {
+                $hour = (int) date('H', strtotime($sale->created_at));
+                $saleTotal = $sale->details->sum(function ($detail) {
+                    return $detail->quantity * $detail->unit_cost;
+                });
+
+                $salesByHour[$hour]['count']++;
+                $salesByHour[$hour]['total'] += $saleTotal;
+            }
+
+            // Filtrar solo horas con ventas
+            $salesByHour = array_values(array_filter($salesByHour, function ($hour) {
+                return $hour['count'] > 0;
+            }));
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'date' => $date,
+                    'location_id' => $locationId,
+                    'summary' => [
+                        'total_sales' => round($totalSales, 2),
+                        'sales_count' => $salesCount,
+                        'total_products' => $totalProducts,
+                        'average_ticket' => $salesCount > 0 ? round($totalSales / $salesCount, 2) : 0,
+                    ],
+                    'payment_methods' => [
+                        [
+                            'method' => 'Efectivo',
+                            'total' => round($paymentMethods['efectivo'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['efectivo'] / $totalSales) * 100, 1) : 0,
+                        ],
+                        [
+                            'method' => 'Tarjeta',
+                            'total' => round($paymentMethods['tarjeta'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['tarjeta'] / $totalSales) * 100, 1) : 0,
+                        ],
+                        [
+                            'method' => 'Transferencia',
+                            'total' => round($paymentMethods['transferencia'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['transferencia'] / $totalSales) * 100, 1) : 0,
+                        ],
+                    ],
+                    'top_products' => array_map(function ($item) {
+                        return [
+                            'id' => $item['product']->id,
+                            'name' => $item['product']->name,
+                            'code' => $item['product']->code,
+                            'quantity' => $item['quantity'],
+                            'total' => round($item['total'], 2),
+                        ];
+                    }, $topProducts),
+                    'sales_by_hour' => $salesByHour,
+                    'sales' => $sales->map(function ($sale) {
+                        return [
+                            'id' => $sale->id,
+                            'document_number' => $sale->document_number,
+                            'customer_name' => $sale->content['customer_name'] ?? 'Cliente General',
+                            'payment_method' => $sale->content['payment_method'] ?? 'efectivo',
+                            'total' => round($sale->details->sum(function ($detail) {
+                                return $detail->quantity * $detail->unit_cost;
+                            }), 2),
+                            'created_at' => $sale->created_at->format('H:i:s'),
+                        ];
+                    }),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error al obtener corte de caja: ' . $e->getMessage(), [
+                'exception' => $e,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener corte de caja: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }

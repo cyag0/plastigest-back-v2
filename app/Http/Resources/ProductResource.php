@@ -94,11 +94,7 @@ class ProductResource extends Resources
         }
 
         if ($editing) {
-            if ($this->relationLoaded('images')) {
-                $item["product_images"] = $this->images->map(function ($image) {
-                    return AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $image->image_path);
-                });
-            }
+
 
             if ($this->relationLoaded('productIngredients')) {
                 $item['ingredients'] = $this->productIngredients->map(function ($productIngredient) {
@@ -116,6 +112,12 @@ class ProductResource extends Resources
             return $item;
         }
 
+        if ($this->relationLoaded('images')) {
+            $item["product_images"] = $this->images->map(function ($image) {
+                return AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $image->image_path);
+            });
+        }
+
         if ($this->relationLoaded('mainImage')) {
             $mainImage = $this->mainImage->image_path ?? null;
 
@@ -123,8 +125,6 @@ class ProductResource extends Resources
                 $item["main_image"] = AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $mainImage);
             }
         }
-
-
 
         return $item;
     }

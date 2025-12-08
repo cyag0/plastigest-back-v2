@@ -501,7 +501,7 @@ class ReportController extends Controller
                 $query->where('product_location.location_id', $locationId);
             })
             ->whereRaw('product_location.current_stock < product_location.minimum_stock')
-            ->whereRaw('product_location.current_stock > 0')
+            //->whereRaw('product_location.current_stock > 0')
             ->count();
 
         // Productos sin stock

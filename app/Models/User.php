@@ -27,6 +27,7 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'avatar',
         'created_at',
         'updated_at',
     ];
@@ -54,20 +55,59 @@ class User extends Authenticatable
         ];
     }
 
-    public function worker()
+    /**
+     * Relación con workers (un usuario puede ser worker en varias empresas)
+     */
+    public function workers()
     {
-        return $this->hasOne(Worker::class);
+        return $this->hasMany(Worker::class);
     }
 
+    /**
+     * Relación directa con empresas a través de user_company pivot
+     */
     public function companies()
     {
-        return $this->hasManyThrough(
+        return $this->belongsToMany(
             Company::class,
-            Worker::class,
-            'user_id', // Foreign key on Worker table...
-            'id', // Foreign key on Company table...
-            'id', // Local key on User table...
-            'company_id' // Local key on Worker table...
-        );
+            'user_company',
+            'user_id',
+            'company_id'
+        )->withTimestamps();
+    }
+
+    /**
+     * Obtener el worker activo para una empresa específica
+     */
+    public function getWorkerForCompany(int $companyId): ?Worker
+    {
+        return $this->workers()
+            ->where('company_id', $companyId)
+            ->where('is_active', true)
+            ->first();
+    }
+
+    /**
+     * Tareas asignadas al usuario
+     */
+    public function assignedTasks()
+    {
+        return $this->hasMany(Task::class, 'assigned_to');
+    }
+
+    /**
+     * Tareas creadas por el usuario
+     */
+    public function createdTasks()
+    {
+        return $this->hasMany(Task::class, 'assigned_by');
+    }
+
+    /**
+     * Tareas completadas por el usuario
+     */
+    public function completedTasks()
+    {
+        return $this->hasMany(Task::class, 'completed_by');
     }
 }

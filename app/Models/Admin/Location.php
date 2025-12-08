@@ -18,6 +18,12 @@ class Location extends Model
         'phone',
         'email',
         'company_id',
+        'settings',
+    ];
+
+    protected $casts = [
+        'settings' => 'array',
+        'is_active' => 'boolean',
     ];
 
     protected $dates = [

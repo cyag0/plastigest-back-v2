@@ -7,6 +7,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Exception;
+use Illuminate\Support\Facades\Log;
 
 class AppUploadUtil
 {
@@ -166,7 +167,7 @@ class AppUploadUtil
         // 1. Guardar nuevos archivos
         foreach ($newFiles as $index => $file) {
             if ($file instanceof UploadedFile) {
-                $customName = $prefix ? $prefix . '_' . ($index + 1) . '.' . $file->getClientOriginalExtension() : null;
+                $customName = $prefix ? $prefix . '_' . Str::random(6) . '.' . $file->getClientOriginalExtension() : null;
                 $saveResult = self::saveFile($file, $path, $customName);
 
                 if ($saveResult['success']) {
@@ -214,26 +215,42 @@ class AppUploadUtil
         ];
 
         $currentFilesNames = [];
+        Log::info('New files received', ['count' => count($newFiles)]);
 
         // 1. Guardar nuevos archivos
         foreach ($newFiles as $index => $file) {
+            // Manejar archivos que vienen desde apps móviles (no son UploadedFile)
+            if (is_array($file) && isset($file['name'])) {
+                // Es un archivo existente que viene del frontend (no se reemplaza)
+                $currentFilesNames[] = $file['name'];
+                Log::info('Existing file kept', ['name' => $file['name']]);
+                continue;
+            }
+
+            // Manejar archivos nuevos (UploadedFile desde HTTP)
             if ($file instanceof UploadedFile) {
-                $customName = $prefix ? $prefix . '_' . ($index + 1) . '.' . $file->getClientOriginalExtension() : null;
+                $customName = $prefix ? $prefix . '_' . Str::random(6) . '.' . $file->getClientOriginalExtension() : null;
                 $saveResult = self::saveFile($file, $path, $customName);
 
                 if ($saveResult['success']) {
                     // Extraer solo el nombre del archivo del path
                     $fileName = basename($saveResult['path']);
+                    $currentFilesNames[] = $fileName;
                     $result['saved'][] = [
                         'path' => $saveResult['path'],
                         'metadata' => $saveResult['metadata'],
                         'name' => $fileName, // Solo el nombre del archivo
                     ];
+                    Log::info('New file saved', ['name' => $fileName]);
                 } else {
                     $result['errors'][] = $saveResult['error'];
+                    Log::error('Failed to save file', ['error' => $saveResult['error']]);
                 }
             } else {
-                $currentFilesNames[] = $file['name'];
+                Log::warning('Invalid file type', [
+                    'type' => gettype($file),
+                    'file' => $file
+                ]);
             }
         }
 

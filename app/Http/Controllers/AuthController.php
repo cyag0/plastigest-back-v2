@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use Error;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
@@ -146,6 +147,59 @@ class AuthController extends Controller
         try {
             $user = $request->user();
 
+            // Cargar todos los workers con sus relaciones
+            $user->load(['workers.company', 'workers.role.permissions']);
+
+            $roles = [];
+            $permissions = [];
+            $companies = [];
+
+            // Obtener roles y permisos únicos de todos los workers
+            if ($user->workers->isNotEmpty()) {
+                // Recopilar todos los roles únicos
+                $rolesCollection = $user->workers
+                    ->pluck('role')
+                    ->filter()
+                    ->unique('id');
+
+                $roles = $rolesCollection->map(function ($role) {
+                    return [
+                        'id' => $role->id,
+                        'name' => $role->name,
+                        'description' => $role->description,
+                        'is_system' => $role->is_system ?? false,
+                    ];
+                })->values()->toArray();
+
+                // Obtener todos los permisos únicos de todos los roles
+                $permissionsCollection = $rolesCollection->flatMap(function ($role) {
+                    return $role->permissions ?? collect();
+                })->unique('id');
+
+                $permissions = $permissionsCollection->map(function ($permission) {
+                    return [
+                        'id' => $permission->id,
+                        'name' => $permission->name,
+                        'description' => $permission->description,
+                        'resource' => $permission->resource,
+                    ];
+                })->values()->toArray();
+
+                // Obtener todas las empresas donde trabaja
+                $companies = $user->workers->map(function ($worker) {
+                    return [
+                        'id' => $worker->company->id,
+                        'name' => $worker->company->name,
+                        'business_name' => $worker->company->business_name,
+                        'worker_id' => $worker->id,
+                        'role' => $worker->role ? [
+                            'id' => $worker->role->id,
+                            'name' => $worker->role->name,
+                        ] : null,
+                    ];
+                })->values()->toArray();
+            }
+
             return response()->json([
                 'user' => [
                     'id' => $user->id,
@@ -154,6 +208,9 @@ class AuthController extends Controller
                     'email_verified_at' => $user->email_verified_at,
                     'created_at' => $user->created_at,
                     'updated_at' => $user->updated_at,
+                    'roles' => $roles,
+                    'permissions' => $permissions,
+                    'companies' => $companies,
                 ]
             ], 200);
         } catch (\Exception $e) {

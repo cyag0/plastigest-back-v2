@@ -4,6 +4,8 @@ namespace App\Http\Resources\Admin;
 
 use App\Http\Resources\Resources;
 use App\Models\User;
+use App\Utils\AppUploadUtil;
+use App\Constants\Files;
 use Illuminate\Database\Eloquent\Model;
 
 class UserResource extends Resources
@@ -22,10 +24,12 @@ class UserResource extends Resources
 
         $item = [
             'id' => $resource->id,
-            // Agregar aquí los campos básicos del modelo
-            // Ejemplo:
-            // 'name' => $resource->name,
-            // 'description' => $resource->description,
+            'name' => $resource->name,
+            'email' => $resource->email,
+            'avatar' => $resource->avatar
+                ? [AppUploadUtil::formatFile(Files::USER_AVATARS_PATH, $resource->avatar)] ?? []
+                : [],
+            'avatar_name' => $resource->avatar,
         ];
 
         // Campos adicionales según el contexto
@@ -36,16 +40,20 @@ class UserResource extends Resources
             $item['updated_at'] = $resource->updated_at?->toISOString();
         }
 
-        // Ejemplo de manejo de relaciones
-        // if ($resource->relationLoaded('relatedModel')) {
-        //     if (!$editing) {
-        //         // Para index: datos simples
-        //         $item['related_name'] = $resource->relatedModel?->name;
-        //     } else {
-        //         // Para show/edit: datos completos
-        //         $item['related_model'] = $resource->relatedModel;
-        //     }
-        // }
+        // Relación con companies
+        if ($resource->relationLoaded('companies')) {
+            if (!$editing) {
+                // Para index: solo información básica
+                $item['companies'] = $resource->companies->map(fn($company) => [
+                    'id' => $company->id,
+                    'name' => $company->name,
+                ]);
+            } else {
+                // Para show/edit: datos completos
+                $item['companies'] = $resource->companies;
+                $item['company_ids'] = $resource->companies->pluck('id')->toArray();
+            }
+        }
 
         return $item;
     }

@@ -6,6 +6,7 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UnitResource;
 use App\Models\Unit;
 use App\Models\UnitConversion;
+use App\Support\CurrentCompany;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -66,7 +67,7 @@ class UnitControllerV2 extends CrudController
         if (isset($params['product_unit_id'])) {
             $query->where(function ($q) use ($params) {
                 $q->where('id', $params['product_unit_id'])
-                  ->orWhere('base_unit_id', $params['product_unit_id']);
+                    ->orWhere('base_unit_id', $params['product_unit_id']);
             });
         }
     }
@@ -166,5 +167,85 @@ class UnitControllerV2 extends CrudController
     {
         // Aquí puedes ejecutar lógica adicional después de eliminar
         // Por ejemplo: limpiar cache, enviar notificaciones, etc.
+    }
+
+    /**
+     * Obtener todas las unidades agrupadas por unidad base
+     * Retorna un objeto donde cada clave es el ID de la unidad base
+     * y el valor es un array con la unidad base y sus unidades derivadas
+     */
+    public function getGroupedByBase(Request $request): JsonResponse
+    {
+        try {
+            $companyId = CurrentCompany::get()->id ?? $request->input('company_id') ?? current_company_id();
+
+            // Obtener todas las unidades de la compañía
+            $allUnits = Unit::where('company_id', $companyId)
+                ->orderBy('name')
+                ->get();
+
+            // Agrupar por unidad base
+            $grouped = [];
+
+            // Primero, procesar las unidades base (aquellas sin base_unit_id)
+            $baseUnits = $allUnits->whereNull('base_unit_id');
+
+            foreach ($baseUnits as $baseUnit) {
+                // Obtener todas las unidades derivadas de esta base
+                $derivedUnits = $allUnits->where('base_unit_id', $baseUnit->id);
+
+                // Crear el grupo con la unidad base primero y luego las derivadas
+                $grouped[$baseUnit->id] = [
+                    [
+                        'id' => $baseUnit->id,
+                        'name' => $baseUnit->name,
+                        'abbreviation' => $baseUnit->abbreviation,
+                        'base_unit_id' => null,
+                        'factor_to_base' => 1,
+                        'is_base' => true,
+                    ],
+                    ...$derivedUnits->map(function ($unit) {
+                        return [
+                            'id' => $unit->id,
+                            'name' => $unit->name,
+                            'abbreviation' => $unit->abbreviation,
+                            'base_unit_id' => $unit->base_unit_id,
+                            'factor_to_base' => (float) $unit->factor_to_base,
+                            'is_base' => false,
+                        ];
+                    })->values()->toArray()
+                ];
+            }
+
+            // Verificar si hay unidades huérfanas (con base_unit_id que no existe)
+            $orphanUnits = $allUnits->whereNotNull('base_unit_id')
+                ->filter(function ($unit) use ($allUnits) {
+                    return !$allUnits->contains('id', $unit->base_unit_id);
+                });
+
+            // Agrupar unidades huérfanas bajo su propio ID
+            foreach ($orphanUnits as $orphan) {
+                $grouped[$orphan->id] = [
+                    [
+                        'id' => $orphan->id,
+                        'name' => $orphan->name,
+                        'abbreviation' => $orphan->abbreviation,
+                        'base_unit_id' => null,
+                        'factor_to_base' => 1,
+                        'is_base' => true,
+                    ]
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $grouped
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener unidades agrupadas: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }

@@ -21,20 +21,30 @@ class PermissionSeeder extends Seeder
 
         // Definir permisos por recurso
         $resourcesWithActions = [
-            [Resources::USERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            // Sistema (solo para super admins)
+            [Resources::USERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
+            [Resources::COMPANIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
+
+            // Empresa (para admins de empresa)
+            [Resources::WORKERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::LOCATIONS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::ROLES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::PERMISSIONS, [Actions::READ, Actions::LIST]],
-            [Resources::COMPANIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
-            [Resources::LOCATIONS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+
+            // Catálogos
             [Resources::CUSTOMERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::SUPPLIERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::UNITS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::CATEGORIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::PRODUCTS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
-            [Resources::INVENTORY, [Actions::READ, Actions::UPDATE, Actions::LIST]],
+
+            // Operaciones
+            [Resources::INVENTORY, [Actions::READ, Actions::UPDATE, Actions::LIST, Actions::MANAGE]],
             [Resources::MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::LIST]],
             [Resources::SALES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
-            [Resources::PURCHASES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::PURCHASES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
+
+            // Reportes y Dashboard
             [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT]],
             [Resources::DASHBOARD, [Actions::VIEW]],
             [Resources::SETTINGS, [Actions::READ, Actions::UPDATE, Actions::MANAGE]],

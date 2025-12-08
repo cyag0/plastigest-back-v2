@@ -6,9 +6,10 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UserResource;
 use App\Models\User;
 use App\Support\CurrentCompany;
+use App\Utils\AppUploadUtil;
+use App\Constants\Files;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 class UserController extends CrudController
@@ -28,7 +29,7 @@ class UserController extends CrudController
      */
     protected function indexRelations(): array
     {
-        return [];
+        return ['companies'];
     }
 
     /**
@@ -36,7 +37,7 @@ class UserController extends CrudController
      */
     protected function getShowRelations(): array
     {
-        return [];
+        return ['companies'];
     }
 
     /**
@@ -44,17 +45,52 @@ class UserController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
-        // Filtrar usuarios por la compañía actual
-        $company = CurrentCompany::get();
-        if ($company) {
-            $query->whereHas('companies', function ($q) use ($company) {
-                $q->where('company_id', $company->id);
-            });
+        // Filtrar usuarios por compañía específica
+        if (isset($params['by_company'])) {
+            $company = CurrentCompany::get();
+            if ($company) {
+                $query->whereHas('companies', function ($q) use ($company) {
+                    $q->where('companies.id', $company->id);
+                });
+            }
         }
 
         // Filtros adicionales
         if (isset($params['is_active'])) {
             $query->where('is_active', $params['is_active']);
+        }
+    }
+
+    /**
+     * Sobreescribir applyBasicFilters para evitar el filtro automático de company_id
+     * Los usuarios no tienen columna company_id, usan relación many-to-many
+     */
+    protected function applyBasicFilters($query, array $params)
+    {
+        // Búsqueda por texto
+        if (isset($params['search']) && !empty($params['search'])) {
+            $search = $params['search'];
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+            });
+        }
+
+        // Filtro por estado activo/inactivo
+        if (isset($params['is_active'])) {
+            $query->where('is_active', $params['is_active']);
+        }
+
+        // NO aplicar filtro directo de company_id porque users no tiene esa columna
+        // El filtro de company se maneja en handleQuery con whereHas
+
+        // Filtro por fecha de creación
+        if (isset($params['date_from'])) {
+            $query->whereDate('created_at', '>=', $params['date_from']);
+        }
+
+        if (isset($params['date_to'])) {
+            $query->whereDate('created_at', '<=', $params['date_to']);
         }
     }
 
@@ -67,6 +103,8 @@ class UserController extends CrudController
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8',
+            'avatar' => 'nullable|array',
+            'avatar.*' => 'image|max:5120',
 
             // Relaciones many-to-many opcionales
             'role_ids' => 'nullable|array',
@@ -87,6 +125,8 @@ class UserController extends CrudController
             'name' => 'sometimes|required|string|max:255',
             'email' => 'sometimes|required|email|unique:users,email,' . $model->id,
             'password' => 'nullable|string|min:8',
+            'avatar' => 'nullable|array',
+            'avatar.*' => 'image|max:5120',
 
             // Relaciones many-to-many opcionales
             'role_ids' => 'nullable|array',
@@ -108,6 +148,21 @@ class UserController extends CrudController
             $validatedData['password'] = Hash::make($validatedData['password']);
         }
 
+        // Manejar subida de avatar usando AppUploadUtil
+        if ($request->hasFile('avatar')) {
+            $files = $request->file('avatar');
+            $file = is_array($files) ? $files[0] : $files;
+            
+            $result = AppUploadUtil::saveFile($file, Files::USER_AVATARS_PATH);
+            
+            if ($result['success']) {
+                $validatedData['avatar'] = basename($result['path']); // Solo guardar el nombre del archivo
+            }
+        }
+
+        // Remover avatar del array de validatedData para evitar errores
+        unset($validatedData['avatar.*']);
+
         // Agregar la compañía actual si no se proporcionó
         $company = CurrentCompany::get();
         if ($company && !isset($validatedData['company_ids'])) {
@@ -115,9 +170,7 @@ class UserController extends CrudController
         }
 
         return $validatedData;
-    }
-
-    /**
+    }    /**
      * Procesar datos antes de actualizar
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
@@ -128,6 +181,26 @@ class UserController extends CrudController
         } else {
             unset($validatedData['password']);
         }
+
+        // Manejar subida de avatar usando AppUploadUtil
+        if ($request->hasFile('avatar')) {
+            $newFiles = $request->file('avatar');
+            $oldFiles = $model->avatar ? [$model->avatar] : [];
+            
+            // Sincronizar archivos: elimina los antiguos y guarda los nuevos
+            $result = AppUploadUtil::syncFilesByNames(
+                Files::USER_AVATARS_PATH,
+                is_array($newFiles) ? $newFiles : [$newFiles],
+                $oldFiles
+            );
+            
+            if (!empty($result['saved'])) {
+                $validatedData['avatar'] = $result['saved'][0]['name'];
+            }
+        }
+
+        // Remover avatar del array de validatedData para evitar errores
+        unset($validatedData['avatar.*']);
 
         return $validatedData;
     }

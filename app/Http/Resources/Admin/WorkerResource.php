@@ -22,6 +22,9 @@ class WorkerResource extends Resources
 
         $item = [
             'id' => $resource->id,
+            'company_id' => $resource->company_id,
+            'user_id' => $resource->user_id,
+            'role_id' => $resource->role_id,
             'position' => $resource->position,
             'department' => $resource->department,
             'hire_date' => $resource->hire_date?->format('Y-m-d'),
@@ -34,47 +37,61 @@ class WorkerResource extends Resources
             if (!$editing) {
                 $item['company_name'] = $resource->company?->name;
             } else {
-                $item['company'] = [
-                    'id' => $resource->company?->id,
-                    'name' => $resource->company?->name,
-                ];
+                $item['company'] = $resource->company ? [
+                    'id' => $resource->company->id,
+                    'name' => $resource->company->name,
+                    'business_name' => $resource->company->business_name,
+                ] : null;
             }
         }
 
         // Relación con User
         if ($resource->relationLoaded('user')) {
             if (!$editing) {
+                $item["name"] = $resource->user?->name;
                 $item['user_name'] = $resource->user?->name;
                 $item['user_email'] = $resource->user?->email;
             } else {
-                $item['user'] = [
-                    'id' => $resource->user?->id,
-                    'name' => $resource->user?->name,
-                    'email' => $resource->user?->email,
-                ];
+                $item['user'] = $resource->user ? [
+                    'id' => $resource->user->id,
+                    'name' => $resource->user->name,
+                    'email' => $resource->user->email,
+                ] : null;
             }
         }
 
-        // Relaciones many-to-many
-        if ($resource->relationLoaded('roles')) {
-            $item['role_ids'] = $resource->roles->map(function ($role) {
-                return $role->id . "";
-            });
+        // Relación con Role
+        if ($resource->relationLoaded('role')) {
+            if (!$editing) {
+                $item['role_name'] = $resource->role?->name;
+            } else {
+                $item['role'] = $resource->role ? [
+                    'id' => $resource->role->id,
+                    'name' => $resource->role->name,
+                    'display_name' => $resource->role->display_name,
+                ] : null;
+            }
         }
 
-        if ($resource->relationLoaded('companies')) {
-            $item['companies'] = $resource->companies->map(function ($company) {
-                return [
-                    'id' => $company->id,
-                    'name' => $company->name,
-                ];
-            });
+        // Incluir role también en index para mostrar en la lista
+        if (!$editing && $resource->relationLoaded('role') && $resource->role) {
+            $item['role'] = [
+                'id' => $resource->role->id,
+                'name' => $resource->role->name,
+            ];
         }
 
+        // Relación con Locations
         if ($resource->relationLoaded('locations')) {
-            $item['location_ids'] = $resource->locations->map(function ($location) {
-                return $location->id;
-            });
+            if (!$editing) {
+                $item['locations'] = $resource->locations->map(fn($location) => [
+                    'id' => $location->id,
+                    'name' => $location->name,
+                ]);
+            } else {
+                $item['locations'] = $resource->locations;
+                $item['location_ids'] = $resource->locations->pluck('id')->toArray();
+            }
         }
 
         // Campos adicionales según el contexto

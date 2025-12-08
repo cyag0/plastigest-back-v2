@@ -43,8 +43,50 @@ class PurchaseResource extends Resources
                 $item['details_count'] = $resource->details->count();
                 $item['products_summary'] = $resource->details->take(3)->pluck('product.name')->join(', ');
             } else {
-                // Para show/edit: detalles completos mapeados al formato del formulario
-                $item['purchase_items'] = $resource->details->map(function ($detail) {
+                // Para show/edit: cargar detalles en formato de carrito
+                $item['cart_items'] = $resource->details->map(function ($detail) use ($resource) {
+                    $product = $detail->product;
+
+                    // Obtener stock de la ubicación actual
+                    $currentStock = null;
+                    $locationId = $resource->location_origin_id;
+                    if ($product->relationLoaded('locations') && $locationId) {
+                        $location = $product->locations->where('id', $locationId)->first();
+                        if ($location) {
+                            $currentStock = $location->pivot->current_stock ?? 0;
+                        }
+                    }
+
+                    // Obtener imagen principal
+                    $mainImage = null;
+                    if ($product->relationLoaded('mainImage') && $product->mainImage) {
+                        $mainImage = \App\Utils\AppUploadUtil::formatFile(
+                            \App\Constants\Files::PRODUCT_IMAGES_PATH,
+                            $product->mainImage->image_path
+                        );
+                    }
+
+                    return [
+                        'id' => $product->id,
+                        'product_id' => $product->id,
+                        'name' => $product->name,
+                        'code' => $product->code,
+                        'price' => (float) $detail->unit_cost,
+                        'unit_price' => (float) $detail->unit_cost,
+                        'quantity' => (float) $detail->quantity,
+                        'total' => (float) $detail->total_cost,
+                        'total_price' => (float) $detail->total_cost,
+                        'current_stock' => $currentStock,
+                        'product_type' => $product->product_type,
+                        'main_image' => $mainImage,
+                        'unit_id' => $detail->unit_id,
+                        'unit_name' => $detail->unit?->name,
+                        'unit_abbreviation' => $detail->unit?->abbreviation,
+                    ];
+                });
+
+                // También mantener el formato anterior para compatibilidad
+                /* $item['purchase_items'] = $resource->details->map(function ($detail) {
                     return [
                         'id' => $detail->id,
                         'name' => $detail->product?->name,
@@ -54,10 +96,9 @@ class PurchaseResource extends Resources
                         'unit_price' => $detail->unit_cost,
                         'total_price' => $detail->total_cost,
                     ];
-                });
+                }); */
 
-                // También mantener el formato anterior para compatibilidad
-                $item['details'] = $resource->details->map(function ($detail) {
+                /* $item['details'] = $resource->details->map(function ($detail) {
                     return [
                         'id' => $detail->id,
                         'product_id' => $detail->product_id,
@@ -67,7 +108,7 @@ class PurchaseResource extends Resources
                         'subtotal' => $detail->total_cost,
                         'notes' => $detail->notes,
                     ];
-                });
+                }); */
             }
         }
 

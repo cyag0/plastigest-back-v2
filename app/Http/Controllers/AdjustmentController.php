@@ -6,6 +6,8 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\AdjustmentResource;
 use App\Models\Adjustment;
 use App\Models\AdjustmentDetail;
+use App\Models\Product;
+use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
@@ -212,6 +214,9 @@ class AdjustmentController extends CrudController
             // Recargar relaciones
             $adjustment->load($this->getShowRelations());
 
+            // Verificar stock bajo y notificar
+            $this->checkLowStockAndNotify($adjustment);
+
             DB::commit();
             return $adjustment;
         } catch (\Exception $e) {
@@ -230,5 +235,48 @@ class AdjustmentController extends CrudController
             'can_delete' => false,
             'message' => 'No se pueden eliminar registros de ajuste de inventario'
         ];
+    }
+
+    /**
+     * Verificar stock bajo y enviar notificaciones
+     * TODO: Esta mal esto
+     */
+    protected function checkLowStockAndNotify(Adjustment $adjustment): void
+    {
+        try {
+            $locationId = $adjustment->location_origin_id;
+            $companyId = $adjustment->company_id;
+
+            foreach ($adjustment->details as $detail) {
+                $product = Product::find($detail->product_id);
+
+                if (!$product || !$product->minimum_stock) {
+                    continue;
+                }
+
+                // Obtener stock actual del producto en la ubicación
+                $currentStock = DB::table('product_location')
+                    ->where('product_id', $product->id)
+                    ->where('location_id', $locationId)
+                    ->value('current_stock') ?? 0;
+
+                // Si el stock actual es menor al mínimo, enviar notificación
+                if ($currentStock < $product->minimum_stock) {
+                    NotificationService::notifyLowStock(
+                        $companyId,
+                        $locationId,
+                        $product,
+                        $currentStock,
+                        $product->minimum_stock
+                    );
+                }
+            }
+        } catch (\Exception $e) {
+            // Log error pero no fallar el ajuste
+            \Log::error('Error al verificar stock bajo: ' . $e->getMessage(), [
+                'adjustment_id' => $adjustment->id,
+                'exception' => $e,
+            ]);
+        }
     }
 }

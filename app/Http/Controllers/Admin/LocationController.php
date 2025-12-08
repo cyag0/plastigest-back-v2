@@ -46,6 +46,12 @@ class LocationController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
+        /** @var \Illuminate\Database\Eloquent\Builder $query */
+
+        if (isset($params['company_id'])) {
+            $query->where('company_id', $params['company_id']);
+        }
+
         // Filtro por tipo de locación
         if (isset($params['location_type'])) {
             $query->where('location_type', $params['location_type']);
