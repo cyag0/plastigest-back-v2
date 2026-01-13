@@ -19,7 +19,8 @@ class Unit extends Model
         'name',
         'abbreviation',
         'company_id',
-        'base_unit_id',
+        'is_base',
+        'type',
         'factor_to_base',
     ];
 
@@ -33,21 +34,5 @@ class Unit extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
-    }
-
-    /**
-     * Relación con la unidad base (autorreferencial)
-     */
-    public function baseUnit(): BelongsTo
-    {
-        return $this->belongsTo(Unit::class, 'base_unit_id');
-    }
-
-    /**
-     * Unidades derivadas de esta unidad base
-     */
-    public function derivedUnits(): HasMany
-    {
-        return $this->hasMany(Unit::class, 'base_unit_id');
     }
 }

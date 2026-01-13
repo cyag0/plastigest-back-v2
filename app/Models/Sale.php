@@ -36,6 +36,7 @@ class Sale extends Movement
      */
     protected static function booted()
     {
+
         parent::booted();
 
         // Automáticamente filtrar solo ventas

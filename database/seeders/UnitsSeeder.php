@@ -19,108 +19,104 @@ class UnitsSeeder extends Seeder
             return;
         }
 
-        // Unidades básicas de cantidad
+        // ========================================
+        // UNIDADES DE CANTIDAD
+        // ========================================
         $pieza = Unit::create([
             'name' => 'Pieza',
             'abbreviation' => 'pz',
+            'type' => 'quantity',
+            'is_base' => true,
+            'factor_to_base' => 1, // Unidad base de cantidad
         ]);
 
         $caja = Unit::create([
-            'name' => 'Caja',
-            'abbreviation' => 'cj',
+            'name' => 'Decena',
+            'abbreviation' => 'da',
+            'type' => 'quantity',
+            'factor_to_base' => 10, // 1 decena = 10 piezas
         ]);
 
         $docena = Unit::create([
             'name' => 'Docena',
             'abbreviation' => 'dz',
+            'type' => 'quantity',
+            'factor_to_base' => 12, // 1 docena = 12 piezas
         ]);
 
-        $paquete = Unit::create([
-            'name' => 'Paquete',
-            'abbreviation' => 'pq',
-        ]);
 
-        // Unidades de peso
+        // ========================================
+        // UNIDADES DE MASA (PESO)
+        // ========================================
         $kilogramo = Unit::create([
             'name' => 'Kilogramo',
             'abbreviation' => 'kg',
+            'type' => 'mass',
+            'is_base' => true,
+            'factor_to_base' => 1, // Unidad base de masa
         ]);
 
         $gramo = Unit::create([
             'name' => 'Gramo',
             'abbreviation' => 'g',
+            'type' => 'mass',
+            'factor_to_base' => 0.001, // 1 g = 0.001 kg
         ]);
 
         $tonelada = Unit::create([
             'name' => 'Tonelada',
             'abbreviation' => 'ton',
+            'type' => 'mass',
+            'factor_to_base' => 1000, // 1 ton = 1000 kg
         ]);
 
-        // Unidades de longitud
-        $metro = Unit::create([
-            'name' => 'Metro',
-            'abbreviation' => 'm',
+        $miligramo = Unit::create([
+            'name' => 'Miligramo',
+            'abbreviation' => 'mg',
+            'type' => 'mass',
+            'factor_to_base' => 0.000001, // 1 mg = 0.000001 kg
         ]);
 
-        $centimetro = Unit::create([
-            'name' => 'Centímetro',
-            'abbreviation' => 'cm',
+        $libra = Unit::create([
+            'name' => 'Libra',
+            'abbreviation' => 'lb',
+            'type' => 'mass',
+            'factor_to_base' => 0.453592, // 1 lb = 0.453592 kg
         ]);
 
-        $milimetro = Unit::create([
-            'name' => 'Milímetro',
-            'abbreviation' => 'mm',
+        $onza = Unit::create([
+            'name' => 'Onza',
+            'abbreviation' => 'oz',
+            'type' => 'mass',
+            'factor_to_base' => 0.0283495, // 1 oz = 0.0283495 kg
         ]);
 
-        // Unidades de volumen
+        // ========================================
+        // UNIDADES DE VOLUMEN
+        // ========================================
         $litro = Unit::create([
             'name' => 'Litro',
             'abbreviation' => 'L',
+            'type' => 'volume',
+            'is_base' => true,
+            'factor_to_base' => 1, // Unidad base de volumen
         ]);
 
         $mililitro = Unit::create([
             'name' => 'Mililitro',
             'abbreviation' => 'ml',
+            'type' => 'volume',
+            'factor_to_base' => 0.001, // 1 ml = 0.001 L
         ]);
 
-        // Conversiones de cantidad
-        $this->createConversion($caja, $pieza, 12); // 1 caja = 12 piezas
-        $this->createConversion($docena, $pieza, 12); // 1 docena = 12 piezas
-        $this->createConversion($paquete, $pieza, 100); // 1 paquete = 100 piezas
+        $galon = Unit::create([
+            'name' => 'Galón',
+            'abbreviation' => 'gal',
+            'type' => 'volume',
+            'factor_to_base' => 3.78541, // 1 gal = 3.78541 L
+        ]);
 
-        // Conversiones de peso
-        $this->createConversion($kilogramo, $gramo, 1000); // 1 kg = 1000 g
-        $this->createConversion($tonelada, $kilogramo, 1000); // 1 ton = 1000 kg
-        $this->createConversion($tonelada, $gramo, 1000000); // 1 ton = 1,000,000 g
-
-        // Conversiones de longitud
-        $this->createConversion($metro, $centimetro, 100); // 1 m = 100 cm
-        $this->createConversion($metro, $milimetro, 1000); // 1 m = 1000 mm
-        $this->createConversion($centimetro, $milimetro, 10); // 1 cm = 10 mm
-
-        // Conversiones de volumen
-        $this->createConversion($litro, $mililitro, 1000); // 1 L = 1000 ml
 
         $this->command->info('✅ Unidades y conversiones creadas exitosamente');
-    }
-
-    /**
-     * Crear conversión bidireccional entre dos unidades
-     */
-    private function createConversion(Unit $from, Unit $to, float $factor): void
-    {
-        // Conversión directa
-        UnitConversion::create([
-            'from_unit_id' => $from->id,
-            'to_unit_id' => $to->id,
-            'factor' => $factor,
-        ]);
-
-        // Conversión inversa
-        UnitConversion::create([
-            'from_unit_id' => $to->id,
-            'to_unit_id' => $from->id,
-            'factor' => 1 / $factor,
-        ]);
     }
 }

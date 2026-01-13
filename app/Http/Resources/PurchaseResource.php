@@ -84,31 +84,6 @@ class PurchaseResource extends Resources
                         'unit_abbreviation' => $detail->unit?->abbreviation,
                     ];
                 });
-
-                // También mantener el formato anterior para compatibilidad
-                /* $item['purchase_items'] = $resource->details->map(function ($detail) {
-                    return [
-                        'id' => $detail->id,
-                        'name' => $detail->product?->name,
-                        'code' => $detail->product?->code,
-                        'product_id' => $detail->product_id,
-                        'quantity' => $detail->quantity,
-                        'unit_price' => $detail->unit_cost,
-                        'total_price' => $detail->total_cost,
-                    ];
-                }); */
-
-                /* $item['details'] = $resource->details->map(function ($detail) {
-                    return [
-                        'id' => $detail->id,
-                        'product_id' => $detail->product_id,
-                        'product_name' => $detail->product?->name,
-                        'quantity' => $detail->quantity,
-                        'unit_cost' => $detail->unit_cost,
-                        'subtotal' => $detail->total_cost,
-                        'notes' => $detail->notes,
-                    ];
-                }); */
             }
         }
 

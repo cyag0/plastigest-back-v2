@@ -90,12 +90,14 @@ class ProductController extends CrudController
     protected function handleQuery($query, array $params)
     {
         $location = CurrentLocation::get();
-        $locationId = $location ? $location->id : (isset($params['location_id']) ? $params['location_id'] : null);
+        $company =  CurrentCompany::get();
+        $locationId = isset($params['location_id']) ? $params['location_id'] : ($location ? $location->id : null);
+        $isActive = $params['is_active'] ?? false;
 
         // Filtrar por empresa
-        if (isset($params['company_id'])) {
+        if ($company) {
             $company = CurrentCompany::get();
-            $companyId = $company ? $company->id : (isset($params['company_id']) ? $params['company_id'] : null);
+            $companyId =  $company->id;
 
             $query->where('company_id', $companyId);
         }
@@ -106,12 +108,11 @@ class ProductController extends CrudController
         }
 
         // Filtrar por estado activo en la ubicación actual
-        if (isset($params['is_active'])) {
-
+        if ($isActive) {
             if ($locationId) {
-                $query->whereHas('locations', function ($q) use ($params, $locationId) {
+                $query->whereHas('locations', function ($q) use ($params, $locationId, $isActive) {
                     $q->where('location_id', $locationId)
-                        ->where('product_location.active', $params['is_active']);
+                        ->where('product_location.active', $isActive);
                 });
             }
         }
@@ -123,6 +124,20 @@ class ProductController extends CrudController
                     $q->where('location_id', $locationId)
                         ->whereRaw('product_location.current_stock < product_location.minimum_stock')
                         ->where('product_location.minimum_stock', '>', 0);
+                });
+            }
+        }
+
+        if (isset($params['with_packages']) && $params['with_packages']) {
+            $query->with('packages');
+        }
+
+        // Filtrar solo productos con stock disponible
+        if (isset($params['with_stock']) && $params['with_stock']) {
+            if ($locationId) {
+                $query->whereHas('locations', function ($q) use ($locationId) {
+                    $q->where('location_id', $locationId)
+                        ->where('product_location.current_stock', '>', 0);
                 });
             }
         }

@@ -81,14 +81,24 @@ class Product extends Model
     }
 
     /**
-     * Get available units for this product (base unit + derived units)
+     * Get available units for this product (only units of the same type)
      */
     public function availableUnits()
     {
-        return Unit::where(function ($query) {
-            $query->where('id', $this->unit_id)
-                  ->orWhere('base_unit_id', $this->unit_id);
-        })->get();
+        // Si no tiene unidad asignada, retornar colección vacía
+        if (!$this->unit_id || !$this->unit) {
+            return collect([]);
+        }
+
+        // Obtener el tipo de la unidad del producto
+        $unitType = $this->unit->type;
+
+        // Obtener todas las unidades del mismo tipo y de la misma empresa
+        return Unit::where('type', $unitType)
+            ->where('company_id', $this->company_id)
+            ->orderBy('is_base', 'desc') // Primero las base
+            ->orderBy('factor_to_base', 'asc')
+            ->get();
     }
 
     /**

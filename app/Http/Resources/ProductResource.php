@@ -80,14 +80,15 @@ class ProductResource extends Resources
             ];
         }
 
-        // Agregar unidades disponibles (base + derivadas)
+        // Agregar unidades disponibles (del mismo tipo)
         if (isset($this->available_units)) {
             $item['available_units'] = $this->available_units->map(function ($unit) {
                 return [
                     'id' => $unit->id,
                     'name' => $unit->name,
                     'abbreviation' => $unit->abbreviation,
-                    'base_unit_id' => $unit->base_unit_id,
+                    'type' => $unit->type,
+                    'is_base' => $unit->is_base,
                     'factor_to_base' => $unit->factor_to_base,
                 ];
             });
@@ -124,6 +125,20 @@ class ProductResource extends Resources
             if ($mainImage) {
                 $item["main_image"] = AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $mainImage);
             }
+        }
+
+        if ($this->relationLoaded('packages')) {
+            $item['packages'] = $this->packages->map(function ($package) {
+                return [
+                    'id' => $package->id,
+                    'package_name' => $package->package_name,
+                    'name' => $package->package_name,
+                    'quantity_per_package' => $package->quantity_per_package,
+                    'unit_id' => $package->unit_id,
+                    'purchase_price' => $package->purchase_price,
+                    'sale_price' => $package->sale_price,
+                ];
+            });
         }
 
         return $item;
