@@ -21,7 +21,8 @@ return [
     |--------------------------------------------------------------------------
     | Patterns that this package will apply CORS headers to.
     */
-    'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    //'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    'paths' => ['*'],
 
     /*
     |--------------------------------------------------------------------------
@@ -39,7 +40,7 @@ return [
     | Para desarrollo, permitir todos los orígenes localhost.
     */
     'allowed_origins' => [
-        'http://localhost:8081/',
+        '*'
     ],
 
     /*

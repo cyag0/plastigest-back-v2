@@ -410,7 +410,10 @@ class PurchaseController extends CrudController
     public function purchaseStats(Request $request)
     {
         try {
-            $locationId = $request->input('location_id') ?? current_location_id();
+            Log::info('Generating purchase stats', [
+                'params' => $request->all(),
+            ]);
+            $locationId = $request->input('location_id') ?? CurrentLocation::get()->id;
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
 

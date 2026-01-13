@@ -18,6 +18,7 @@ use App\Http\Controllers\AdjustmentController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\CustomerNoteController;
 use App\Http\Controllers\InventoryTransferController;
+use App\Http\Controllers\MovementController;
 use App\Http\Controllers\InventoryCountController;
 use App\Http\Controllers\InventoryCountDetailController;
 use Illuminate\Http\Request;
@@ -27,8 +28,10 @@ use App\Http\Controllers\UnitControllerV2;
 use App\Http\Controllers\DeviceTokenController;
 use App\Http\Controllers\WhatsAppWebhookController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\ProductPackageController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\SettingsController;
+use App\Http\Controllers\SalesReportController;
 
 /*
 |--------------------------------------------------------------------------
@@ -50,6 +53,10 @@ Route::prefix('auth')->group(function () {
 // Ruta pública para descargar PDFs con URL firmada
 Route::get('inventory-counts/{id}/pdf', [InventoryCountController::class, 'generatePdf'])
     ->name('inventory-counts.pdf')
+    ->middleware('signed');
+
+Route::get('sales-reports/{id}/pdf', [SalesReportController::class, 'generatePdf'])
+    ->name('sales-reports.pdf')
     ->middleware('signed');
 
 Route::get('products/{product}/labels/pdf', [ProductController::class, 'printLabels'])
@@ -111,12 +118,12 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::patch('images/order', [ProductController::class, 'updateImageOrder']);
                 Route::get('labels/pdf-url', [ProductController::class, 'generatePdfUrl']);
             });
+            Route::apiResource("product-packages", ProductPackageController::class);
 
-            // Purchase Management Routes
-            Route::apiResource('purchases', PurchaseController::class);
 
             // Purchase Status Management Routes
             Route::prefix('purchases')->group(function () {
+                Route::get('stats', [PurchaseController::class, 'purchaseStats']);
                 Route::post('{id}/advance', [PurchaseController::class, 'advance']);
                 Route::post('{id}/revert', [PurchaseController::class, 'revert']);
                 Route::post('{id}/transition', [PurchaseController::class, 'transitionTo']);
@@ -125,6 +132,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('{id}/start-order', [PurchaseController::class, 'startOrder']);
                 Route::post('{id}/receive', [PurchaseController::class, 'receivePurchase']);
             });
+
+            // Purchase Management Routes
+            Route::apiResource('purchases', PurchaseController::class);
+
 
             // Production Management Routes
             Route::apiResource('productions', ProductionController::class);
@@ -171,6 +182,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Units routes
             Route::prefix('units')->group(function () {
                 Route::get('grouped-by-base', [UnitControllerV2::class, 'getGroupedByBase']);
+                Route::get('grouped-by-type', [UnitControllerV2::class, 'getGroupedByType']);
             });
             Route::apiResource('units', UnitControllerV2::class);
 
@@ -178,10 +190,34 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('customer-notes', CustomerNoteController::class);
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
 
-            // Rutas de consulta rápida (deben ir antes del apiResource para evitar conflictos)
+            // Rutas de consulta rápida (LEGACY - mantener temporalmente para compatibilidad)
             Route::get('inventory-transfers-pending-requests', [InventoryTransferController::class, 'pendingRequests']);
             Route::get('inventory-transfers-in-transit', [InventoryTransferController::class, 'inTransit']);
 
+            // === NUEVO SISTEMA DE TRANSFERENCIAS BASADO EN MOVEMENTS ===
+            // Rutas para los 4 módulos del frontend
+            Route::get('movements/petitions', [MovementController::class, 'petitions']);
+            Route::get('movements/shipments', [MovementController::class, 'shipments']);
+            Route::get('movements/receipts', [MovementController::class, 'receipts']);
+            Route::get('movements/transfers', [MovementController::class, 'transfers']);
+
+
+
+            // Acciones de workflow de transferencias
+            Route::prefix('movements/{id}')->group(function () {
+                Route::post('approve', [MovementController::class, 'approve']);
+                Route::post('reject', [MovementController::class, 'reject']);
+                Route::post('ship', [MovementController::class, 'ship']);
+                Route::post('receive', [MovementController::class, 'receive']);
+            });
+
+            // CRUD de movimientos/transferencias
+            Route::apiResource('movements', MovementController::class);
+
+            // === SALES REPORTS ===
+            Route::apiResource('sales-reports', \App\Http\Controllers\SalesReportController::class);
+
+            // === SISTEMA LEGACY DE INVENTORY TRANSFERS (mantener temporalmente) ===
             // Rutas para el flujo de módulos específicos (deben ir antes del apiResource)
             Route::get('inventory-transfers/petitions', [InventoryTransferController::class, 'petitions']);
             Route::get('inventory-transfers/shipments', [InventoryTransferController::class, 'shipments']);
@@ -198,10 +234,27 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('receive', [InventoryTransferController::class, 'receive']);
             });
 
+            Route::prefix('reports')->group(function () {
+                Route::get('dashboard', [App\Http\Controllers\ReportController::class, 'dashboard']);
+                Route::get('inventory-stats', [App\Http\Controllers\ReportController::class, 'inventoryStats']);
+                Route::get('recent-movements', [App\Http\Controllers\ReportController::class, 'recentMovements']);
+                Route::get('movements-by-type', [App\Http\Controllers\ReportController::class, 'movementsByType']);
+                Route::get('top-products', [App\Http\Controllers\ReportController::class, 'topProducts']);
+                Route::get('sales-trend', [App\Http\Controllers\ReportController::class, 'salesTrend']);
+                Route::get('sales-by-location', [App\Http\Controllers\ReportController::class, 'salesByLocation']);
+                Route::get('low-stock-products', [App\Http\Controllers\ReportController::class, 'lowStockProducts']);
+                Route::get('payment-methods', [App\Http\Controllers\ReportController::class, 'paymentMethods']);
+                Route::get('transfer-stats', [App\Http\Controllers\ReportController::class, 'transferStats']);
+            });
+
+
             // Rutas de conteo de inventario
             Route::get('inventory-counts/{id}/pdf-url', [InventoryCountController::class, 'generatePdfUrl']);
             Route::apiResource('inventory-counts', InventoryCountController::class);
             Route::apiResource('inventory-counts-details', InventoryCountDetailController::class);
+
+            // Rutas de reportes de ventas
+            Route::get('sales-reports/{id}/pdf-url', [SalesReportController::class, 'generatePdfUrl']);
 
             // Rutas de tokens de dispositivos (notificaciones push)
             Route::prefix('device-tokens')->group(function () {

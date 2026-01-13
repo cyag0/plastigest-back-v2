@@ -30,6 +30,7 @@ class MovementDetail extends Model
         'new_stock',
         'batch_number',
         'expiry_date',
+        'content',
     ];
 
     protected $casts = [
@@ -39,6 +40,7 @@ class MovementDetail extends Model
         'previous_stock' => 'decimal:2',
         'new_stock' => 'decimal:2',
         'expiry_date' => 'date',
+        'content' => 'array',
     ];
 
     public function movement(): BelongsTo
