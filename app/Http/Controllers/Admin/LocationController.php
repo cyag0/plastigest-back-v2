@@ -5,9 +5,12 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\LocationResource;
 use App\Models\Admin\Location;
+use App\Support\CurrentCompany;
+use Illuminate\Container\Attributes\Log;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log as FacadesLog;
 
 class LocationController extends CrudController
 {
@@ -48,9 +51,13 @@ class LocationController extends CrudController
     {
         /** @var \Illuminate\Database\Eloquent\Builder $query */
 
-        if (isset($params['company_id'])) {
-            $query->where('company_id', $params['company_id']);
+        $company = CurrentCompany::get();
+
+        if ($company) {
+            $query->where('company_id', $company->id);
         }
+
+        FacadesLog::info('HandleQuery Params: ', $params);
 
         // Filtro por tipo de locación
         if (isset($params['location_type'])) {

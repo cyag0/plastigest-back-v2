@@ -588,4 +588,171 @@ class ReportController extends Controller
             ]
         ]);
     }
+
+    /**
+     * Get transfer statistics
+     */
+    public function transferStats(Request $request)
+    {
+        $companyId = CurrentCompany::id();
+        $locationId = CurrentLocation::id();
+
+        // Determinar el período
+        $period = $request->get('period', 'month'); // 'today', 'week', 'month', 'year'
+        $dateRange = $this->getDateRange($period);
+
+        // Total de transferencias en el período
+        $totalTransfers = Movement::where('company_id', $companyId)
+            ->where('movement_type', 'transfer')
+            ->whereBetween('movement_date', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where(function ($q) use ($locationId) {
+                    $q->where('location_origin_id', $locationId)
+                        ->orWhere('location_destination_id', $locationId);
+                });
+            })
+            ->count();
+
+        // Transferencias enviadas
+        $transfersSent = Movement::where('company_id', $companyId)
+            ->where('movement_type', 'transfer')
+            ->whereBetween('movement_date', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where('location_origin_id', $locationId);
+            })
+            ->count();
+
+        // Transferencias recibidas
+        $transfersReceived = Movement::where('company_id', $companyId)
+            ->where('movement_type', 'transfer')
+            ->whereBetween('movement_date', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where('location_destination_id', $locationId);
+            })
+            ->count();
+
+        // Transferencias por estado
+        $transfersByStatus = Movement::where('company_id', $companyId)
+            ->where('movement_type', 'transfer')
+            ->whereBetween('movement_date', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where(function ($q) use ($locationId) {
+                    $q->where('location_origin_id', $locationId)
+                        ->orWhere('location_destination_id', $locationId);
+                });
+            })
+            ->select('status', DB::raw('count(*) as count'))
+            ->groupBy('status')
+            ->get()
+            ->mapWithKeys(function ($item) {
+                return [$item->status => $item->count];
+            });
+
+        // Productos más transferidos
+        $topProducts = DB::table('movements_details')
+            ->join('movements', 'movements_details.movement_id', '=', 'movements.id')
+            ->join('products', 'movements_details.product_id', '=', 'products.id')
+            ->where('movements.company_id', $companyId)
+            ->where('movements.movement_type', 'transfer')
+            ->whereBetween('movements.movement_date', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where(function ($q) use ($locationId) {
+                    $q->where('movements.location_origin_id', $locationId)
+                        ->orWhere('movements.location_destination_id', $locationId);
+                });
+            })
+            ->select(
+                'products.id',
+                'products.name',
+                'products.code',
+                DB::raw('SUM(movements_details.quantity) as total_quantity'),
+                DB::raw('COUNT(DISTINCT movements.id) as transfer_count')
+            )
+            ->groupBy('products.id', 'products.name', 'products.code')
+            ->orderByDesc('total_quantity')
+            ->limit(10)
+            ->get();
+
+        // Ubicaciones con más transferencias
+        $topLocations = DB::table('movements')
+            ->leftJoin('locations as origin', 'movements.location_origin_id', '=', 'origin.id')
+            ->leftJoin('locations as destination', 'movements.location_destination_id', '=', 'destination.id')
+            ->where('movements.company_id', $companyId)
+            ->where('movements.movement_type', 'transfer')
+            ->whereBetween('movements.movement_date', $dateRange)
+            ->select(
+                DB::raw('COALESCE(origin.name, destination.name) as location_name'),
+                DB::raw('COUNT(*) as transfer_count')
+            )
+            ->groupBy('location_name')
+            ->orderByDesc('transfer_count')
+            ->limit(5)
+            ->get();
+
+        // Transferencias por período (últimos 7 días o 12 meses según el período)
+        if ($period === 'today' || $period === 'week') {
+            // Últimos 7 días
+            $transfersByPeriod = Movement::where('company_id', $companyId)
+                ->where('movement_type', 'transfer')
+                ->whereBetween('movement_date', [now()->subDays(7), now()])
+                ->when($locationId, function ($query) use ($locationId) {
+                    $query->where(function ($q) use ($locationId) {
+                        $q->where('location_origin_id', $locationId)
+                            ->orWhere('location_destination_id', $locationId);
+                    });
+                })
+                ->select(
+                    DB::raw('DATE(movement_date) as date'),
+                    DB::raw('COUNT(*) as count')
+                )
+                ->groupBy('date')
+                ->orderBy('date')
+                ->get();
+        } else {
+            // Últimos 12 meses
+            $transfersByPeriod = Movement::where('company_id', $companyId)
+                ->where('movement_type', 'transfer')
+                ->whereBetween('movement_date', [now()->subMonths(12), now()])
+                ->when($locationId, function ($query) use ($locationId) {
+                    $query->where(function ($q) use ($locationId) {
+                        $q->where('location_origin_id', $locationId)
+                            ->orWhere('location_destination_id', $locationId);
+                    });
+                })
+                ->select(
+                    DB::raw('DATE_FORMAT(movement_date, "%Y-%m") as month'),
+                    DB::raw('COUNT(*) as count')
+                )
+                ->groupBy('month')
+                ->orderBy('month')
+                ->get();
+        }
+
+        // Tiempo promedio de procesamiento (diferencia entre created_at y updated_at para transferencias completadas)
+        $avgProcessingTime = Movement::where('company_id', $companyId)
+            ->where('movement_type', 'transfer')
+            ->where('status', 'completed')
+            ->whereBetween('movement_date', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where(function ($q) use ($locationId) {
+                    $q->where('location_origin_id', $locationId)
+                        ->orWhere('location_destination_id', $locationId);
+                });
+            })
+            ->select(DB::raw('AVG(TIMESTAMPDIFF(HOUR, created_at, updated_at)) as avg_hours'))
+            ->value('avg_hours');
+
+        return response()->json([
+            'data' => [
+                'total_transfers' => $totalTransfers,
+                'transfers_sent' => $transfersSent,
+                'transfers_received' => $transfersReceived,
+                'transfers_by_status' => $transfersByStatus,
+                'top_products' => $topProducts,
+                'top_locations' => $topLocations,
+                'transfers_by_period' => $transfersByPeriod,
+                'avg_processing_time_hours' => round($avgProcessingTime ?? 0, 1),
+            ]
+        ]);
+    }
 }

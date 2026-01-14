@@ -7,7 +7,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use App\Models\Admin\Company;
+use App\Models\Admin\Customer as AdminCustomer;
 use App\Models\Admin\Location;
+use App\Models\Supplier;
+use App\Models\Customer;
 
 /**
  * @mixin IdeHelperMovement
@@ -25,16 +28,17 @@ class Movement extends Model
         'movement_type',
         'movement_reason',
         'reference_type',
+        'reference_id',
         'total_cost',
         'status',
         'user_id',
         'movement_date',
-        'notes',
+        //'notes',
         'content'
     ];
 
     protected $casts = [
-        'total_amount' => 'decimal:2',
+        'total_cost' => 'decimal:2',
         'movement_date' => 'datetime',
         'content' => 'json'
     ];

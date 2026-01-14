@@ -21,7 +21,8 @@ return [
     |--------------------------------------------------------------------------
     | Patterns that this package will apply CORS headers to.
     */
-    'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    //'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    'paths' => ['*'],
 
     /*
     |--------------------------------------------------------------------------
@@ -36,10 +37,10 @@ return [
     | Allowed Origins
     |--------------------------------------------------------------------------
     | Origins that are allowed to make CORS requests.
-    | Para desarrollo, permitir localhost en cualquier puerto.
+    | Para desarrollo, permitir todos los orígenes localhost.
     */
     'allowed_origins' => [
-        env('FRONTEND_URL', 'http://localhost:8081'),
+        '*'
     ],
 
     /*
@@ -51,8 +52,7 @@ return [
     'allowed_origins_patterns' => [
         '/^http:\/\/localhost:\d+$/',
         '/^http:\/\/127\.0\.0\.1:\d+$/',
-        '/^http:\/\/192\.168\.\d+\.\d+:\d+$/', // Permite cualquier IP local con puerto
-        '/^http:\/\/192\.168\.\d+\.\d+$/', // Permite cualquier IP local sin puerto
+
     ],
 
     /*
@@ -89,8 +89,8 @@ return [
     | Supports Credentials
     |--------------------------------------------------------------------------
     | Indica si las cookies/credenciales pueden ser enviadas con requests CORS.
-    | Para Sanctum, debe ser true para que funcionen las cookies de sesión.
+    | Para React Native Web, usar false para evitar problemas con preflight.
     */
-    'supports_credentials' => true,
+    'supports_credentials' => false,
 
 ];
