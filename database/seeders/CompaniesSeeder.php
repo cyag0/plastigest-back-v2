@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Admin\Company;
+use App\Models\Admin\Location;
 use Illuminate\Database\Seeder;
 
 class CompaniesSeeder extends Seeder
@@ -12,35 +13,77 @@ class CompaniesSeeder extends Seeder
      */
     public function run(): void
     {
-        // Crear las dos compañías principales
-        $companies = [
+        // Desactivar restricciones de foreign keys temporalmente
+        \DB::statement('SET FOREIGN_KEY_CHECKS=0;');
+        
+        // Limpiar datos anteriores
+        Location::query()->delete();
+        Company::query()->delete();
+
+        // Crear compañía Cocos Francisco
+        $company = Company::create([
+            'name' => 'Cocos Francisco',
+            'business_name' => 'Cocos Francisco Distribuidora S.A. de C.V.',
+            'rfc' => 'CFD987654321',
+            'email' => 'ventas@cocosfrancisco.com',
+            'phone' => '+52 322 123 4567',
+            'address' => 'Puerto Vallarta, Jalisco',
+            'is_active' => true,
+        ]);
+
+        // Crear sucursales de Cocos Francisco
+        $locations = [
             [
-                'name' => 'Jara',
-                'business_name' => 'Jara Productos Plásticos S.A. de C.V.',
-                'rfc' => 'JPP123456789',
-                'email' => 'contacto@jara.com',
-                'phone' => '+52 55 1234 5678',
-                'address' => 'Av. Industrial 123, Col. Zona Industrial, Ciudad de México',
+                'name' => 'Cocos Francisco Matriz',
+                'address' => 'Av. Francisco Villa 100, Centro, Puerto Vallarta, Jalisco, 48300',
+                'phone' => '+52 322 123 4567',
+                'is_main' => true,
                 'is_active' => true,
             ],
             [
-                'name' => 'Cocos Francisco',
-                'business_name' => 'Cocos Francisco Distribuidora S.A. de C.V.',
-                'rfc' => 'CFD987654321',
-                'email' => 'ventas@cocosfrancisco.com',
-                'phone' => '+52 55 9876 5432',
-                'address' => 'Carretera Nacional Km 45, Zona Agrícola, Estado de México',
+                'name' => 'Cocos Francisco Lija',
+                'address' => 'Calle Lija 50, Col. Las Juntas, Puerto Vallarta, Jalisco, 48350',
+                'phone' => '+52 322 123 4568',
+                'is_main' => false,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Cocos Francisco Volcanes',
+                'address' => 'Av. Los Volcanes 200, Versalles, Puerto Vallarta, Jalisco, 48310',
+                'phone' => '+52 322 123 4569',
+                'is_main' => false,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Cocos Francisco Mojoneras',
+                'address' => 'Carretera a Las Mojoneras Km 5, Puerto Vallarta, Jalisco, 48315',
+                'phone' => '+52 322 123 4570',
+                'is_main' => false,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Cocos Francisco Pitillal',
+                'address' => 'Av. Francisco Villa 500, Pitillal, Puerto Vallarta, Jalisco, 48290',
+                'phone' => '+52 322 123 4571',
+                'is_main' => false,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Cocos Francisco Ixtapa',
+                'address' => 'Boulevard Ixtapa 75, Ixtapa, Puerto Vallarta, Jalisco, 48280',
+                'phone' => '+52 322 123 4572',
+                'is_main' => false,
                 'is_active' => true,
             ],
         ];
 
-        foreach ($companies as $companyData) {
-            Company::firstOrCreate(
-                ['rfc' => $companyData['rfc']], // Buscar por RFC único
-                $companyData
-            );
+        foreach ($locations as $locationData) {
+            Location::create(array_merge($locationData, ['company_id' => $company->id]));
         }
 
-        $this->command->info('Compañías creadas exitosamente: Jara y Cocos Francisco');
+        // Reactivar restricciones de foreign keys
+        \DB::statement('SET FOREIGN_KEY_CHECKS=1;');
+
+        $this->command->info('Compañía y 6 sucursales de Cocos Francisco creadas exitosamente');
     }
 }
