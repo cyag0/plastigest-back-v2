@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\PurchaseResource;
+use App\Models\Product;
 use App\Models\Purchase;
 use App\Models\Task;
 use App\Support\CurrentCompany;
@@ -956,5 +957,97 @@ class PurchaseController extends CrudController
         }
 
         return $phone;
+    }
+
+    /**
+     * Obtener lista de productos y paquetes combinados para el POS
+     * Devuelve un array unificado con productos individuales y paquetes,
+     * cada uno con un campo 'price' formateado según el tipo (purchase/sale)
+     *
+     * GET /purchases/products-list?type=purchases
+     */
+    public function getProductsList(Request $request)
+    {
+        $location = CurrentLocation::get();
+        $type = $request->input('type', 'purchases'); // 'purchases' o 'sales'
+
+        // Obtener productos con sus relaciones
+        $products = Product::whereHas('locations', function ($query) use ($location) {
+            $query->where('location_id', $location->id);
+        })
+            ->with([
+                'units',
+                'activePackages', // Cargar paquetes activos
+                'mainImage',
+                'locations' => function ($query) use ($location) {
+                    $query->where('location_id', $location->id);
+                }
+            ])
+            ->where('is_active', true)
+            ->get();
+
+        $items = [];
+
+        foreach ($products as $product) {
+            // Obtener el stock del producto en la ubicación actual
+            $currentStock = $product->locations->first()?->pivot?->current_stock ?? 0;
+
+            // 1. Agregar el producto individual
+            $items[] = [
+                'id' => 'p-' . $product->id, // Prefijo para diferenciarlo de paquetes
+                'product_id' => $product->id,
+                'code' => $product->code,
+                'name' => $product->name,
+                'price' => (float) ($type === 'purchases'
+                    ? ($product->purchase_price ?? 0)
+                    : ($product->sale_price ?? 0)),
+                'current_stock' => (float) $currentStock,
+                'category_id' => $product->category_id,
+                'unit_id' => $product->unit_id,
+                'unit_type' => $product->unit_type,
+                'unit_name' => $product->unit?->name,
+                'unit_abbreviation' => $product->unit?->abbreviation,
+                'main_image' => $product->mainImage ? [
+                    'uri' => $product->mainImage->url ?? null,
+                ] : null,
+                'type' => 'product', // Tipo: producto individual
+            ];
+
+            // 2. Agregar cada paquete activo del producto
+            foreach ($product->activePackages as $package) {
+                $items[] = [
+                    'id' => 'pkg-' . $package->id, // Prefijo para identificar paquetes
+                    'product_id' => $product->id,
+                    'package_id' => $package->id,
+                    'code' => $package->barcode,
+                    'name' => $product->name . ' - ' . $package->package_name,
+                    'price' => (float) ($type === 'purchases'
+                        ? ($package->purchase_price ?? ($product->purchase_price * $package->quantity_per_package) ?? 0)
+                        : ($package->sale_price ?? ($product->sale_price * $package->quantity_per_package) ?? 0)),
+                    'current_stock' => (float) floor($currentStock / $package->quantity_per_package), // Stock en paquetes
+                    'category_id' => $product->category_id,
+                    'unit_id' => null, // Los paquetes no tienen unidad
+                    'unit_name' => $package->package_name,
+                    'unit_abbreviation' => $package->package_name,
+                    'main_image' => $product->mainImage ? [
+                        'uri' => $product->mainImage->url ?? null,
+                    ] : null,
+                    'type' => 'package', // Tipo: paquete
+                    'quantity_per_package' => (float) $package->quantity_per_package,
+                    'is_default' => $package->is_default,
+                    'available_units' => [], // Los paquetes no tienen unidades alternativas
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $items,
+            'meta' => [
+                'total_items' => count($items),
+                'type' => $type,
+                'location_id' => $location->id,
+            ]
+        ]);
     }
 }

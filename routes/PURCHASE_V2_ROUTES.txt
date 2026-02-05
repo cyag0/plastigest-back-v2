@@ -1,0 +1,19 @@
+// Agregar estas rutas dentro de Route::middleware('auth:sanctum')->group(function () {
+// Después de las rutas existentes de purchases
+
+// Purchase V2 - Real-time purchase management
+Route::prefix('purchases-v2')->group(function () {
+    // Draft management (real-time sync)
+    Route::post('draft', [PurchaseV2Controller::class, 'upsertDraft']);
+    Route::get('draft', [PurchaseV2Controller::class, 'getDraft']);
+
+    // Status transitions
+    Route::post('{id}/confirm', [PurchaseV2Controller::class, 'confirm']);
+    Route::post('{id}/mark-in-transit', [PurchaseV2Controller::class, 'markInTransit']);
+    Route::post('{id}/receive', [PurchaseV2Controller::class, 'receive']);
+    Route::post('{id}/cancel', [PurchaseV2Controller::class, 'cancel']);
+
+    // List and details
+    Route::get('', [PurchaseV2Controller::class, 'index']);
+    Route::get('{id}', [PurchaseV2Controller::class, 'show']);
+});

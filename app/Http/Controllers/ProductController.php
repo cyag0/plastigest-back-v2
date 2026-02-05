@@ -47,7 +47,8 @@ class ProductController extends CrudController
             'supplier',
             'mainImage',
             'locations',
-            //'unit'
+            'unit',
+            'activePackages'
         ];
     }
 
@@ -78,10 +79,40 @@ class ProductController extends CrudController
     {
         $product = Product::with($this->getShowRelations())->findOrFail($id);
 
-        // Agregar unidades disponibles al producto
-        $product->available_units = $product->availableUnits();
-
         return new ProductResource($product);
+    }
+
+    /**
+     * Sobrescribir filtros básicos para excluir is_active de la tabla products
+     * ya que ahora se maneja en el pivot product_location
+     */
+    protected function applyBasicFilters($query, array $params)
+    {
+        // Filtro por búsqueda general
+        if (isset($params['search']) && !empty($params['search'])) {
+            $search = $params['search'];
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('code', 'like', "%{$search}%")
+                    ->orWhere('description', 'like', "%{$search}%");
+            });
+        }
+
+        // NO aplicar filtro is_active aquí, se maneja en handleQuery con el pivot
+
+        // Filtro por company_id si existe
+        if (isset($params['company_id'])) {
+            $query->where('company_id', $params['company_id']);
+        }
+
+        // Filtro por fecha de creación
+        if (isset($params['date_from'])) {
+            $query->whereDate('created_at', '>=', $params['date_from']);
+        }
+
+        if (isset($params['date_to'])) {
+            $query->whereDate('created_at', '<=', $params['date_to']);
+        }
     }
 
     /**
@@ -100,6 +131,11 @@ class ProductController extends CrudController
             $query->where('company_id', $companyId);
         }
 
+        if (isset($params['supplier_id'])) {
+            $query->where('supplier_id', $params['supplier_id']);
+        }
+
+
         // Filtrar por categoría
         if (isset($params['category_id'])) {
             $query->where('category_id', $params['category_id']);
@@ -107,13 +143,14 @@ class ProductController extends CrudController
 
         // Filtrar por estado activo en la ubicación actual
         if (isset($params['is_active'])) {
-
             if ($locationId) {
                 $query->whereHas('locations', function ($q) use ($params, $locationId) {
                     $q->where('location_id', $locationId)
-                        ->where('product_location.active', $params['is_active']);
+                        ->where('product_location.active', true);
                 });
             }
+            // Eliminar el parámetro para evitar que se intente filtrar en la tabla products
+            unset($params['is_active']);
         }
 
         // Filtrar por stock bajo
@@ -129,7 +166,7 @@ class ProductController extends CrudController
 
         // Filtrar por disponibilidad para venta
         if (isset($params['for_sale'])) {
-            $query->where('for_sale', $params['for_sale']);
+            $query->where('for_sale', true);
         }
 
         // Búsqueda por nombre o código
@@ -537,35 +574,51 @@ class ProductController extends CrudController
         $currentLocationId = $data['current_location_id'] ?? null;
         $isActive = $request->boolean('is_active');
 
-        // Obtener datos del stock para el pivot
-        $pivotData = [
-            'active' => $isActive,
-            'minimum_stock' => $request->input('minimum_stock', 0),
-        ];
-
-        // Si se proporciona maximum_stock, incluirlo
-        if ($request->has('maximum_stock')) {
-            $pivotData['maximum_stock'] = $request->input('maximum_stock', 0);
-        }
-
         // Si no se especifica currentLocationId pero hay una ubicación actual, usarla
         if (!$currentLocationId && current_location_id()) {
             $currentLocationId = current_location_id();
         }
 
+        // Obtener la compañía del producto
+        $companyId = $product->company_id ?? current_company_id();
 
-        if ($currentLocationId) {
-            $relation = $product->locations();
-            $exists = $relation->where('location_id', $currentLocationId)->exists();
+        if (!$companyId) {
+            return;
+        }
 
-            if ($exists) {
-                // Actualiza pivot si ya existe la relación
-                $relation->updateExistingPivot($currentLocationId, $pivotData);
+        // Obtener todas las locaciones de la compañía
+        $allLocations = \App\Models\Admin\Location::where('company_id', $companyId)->get();
+
+        // Preparar datos para sincronización
+        $syncData = [];
+
+        foreach ($allLocations as $location) {
+            if ($location->id == $currentLocationId) {
+                // Para la ubicación actual, usar los datos del request
+                $syncData[$location->id] = [
+                    'active' => $isActive,
+                    'minimum_stock' => $request->input('minimum_stock', 0),
+                    'maximum_stock' => $request->input('maximum_stock', 0),
+                    'current_stock' => 0,
+                ];
             } else {
-                // Crea la relación si no existe
-                $relation->attach($currentLocationId, $pivotData);
+                // Para las demás ubicaciones, establecer como inactivo con valores en 0
+                // Solo crear si no existe previamente
+                $exists = $product->locations()->where('location_id', $location->id)->exists();
+
+                if (!$exists) {
+                    $syncData[$location->id] = [
+                        'active' => false,
+                        'minimum_stock' => 0,
+                        'maximum_stock' => 0,
+                        'current_stock' => 0,
+                    ];
+                }
             }
         }
+
+        // Sincronizar sin eliminar relaciones existentes
+        $product->locations()->syncWithoutDetaching($syncData);
     }
 
     /**

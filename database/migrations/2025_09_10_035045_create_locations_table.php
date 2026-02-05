@@ -15,11 +15,17 @@ return new class extends Migration
             $table->id();
             $table->foreignId('company_id')->constrained('companies')->onDelete('cascade');
             $table->string('name', 150);
+            $table->text('description')->nullable();
             $table->string('address', 255)->nullable();
+            $table->string('city', 100)->nullable();
+            $table->string('state', 100)->nullable();
+            $table->string('country', 100)->nullable();
+            $table->string('postal_code', 20)->nullable();
             $table->string('phone', 50)->nullable();
             $table->string('email', 100)->nullable();
-            $table->boolean('is_main')->default(false);
+            $table->boolean('is_warehouse')->default(false);
             $table->boolean('is_active')->default(true);
+            $table->json('settings')->nullable();
             $table->timestamps();
         });
     }

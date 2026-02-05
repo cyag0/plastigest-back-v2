@@ -16,12 +16,14 @@ return new class extends Migration
             $table->foreignId('company_id')->constrained('companies')->onDelete('cascade');
             $table->foreignId('category_id')->nullable()->constrained('categories')->onDelete('set null');
             $table->foreignId('unit_id')->nullable()->constrained('units')->onDelete('set null');
+            $table->foreignId('supplier_id')->nullable()->constrained('suppliers')->onDelete('set null');
             $table->string('code', 50)->unique();
             $table->string('name', 150);
             $table->text('description')->nullable();
             $table->decimal('purchase_price', 12, 2)->nullable();
             $table->decimal('sale_price', 12, 2)->nullable();
-            $table->boolean('is_active')->default(true);
+            $table->enum('product_type', ['raw_material', 'processed', 'commercial'])->default('commercial');
+            $table->boolean('for_sale')->default(true);
             $table->timestamps();
         });
     }

@@ -24,14 +24,12 @@ class Product extends Model
         'unit_id',
         'supplier_id',
         'product_type',
-        'is_active',
         'for_sale',
     ];
 
     protected $casts = [
         'purchase_price' => 'decimal:2',
         'sale_price' => 'decimal:2',
-        'is_active' => 'boolean',
         'for_sale' => 'boolean',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
@@ -78,17 +76,6 @@ class Product extends Model
     public function supplier()
     {
         return $this->belongsTo(Supplier::class);
-    }
-
-    /**
-     * Get available units for this product (base unit + derived units)
-     */
-    public function availableUnits()
-    {
-        return Unit::where(function ($query) {
-            $query->where('id', $this->unit_id)
-                  ->orWhere('base_unit_id', $this->unit_id);
-        })->get();
     }
 
     /**

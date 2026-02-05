@@ -29,10 +29,7 @@ class UnitControllerV2 extends CrudController
      */
     protected function indexRelations(): array
     {
-        return [
-            'company',
-            'baseUnit',
-        ];
+        return [];
     }
 
     /**
@@ -40,10 +37,7 @@ class UnitControllerV2 extends CrudController
      */
     protected function getShowRelations(): array
     {
-        return [
-            'company',
-            'baseUnit',
-        ];
+        return [];
     }
 
     /**
@@ -55,21 +49,21 @@ class UnitControllerV2 extends CrudController
         $query;
 
         // Filtro por compañía
-        if (isset($params['company_id'])) {
+        /*  if (isset($params['company_id'])) {
             $query->where('company_id', $params['company_id']);
-        }
-
-        if (isset($params["only_base"])) {
+        } */
+        $query->where('company_id', null);
+        /* if (isset($params["only_base"])) {
             $query->where('base_unit_id', null);
         }
-
+ */
         // Filtro para obtener unidad base + derivadas de un producto
-        if (isset($params['product_unit_id'])) {
+        /*  if (isset($params['product_unit_id'])) {
             $query->where(function ($q) use ($params) {
                 $q->where('id', $params['product_unit_id'])
                     ->orWhere('base_unit_id', $params['product_unit_id']);
             });
-        }
+        } */
     }
 
     /**
@@ -240,6 +234,34 @@ class UnitControllerV2 extends CrudController
             return response()->json([
                 'success' => true,
                 'data' => $grouped
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener unidades agrupadas: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function getGroupedByType(Request $request): JsonResponse
+    {
+        try {
+
+            // Obtener todas las unidades de la compañía
+            $allUnits = Unit::where('company_id', null)
+                ->orderBy('name')
+                ->get();
+
+
+            $units = [];
+
+            foreach ($allUnits as $unit) {
+                $units[$unit->unit_type][] = $unit;
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $units
             ]);
         } catch (\Exception $e) {
             return response()->json([

@@ -90,7 +90,8 @@ class SaleController extends CrudController
             'customer_email' => 'nullable|email|max:255',
 
             // Método de pago
-            'payment_method' => 'required|in:efectivo,tarjeta,transferencia',
+            'payment_method' => 'required|in:cash,card,transfer,credit',
+            'paid_amount' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
@@ -115,7 +116,8 @@ class SaleController extends CrudController
             'customer_email' => 'nullable|email|max:255',
 
             // Método de pago
-            'payment_method' => 'sometimes|required|in:efectivo,tarjeta,transferencia',
+            'payment_method' => 'sometimes|required|in:cash,card,transfer,credit',
+            'paid_amount' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
@@ -168,6 +170,7 @@ class SaleController extends CrudController
                 'content' => $content,
                 'company_id' => $company->id,
                 'user_id' => $user->id,
+                'payment_method' => $data['payment_method'],
             ];
 
             // Calcular total
@@ -176,6 +179,31 @@ class SaleController extends CrudController
                 $totalCost += $detail['quantity'] * $detail['unit_price'];
             }
             $saleData['total_cost'] = $totalCost;
+
+            // Manejar pago inicial
+            $paidAmount = $data['paid_amount'] ?? $totalCost;
+            $saleData['paid_amount'] = $paidAmount;
+
+            // Determinar payment_status
+            if ($paidAmount >= $totalCost) {
+                $saleData['payment_status'] = 'paid';
+            } elseif ($paidAmount > 0) {
+                $saleData['payment_status'] = 'partial';
+            } else {
+                $saleData['payment_status'] = 'pending';
+            }
+
+            // Inicializar payment_history
+            $paymentHistory = [];
+            if ($paidAmount > 0) {
+                $paymentHistory[] = [
+                    'amount' => $paidAmount,
+                    'payment_method' => $data['payment_method'],
+                    'date' => now()->toDateTimeString(),
+                    'notes' => $data['notes'] ?? null,
+                ];
+            }
+            $saleData['payment_history'] = $paymentHistory;
 
             // Validar monto recibido para efectivo
             /* if ($data['payment_method'] === 'efectivo' && isset($data['received_amount'])) {
@@ -714,6 +742,138 @@ class SaleController extends CrudController
             return response()->json([
                 'success' => false,
                 'message' => 'Error al obtener corte de caja: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Obtener datos iniciales para crear una venta (productos, categorías, unidades)
+     */
+    public function getInitialData(Request $request)
+    {
+        try {
+            $companyId = CurrentCompany::get()->id;
+            $locationId = CurrentLocation::get()->id;
+
+            // Cargar productos activos para venta con sus paquetes
+            $products = Product::where('company_id', $companyId)
+                ->where('for_sale', true)
+                ->whereHas('locations', function ($query) use ($locationId) {
+                    $query->where('location_id', $locationId)
+                        ->where('active', true);
+                })
+                ->with([
+                    'mainImage',
+                    'unit',
+                    'category',
+                    'activePackages',
+                    'locations' => function ($query) use ($locationId) {
+                        $query->where('location_id', $locationId);
+                    }
+                ])
+                ->get();
+
+            // Cargar unidades agrupadas por tipo
+            $units = DB::table('units')
+                ->select('id', 'name', 'abbreviation', 'unit_type', 'is_base_unit', 'factor_to_base')
+                ->orderBy('unit_type')
+                ->orderBy('name')
+                ->get()
+                ->groupBy('unit_type');
+
+            // Cargar categorías
+            $categories = DB::table('categories')
+                ->where('company_id', $companyId)
+                ->select('id', 'name')
+                ->orderBy('name')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'products' => $products,
+                    'units' => $units,
+                    'categories' => $categories,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error al obtener datos iniciales para venta: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al cargar datos iniciales',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Agregar un pago a una venta existente
+     */
+    public function addPayment(Request $request, int $id)
+    {
+        try {
+            $validated = $request->validate([
+                'amount' => 'required|numeric|min:0.01',
+                'payment_method' => 'required|in:cash,card,transfer,credit',
+                'notes' => 'nullable|string',
+            ]);
+
+            $sale = Sale::findOrFail($id);
+
+            // Obtener historial actual
+            $paymentHistory = $sale->payment_history ?? [];
+
+            // Calcular total pagado
+            $totalPaid = $sale->paid_amount ?? 0;
+            $newAmount = $validated['amount'];
+            $totalAfterPayment = $totalPaid + $newAmount;
+
+            // Verificar que no exceda el total
+            if ($totalAfterPayment > $sale->total_cost) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'El monto ingresado excede el saldo pendiente',
+                    'pending_amount' => $sale->total_cost - $totalPaid,
+                ], 400);
+            }
+
+            // Agregar nuevo pago al historial
+            $paymentHistory[] = [
+                'amount' => $newAmount,
+                'payment_method' => $validated['payment_method'],
+                'date' => now()->toDateTimeString(),
+                'notes' => $validated['notes'] ?? null,
+            ];
+
+            // Actualizar sale
+            $sale->paid_amount = $totalAfterPayment;
+            $sale->payment_history = $paymentHistory;
+
+            // Actualizar payment_status
+            if ($totalAfterPayment >= $sale->total_cost) {
+                $sale->payment_status = 'paid';
+            } elseif ($totalAfterPayment > 0) {
+                $sale->payment_status = 'partial';
+            }
+
+            $sale->save();
+
+            // Recargar relaciones
+            $sale->load($this->getShowRelations());
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Pago registrado correctamente',
+                'data' => new $this->resource($sale),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error al registrar pago: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al registrar pago',
+                'error' => $e->getMessage()
             ], 500);
         }
     }

@@ -12,6 +12,7 @@ use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\PurchaseController;
+use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\AdjustmentController;
@@ -124,6 +125,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Purchase Status Management Routes
             Route::prefix('purchases')->group(function () {
                 Route::get('stats', [PurchaseController::class, 'purchaseStats']);
+                Route::get('products-list', [PurchaseController::class, 'getProductsList']);
                 Route::post('{id}/advance', [PurchaseController::class, 'advance']);
                 Route::post('{id}/revert', [PurchaseController::class, 'revert']);
                 Route::post('{id}/transition', [PurchaseController::class, 'transitionTo']);
@@ -136,6 +138,20 @@ Route::middleware('auth:sanctum')->group(function () {
             // Purchase Management Routes
             Route::apiResource('purchases', PurchaseController::class);
 
+            // Purchase V2 Management Routes (New System with Real-time Draft Sync)
+            Route::prefix('purchases-v2')->group(function () {
+                Route::post('upsert-draft', [PurchaseV2Controller::class, 'upsertDraft']);
+                Route::get('draft', [PurchaseV2Controller::class, 'getDraft']);
+                Route::post('add-detail', [PurchaseV2Controller::class, 'addDetail']);
+                Route::post('details/{detailId}/update', [PurchaseV2Controller::class, 'updateDetail']);
+                Route::delete('details/{detailId}', [PurchaseV2Controller::class, 'removeDetail']);
+                Route::post('{id}/confirm', [PurchaseV2Controller::class, 'confirm']);
+                Route::post('{id}/mark-in-transit', [PurchaseV2Controller::class, 'markInTransit']);
+                Route::post('{id}/receive', [PurchaseV2Controller::class, 'receive']);
+                Route::post('{id}/cancel', [PurchaseV2Controller::class, 'cancel']);
+            });
+            Route::apiResource('purchases-v2', PurchaseV2Controller::class)->except(['store', 'update']);
+
 
             // Production Management Routes
             Route::apiResource('productions', ProductionController::class);
@@ -143,8 +159,10 @@ Route::middleware('auth:sanctum')->group(function () {
             // Sales Management Routes
             // Sale Status Management Routes and Stats (must be before apiResource)
             Route::prefix('sales')->group(function () {
+                Route::get('initial-data', [SaleController::class, 'getInitialData']);
                 Route::get('stats', [SaleController::class, 'salesStats']);
                 Route::get('cash-register', [SaleController::class, 'cashRegister']);
+                Route::post('{id}/add-payment', [SaleController::class, 'addPayment']);
                 Route::post('{id}/advance-status', [SaleController::class, 'advanceStatus']);
                 Route::post('{id}/revert-status', [SaleController::class, 'revertStatus']);
                 Route::post('{id}/cancel', [SaleController::class, 'cancel']);

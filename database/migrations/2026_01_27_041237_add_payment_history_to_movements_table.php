@@ -11,9 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('locations', function (Blueprint $table) {
-            //
-            $table->text('description')->nullable()->after('name');
+        Schema::table('movements', function (Blueprint $table) {
+            // Columna JSON para historial de pagos
+            $table->json('payment_history')->nullable()->after('paid_amount');
         });
     }
 
@@ -22,9 +22,8 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('locations', function (Blueprint $table) {
-            //
-            $table->dropColumn('description');
+        Schema::table('movements', function (Blueprint $table) {
+            $table->dropColumn('payment_history');
         });
     }
 };

@@ -7,6 +7,7 @@ use App\Models\ProductImage;
 use App\Utils\AppUploadUtil;
 use App\Models\Product;
 use App\Http\Resources\Resources;
+use App\Support\CurrentLocation;
 
 class ProductResource extends Resources
 {
@@ -28,12 +29,13 @@ class ProductResource extends Resources
         $minimumStock = null;
         $maximumStock = null;
 
-        $locationId =  isset($data["location_id"]) ? $data["location_id"] : (current_location_id() ?? null);
+        $location = CurrentLocation::get();
+        $locationId = $location ? $location->id : (isset($data["location_id"]) ? $data["location_id"] : (current_location_id() ?? null));
 
         if ($this->relationLoaded('locations') && $locationId) {
             $currentLocation = $this->locations->where('id', $locationId)->first();
             if ($currentLocation) {
-                $currentLocationActive = $currentLocation->pivot->active ?? $this->is_active;
+                $currentLocationActive = $currentLocation->pivot->active ?? false;
                 $currentStock = $currentLocation->pivot->current_stock ?? 0;
                 $minimumStock = $currentLocation->pivot->minimum_stock ?? 0;
                 $maximumStock = $currentLocation->pivot->maximum_stock ?? null;
@@ -77,25 +79,11 @@ class ProductResource extends Resources
                 'id' => $this->unit?->id,
                 'name' => $this->unit?->name,
                 'abbreviation' => $this->unit?->abbreviation,
+                'unit_type' => $this->unit?->unit_type,
             ];
         }
 
-        // Agregar unidades disponibles (base + derivadas)
-        if (isset($this->available_units)) {
-            $item['available_units'] = $this->available_units->map(function ($unit) {
-                return [
-                    'id' => $unit->id,
-                    'name' => $unit->name,
-                    'abbreviation' => $unit->abbreviation,
-                    'base_unit_id' => $unit->base_unit_id,
-                    'factor_to_base' => $unit->factor_to_base,
-                ];
-            });
-        }
-
         if ($editing) {
-
-
             if ($this->relationLoaded('productIngredients')) {
                 $item['ingredients'] = $this->productIngredients->map(function ($productIngredient) {
                     return [
@@ -124,6 +112,22 @@ class ProductResource extends Resources
             if ($mainImage) {
                 $item["main_image"] = AppUploadUtil::formatFile(Files::PRODUCT_IMAGES_PATH, $mainImage);
             }
+        }
+
+        if ($this->relationLoaded('activePackages')) {
+            $item['active_packages'] = $this->activePackages->map(function ($package) {
+                return [
+                    'id' => $package->id,
+                    'package_name' => $package->package_name,
+                    'barcode' => $package->barcode,
+                    'quantity_per_package' => $package->quantity_per_package,
+                    'purchase_price' => $package->purchase_price,
+                    'sale_price' => $package->sale_price,
+                    'is_active' => $package->is_active,
+                    'is_default' => $package->is_default,
+                    'sort_order' => $package->sort_order,
+                ];
+            });
         }
 
         return $item;

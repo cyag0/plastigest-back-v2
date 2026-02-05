@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\InventoryCountDetailResource;
 use App\Models\InventoryCountDetail;
+use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -100,6 +101,9 @@ class InventoryCountDetailController extends CrudController
         try {
             DB::beginTransaction();
 
+            CurrentLocation::id();
+
+            $data[]
             $detail = InventoryCountDetail::whereProductId($data['product_id'])
                 ->whereInventoryCountId($data['inventory_count_id']);
 
