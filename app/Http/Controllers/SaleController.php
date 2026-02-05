@@ -7,6 +7,7 @@ use App\Http\Resources\SaleResource;
 use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\Product;
+use App\Models\Expense;
 use App\Enums\SaleStatus;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -53,12 +54,44 @@ class SaleController extends CrudController
     }
 
     /**
+     * Sobrescribir el método de filtros básicos para adaptar a la tabla movements
+     */
+    protected function applyBasicFilters($query, array $params)
+    {
+        // Filtro por búsqueda general - buscar en campos relevantes de movements
+        if (isset($params['search']) && !empty($params['search'])) {
+            $search = $params['search'];
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.customer_name')) LIKE ?", ["%{$search}%"])
+                    ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.customer_phone')) LIKE ?", ["%{$search}%"])
+                    ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.customer_email')) LIKE ?", ["%{$search}%"])
+                    ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.document_number')) LIKE ?", ["%{$search}%"]);
+            });
+        }
+
+        // Filtro por company_id si existe
+        if (isset($params['company_id']) && !empty($params['company_id'])) {
+            $query->where('company_id', $params['company_id']);
+        }
+
+        // Filtro por fecha de creación
+        if (isset($params['date_from']) && !empty($params['date_from'])) {
+            $query->whereDate('created_at', '>=', $params['date_from']);
+        }
+
+        if (isset($params['date_to']) && !empty($params['date_to'])) {
+            $query->whereDate('created_at', '<=', $params['date_to']);
+        }
+    }
+
+    /**
      * Manejo de filtros personalizados
      */
     protected function handleQuery($query, array $params)
     {
         // Filtrar por estado
-        if (isset($params['status'])) {
+        if (isset($params['status']) && !empty($params['status'])) {
             $query->where('status', $params['status']);
         }
 
@@ -73,8 +106,8 @@ class SaleController extends CrudController
         }
 
         // Filtrar por método de pago
-        if (isset($params['payment_method'])) {
-            $query->whereJsonContains('content->payment_method', $params['payment_method']);
+        if (isset($params['payment_method']) && !empty($params['payment_method'])) {
+            $query->where('content->payment_method', $params['payment_method']);
         }
     }
 
@@ -654,6 +687,48 @@ class SaleController extends CrudController
                 return $hour['count'] > 0;
             }));
 
+            // Obtener gastos del día
+            $expenses = Expense::where('company_id', $companyId)
+                ->when($locationId, function ($q) use ($locationId) {
+                    $q->where('location_id', $locationId);
+                })
+                ->whereDate('expense_date', $date)
+                ->with(['user'])
+                ->get();
+
+            // Calcular totales de gastos por método de pago
+            $expensesByPaymentMethod = [
+                'efectivo' => 0,
+                'tarjeta' => 0,
+                'transferencia' => 0,
+            ];
+
+            $totalExpenses = 0;
+            $expensesByCategory = [];
+
+            foreach ($expenses as $expense) {
+                $totalExpenses += $expense->amount;
+
+                // Sumar por método de pago
+                if (isset($expensesByPaymentMethod[$expense->payment_method])) {
+                    $expensesByPaymentMethod[$expense->payment_method] += $expense->amount;
+                }
+
+                // Sumar por categoría
+                if (!isset($expensesByCategory[$expense->category])) {
+                    $expensesByCategory[$expense->category] = [
+                        'category' => $expense->category_label,
+                        'total' => 0,
+                        'count' => 0,
+                    ];
+                }
+                $expensesByCategory[$expense->category]['total'] += $expense->amount;
+                $expensesByCategory[$expense->category]['count']++;
+            }
+
+            // Calcular efectivo neto (ventas - gastos)
+            $netCash = $paymentMethods['efectivo'] - $expensesByPaymentMethod['efectivo'];
+
             return response()->json([
                 'success' => true,
                 'data' => [
@@ -664,23 +739,47 @@ class SaleController extends CrudController
                         'sales_count' => $salesCount,
                         'total_products' => $totalProducts,
                         'average_ticket' => $salesCount > 0 ? round($totalSales / $salesCount, 2) : 0,
+                        'total_expenses' => round($totalExpenses, 2),
+                        'net_income' => round($totalSales - $totalExpenses, 2),
                     ],
                     'payment_methods' => [
                         [
                             'method' => 'Efectivo',
                             'total' => round($paymentMethods['efectivo'], 2),
                             'percentage' => $totalSales > 0 ? round(($paymentMethods['efectivo'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['efectivo'], 2),
+                            'net' => round($netCash, 2),
                         ],
                         [
                             'method' => 'Tarjeta',
                             'total' => round($paymentMethods['tarjeta'], 2),
                             'percentage' => $totalSales > 0 ? round(($paymentMethods['tarjeta'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['tarjeta'], 2),
+                            'net' => round($paymentMethods['tarjeta'] - $expensesByPaymentMethod['tarjeta'], 2),
                         ],
                         [
                             'method' => 'Transferencia',
                             'total' => round($paymentMethods['transferencia'], 2),
                             'percentage' => $totalSales > 0 ? round(($paymentMethods['transferencia'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['transferencia'], 2),
+                            'net' => round($paymentMethods['transferencia'] - $expensesByPaymentMethod['transferencia'], 2),
                         ],
+                    ],
+                    'expenses' => [
+                        'total' => round($totalExpenses, 2),
+                        'count' => $expenses->count(),
+                        'by_category' => array_values($expensesByCategory),
+                        'items' => $expenses->map(function ($expense) {
+                            return [
+                                'id' => $expense->id,
+                                'category' => $expense->category_label,
+                                'description' => $expense->description,
+                                'amount' => round($expense->amount, 2),
+                                'payment_method' => $expense->payment_method_label,
+                                'user' => $expense->user->name ?? 'N/A',
+                                'created_at' => $expense->created_at->format('H:i:s'),
+                            ];
+                        }),
                     ],
                     'top_products' => array_map(function ($item) {
                         return [

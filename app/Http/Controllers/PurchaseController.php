@@ -57,6 +57,39 @@ class PurchaseController extends CrudController
     }
 
     /**
+     * Sobrescribir el método de búsqueda básica para la tabla movements
+     * La tabla movements no tiene columnas name, code, description
+     * Búsqueda en: id, document_number y campos JSON en content
+     */
+    protected function applyBasicFilters($query, array $params)
+    {
+        // Filtro por búsqueda general
+        if (isset($params['search']) && !empty($params['search'])) {
+            $search = $params['search'];
+            
+            $query->where(function ($q) use ($search) {
+                // Buscar en ID
+                $q->where('id', 'like', "%{$search}%");
+                
+                // Solo buscar en JSON si content no es null
+                $q->orWhere(function ($subQ) use ($search) {
+                    $subQ->whereNotNull('content')
+                        ->where(function ($jsonQ) use ($search) {
+                            $jsonQ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.supplier_name')) LIKE ?", ["%{$search}%"])
+                                ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.supplier_phone')) LIKE ?", ["%{$search}%"])
+                                ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.comments')) LIKE ?", ["%{$search}%"]);
+                        });
+                });
+            });
+        }
+        
+        // Filtro por company_id si existe
+        if (isset($params['company_id']) && !empty($params['company_id'])) {
+            $query->where('company_id', $params['company_id']);
+        }
+    }
+
+    /**
      * Manejo de filtros personalizados
      */
     protected function handleQuery($query, array $params)
@@ -66,8 +99,12 @@ class PurchaseController extends CrudController
             $query->where('location_origin_id', $params['location_id']);
         }
 
+        // Manejar filtro de estado - asegurarse de que sea string y no vacío
         if (isset($params['status'])) {
-            $query->where('status', $params['status']);
+            $status = is_array($params['status']) ? $params['status'][0] ?? '' : $params['status'];
+            if (!empty($status) && $status !== 'null' && $status !== 'undefined') {
+                $query->where('status', $status);
+            }
         }
 
         if (isset($params['start_date'])) {

@@ -146,7 +146,6 @@ class ReportController extends Controller
                     'products_count' => $movement->details->count(),
                     'money_type' => $this->getMoneyType($movement->movement_type, $movement->movement_reason),
                     'generated_money' => $this->generatedMoney($movement->movement_type, $movement->movement_reason),
-                    'document_number' => $movement->document_number,
                     'payment_method' => $content['payment_method'] ?? null,
                 ];
             });

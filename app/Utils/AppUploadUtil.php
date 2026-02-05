@@ -447,8 +447,8 @@ class AppUploadUtil
                 return null;
             }
 
-            // Generar URL completa para archivos públicos
-            $uri = url('/storage/' . $fullPath);
+            // Generar URL usando la ruta de la API para evitar problemas de CORS
+            $uri = url('/api/auth/files/' . $fullPath);
 
             // Obtener tipo MIME basado en la extensión del archivo
             $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));

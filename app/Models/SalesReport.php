@@ -21,6 +21,8 @@ class SalesReport extends Model
         'total_cash',
         'total_card',
         'total_transfer',
+        'total_expenses',
+        'net_income',
         'transactions_count',
         'notes',
     ];
@@ -31,6 +33,8 @@ class SalesReport extends Model
         'total_cash' => 'decimal:2',
         'total_card' => 'decimal:2',
         'total_transfer' => 'decimal:2',
+        'total_expenses' => 'decimal:2',
+        'net_income' => 'decimal:2',
         'transactions_count' => 'integer',
     ];
 
