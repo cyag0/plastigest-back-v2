@@ -14,6 +14,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\Movement;
+use App\Models\Expense;
 
 class SalesReportController extends CrudController
 {
@@ -28,6 +29,21 @@ class SalesReportController extends CrudController
     protected function getShowRelations(): array
     {
         return ['company', 'location', 'user'];
+    }
+
+    protected function applyBasicFilters($query, array $params)
+    {
+        if (empty($params['search'])) {
+            return;
+        }
+
+        $search = $params['search'];
+        $query->where(function ($query) use ($search) {
+            $query->where('id', 'like', "%{$search}%")
+                ->orWhere('report_date', 'like', "%{$search}%")
+                ->orWhere('notes', 'like', "%{$search}%")
+                ->orWhere('total_sales', 'like', "%{$search}%");
+        });
     }
 
     protected function handleQuery($query, array $params)
@@ -67,6 +83,8 @@ class SalesReportController extends CrudController
             'total_cash' => 'nullable|numeric|min:0',
             'total_card' => 'nullable|numeric|min:0',
             'total_transfer' => 'nullable|numeric|min:0',
+            'total_expenses' => 'nullable|numeric|min:0',
+            'net_income' => 'nullable|numeric',
             'transactions_count' => 'required|integer|min:0',
             'notes' => 'nullable|string',
         ]);
@@ -81,6 +99,8 @@ class SalesReportController extends CrudController
             'total_cash' => 'nullable|numeric|min:0',
             'total_card' => 'nullable|numeric|min:0',
             'total_transfer' => 'nullable|numeric|min:0',
+            'total_expenses' => 'nullable|numeric|min:0',
+            'net_income' => 'nullable|numeric',
             'transactions_count' => 'sometimes|integer|min:0',
             'notes' => 'nullable|string',
         ]);
@@ -108,6 +128,21 @@ class SalesReportController extends CrudController
         $data['total_cash'] = $data['total_cash'] ?? 0;
         $data['total_card'] = $data['total_card'] ?? 0;
         $data['total_transfer'] = $data['total_transfer'] ?? 0;
+        
+        // Calculate expenses if not provided
+        if (!isset($data['total_expenses']) && isset($data['report_date']) && isset($data['location_id'])) {
+            $expenses = Expense::where('location_id', $data['location_id'])
+                ->whereDate('expense_date', $data['report_date'])
+                ->sum('amount');
+            $data['total_expenses'] = $expenses;
+        } else {
+            $data['total_expenses'] = $data['total_expenses'] ?? 0;
+        }
+        
+        // Calculate net income
+        $totalSales = $data['total_sales'] ?? 0;
+        $totalExpenses = $data['total_expenses'] ?? 0;
+        $data['net_income'] = $totalSales - $totalExpenses;
 
         return $callback($data);
     }
@@ -185,6 +220,16 @@ class SalesReportController extends CrudController
                 }
             }
 
+            // Obtener gastos del día
+            $expenses = Expense::with(['user'])
+                ->where('location_id', $locationId)
+                ->whereDate('expense_date', $salesReport->report_date)
+                ->orderBy('created_at', 'asc')
+                ->get();
+
+            // Calcular total de gastos
+            $totalExpenses = $expenses->sum('amount');
+
             // Obtener la compañía
             $company = $salesReport->company;
 
@@ -194,6 +239,8 @@ class SalesReportController extends CrudController
                 'company' => $company,
                 'sales' => $sales,
                 'productsSold' => $productsSold,
+                'expenses' => $expenses,
+                'totalExpenses' => $totalExpenses,
             ]);
 
             // Configurar el PDF

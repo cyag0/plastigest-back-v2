@@ -9,6 +9,7 @@ use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use App\Support\CurrentLocation;
 
 class InventoryCountDetailController extends CrudController
 {
@@ -72,7 +73,7 @@ class InventoryCountDetailController extends CrudController
         return $request->validate([
             'inventory_count_id' => 'required|exists:inventory_counts,id',
             'product_id' => 'required|exists:products,id',
-            'location_id' => 'required|exists:locations,id',
+            /* 'location_id' => 'required|exists:locations,id', */
             'system_quantity' => 'required|numeric|min:0',
             'counted_quantity' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',

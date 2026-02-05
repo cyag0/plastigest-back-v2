@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Task;
 use App\Models\TaskComment;
 use App\Services\TaskService;
+use App\Services\NotificationService;
 use App\Support\CurrentCompany;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -142,6 +143,18 @@ class TaskController extends Controller
 
         $task->load(['assignedTo', 'assignedBy', 'location']);
 
+        // Enviar notificación si se asignó a alguien
+        if ($task->assigned_to) {
+            NotificationService::notifyTaskAssigned(
+                $task->assigned_to,
+                $company->id,
+                $task->id,
+                $task->title,
+                $task->priority ?? 'medium',
+                $task->due_date
+            );
+        }
+
         return response()->json($task, 201);
     }
 
@@ -216,6 +229,16 @@ class TaskController extends Controller
                 break;
             case 'complete':
                 $success = $task->complete($user);
+                // Notificar a quien asignó la tarea
+                if ($success && $task->assigned_by && $task->assigned_by !== $user->id) {
+                    NotificationService::notifyTaskCompleted(
+                        $task->assigned_by,
+                        $task->company_id,
+                        $task->id,
+                        $task->title,
+                        $user->name
+                    );
+                }
                 break;
             case 'cancel':
                 $success = $task->cancel();
@@ -260,6 +283,30 @@ class TaskController extends Controller
         ]);
 
         $comment->load('user:id,name,avatar');
+
+        // Notificar al usuario asignado (si no es quien comentó)
+        if ($task->assigned_to && $task->assigned_to !== $request->user()->id) {
+            NotificationService::notifyTaskComment(
+                $task->assigned_to,
+                $task->company_id,
+                $task->id,
+                $task->title,
+                $request->user()->name
+            );
+        }
+
+        // Notificar a quien creó la tarea (si no es quien comentó y no es el asignado)
+        if ($task->assigned_by && 
+            $task->assigned_by !== $request->user()->id && 
+            $task->assigned_by !== $task->assigned_to) {
+            NotificationService::notifyTaskComment(
+                $task->assigned_by,
+                $task->company_id,
+                $task->id,
+                $task->title,
+                $request->user()->name
+            );
+        }
 
         return response()->json($comment, 201);
     }

@@ -33,6 +33,8 @@ use App\Http\Controllers\ProductPackageController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\SalesReportController;
+use App\Http\Controllers\ExpenseController;
+use App\Http\Controllers\ReminderController;
 
 /*
 |--------------------------------------------------------------------------
@@ -47,6 +49,16 @@ use App\Http\Controllers\SalesReportController;
 
 // Rutas públicas (sin autenticación)
 Route::prefix('auth')->group(function () {
+    // Ruta para servir archivos públicos con CORS
+    Route::get('files/{path}', function ($path) {
+        $fullPath = storage_path('app/public/' . $path);
+        
+        if (!file_exists($fullPath)) {
+            abort(404);
+        }
+        
+        return response()->file($fullPath);
+    })->where('path', '.*');
     Route::post('register', [AuthController::class, 'register']);
     Route::post('login', [AuthController::class, 'login']);
 });
@@ -94,7 +106,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('permissions/by-resource', [PermissionsController::class, 'getPermissionsByResource']);
             Route::apiResource('permissions', PermissionsController::class);
             Route::apiResource('roles', RolesController::class);
-            Route::apiResource('users', RolesController::class);
+            Route::apiResource('users', UserController::class);
             Route::apiResource('companies', CompanyController::class);
             Route::apiResource('locations', LocationController::class);
             Route::apiResource('workers', WorkerController::class);
@@ -109,6 +121,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
                 Route::post('{id}/mark-as-read', [NotificationController::class, 'markAsRead']);
                 Route::post('{id}/mark-as-unread', [NotificationController::class, 'markAsUnread']);
+                Route::post('create-test-notifications', [NotificationController::class, 'createTestNotifications']);
             });
             Route::apiResource('notifications', NotificationController::class);
 
@@ -169,6 +182,23 @@ Route::middleware('auth:sanctum')->group(function () {
             });
 
             Route::apiResource('sales', SaleController::class);
+
+            // Expense Management Routes
+            Route::prefix('expenses')->group(function () {
+                Route::get('categories', [ExpenseController::class, 'categories']);
+                Route::get('statistics', [ExpenseController::class, 'statistics']);
+            });
+            Route::apiResource('expenses', ExpenseController::class);
+
+            // Reminder Management Routes
+            Route::prefix('reminders')->group(function () {
+                Route::get('types', [ReminderController::class, 'getTypes']);
+                Route::get('recurrence-types', [ReminderController::class, 'getRecurrenceTypes']);
+                Route::get('statistics', [ReminderController::class, 'statistics']);
+                Route::get('users', [ReminderController::class, 'getUsers']);
+                Route::post('{id}/complete', [ReminderController::class, 'markAsCompleted']);
+            });
+            Route::apiResource('reminders', ReminderController::class);
 
             // Adjustment Management Routes (Ajustes de inventario: mermas, extravíos, etc.)
             Route::apiResource('adjustments', AdjustmentController::class);

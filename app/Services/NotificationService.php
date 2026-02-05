@@ -659,4 +659,170 @@ class NotificationService
             ]);
         }
     }
+
+    /**
+     * Notificar cuando se asigna una tarea
+     */
+    public static function notifyTaskAssigned(
+        int $userId,
+        int $companyId,
+        int $taskId,
+        string $taskTitle,
+        string $priority,
+        ?string $dueDate = null
+    ): void {
+        try {
+            $priorityEmoji = match($priority) {
+                'urgent' => '🔴',
+                'high' => '🟠',
+                'medium' => '🟡',
+                'low' => '🟢',
+                default => '📌'
+            };
+
+            $priorityLabel = match($priority) {
+                'urgent' => 'Urgente',
+                'high' => 'Alta',
+                'medium' => 'Media',
+                'low' => 'Baja',
+                default => $priority
+            };
+
+            $dueDateText = $dueDate 
+                ? "\nVence: " . \Carbon\Carbon::parse($dueDate)->format('d/m/Y H:i')
+                : '';
+
+            $title = "{$priorityEmoji} Nueva Tarea Asignada";
+            $message = "Se te ha asignado: \"{$taskTitle}\"\nPrioridad: {$priorityLabel}{$dueDateText}";
+
+            $type = match($priority) {
+                'urgent' => 'error',
+                'high' => 'warning',
+                default => 'info'
+            };
+
+            $data = [
+                'type' => 'task_assigned',
+                'task_id' => $taskId,
+                'priority' => $priority,
+            ];
+
+            // Crear notificación en DB
+            $notification = Notification::create([
+                'user_id' => $userId,
+                'company_id' => $companyId,
+                'title' => $title,
+                'message' => $message,
+                'type' => $type,
+                'data' => self::formatNotificationData($data),
+                'is_read' => false,
+            ]);
+
+            // Enviar push notification
+            self::sendPushNotification($userId, $title, $message, $data);
+
+            Log::info('Task assigned notification sent', [
+                'user_id' => $userId,
+                'task_id' => $taskId,
+                'notification_id' => $notification->id
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error sending task assigned notification', [
+                'task_id' => $taskId,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Notificar cuando se completa una tarea
+     */
+    public static function notifyTaskCompleted(
+        int $userId,
+        int $companyId,
+        int $taskId,
+        string $taskTitle,
+        string $completedByName
+    ): void {
+        try {
+            $title = "✅ Tarea Completada";
+            $message = "La tarea \"{$taskTitle}\" fue completada por {$completedByName}";
+
+            $data = [
+                'type' => 'task_completed',
+                'task_id' => $taskId,
+            ];
+
+            // Crear notificación en DB
+            $notification = Notification::create([
+                'user_id' => $userId,
+                'company_id' => $companyId,
+                'title' => $title,
+                'message' => $message,
+                'type' => 'success',
+                'data' => self::formatNotificationData($data),
+                'is_read' => false,
+            ]);
+
+            // Enviar push notification
+            self::sendPushNotification($userId, $title, $message, $data);
+
+            Log::info('Task completed notification sent', [
+                'user_id' => $userId,
+                'task_id' => $taskId,
+                'notification_id' => $notification->id
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error sending task completed notification', [
+                'task_id' => $taskId,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Notificar cuando se agrega un comentario a una tarea
+     */
+    public static function notifyTaskComment(
+        int $userId,
+        int $companyId,
+        int $taskId,
+        string $taskTitle,
+        string $commentByName
+    ): void {
+        try {
+            $title = "💬 Nuevo Comentario en Tarea";
+            $message = "{$commentByName} comentó en la tarea \"{$taskTitle}\"";
+
+            $data = [
+                'type' => 'task_comment',
+                'task_id' => $taskId,
+            ];
+
+            // Crear notificación en DB
+            $notification = Notification::create([
+                'user_id' => $userId,
+                'company_id' => $companyId,
+                'title' => $title,
+                'message' => $message,
+                'type' => 'info',
+                'data' => self::formatNotificationData($data),
+                'is_read' => false,
+            ]);
+
+            // Enviar push notification
+            self::sendPushNotification($userId, $title, $message, $data);
+
+            Log::info('Task comment notification sent', [
+                'user_id' => $userId,
+                'task_id' => $taskId,
+                'notification_id' => $notification->id
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error sending task comment notification', [
+                'task_id' => $taskId,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
 }

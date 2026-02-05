@@ -99,12 +99,11 @@ class UserController extends CrudController
      */
     protected function validateStoreData(Request $request): array
     {
-        return $request->validate([
+        $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8',
-            'avatar' => 'nullable|array',
-            'avatar.*' => 'image|max:5120',
+            'is_active' => 'sometimes|boolean',
 
             // Relaciones many-to-many opcionales
             'role_ids' => 'nullable|array',
@@ -114,6 +113,15 @@ class UserController extends CrudController
             'location_ids' => 'nullable|array',
             'location_ids.*' => 'exists:locations,id',
         ]);
+
+        // Validar avatar por separado (puede venir como array o como archivo único)
+        if ($request->hasFile('avatar')) {
+            $request->validate([
+                'avatar.*' => 'image|max:5120',
+            ]);
+        }
+
+        return $validated;
     }
 
     /**
@@ -121,12 +129,11 @@ class UserController extends CrudController
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        return $request->validate([
+        $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'email' => 'sometimes|required|email|unique:users,email,' . $model->id,
             'password' => 'nullable|string|min:8',
-            'avatar' => 'nullable|array',
-            'avatar.*' => 'image|max:5120',
+            'is_active' => 'sometimes|boolean',
 
             // Relaciones many-to-many opcionales
             'role_ids' => 'nullable|array',
@@ -136,6 +143,15 @@ class UserController extends CrudController
             'location_ids' => 'nullable|array',
             'location_ids.*' => 'exists:locations,id',
         ]);
+
+        // Validar avatar por separado
+        if ($request->hasFile('avatar')) {
+            $request->validate([
+                'avatar.*' => 'image|max:5120',
+            ]);
+        }
+
+        return $validated;
     }
 
     /**
@@ -148,15 +164,23 @@ class UserController extends CrudController
             $validatedData['password'] = Hash::make($validatedData['password']);
         }
 
-        // Manejar subida de avatar usando AppUploadUtil
+        // Establecer is_active por defecto si no viene
+        if (!isset($validatedData['is_active'])) {
+            $validatedData['is_active'] = true;
+        }
+
+        // Manejar subida de avatar
+        $file = null;
         if ($request->hasFile('avatar')) {
             $files = $request->file('avatar');
             $file = is_array($files) ? $files[0] : $files;
-            
+        }
+
+        if ($file && $file->isValid()) {
             $result = AppUploadUtil::saveFile($file, Files::USER_AVATARS_PATH);
             
             if ($result['success']) {
-                $validatedData['avatar'] = basename($result['path']); // Solo guardar el nombre del archivo
+                $validatedData['avatar'] = basename($result['path']);
             }
         }
 

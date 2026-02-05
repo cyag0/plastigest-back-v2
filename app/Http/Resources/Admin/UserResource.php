@@ -27,15 +27,15 @@ class UserResource extends Resources
             'name' => $resource->name,
             'email' => $resource->email,
             'avatar' => $resource->avatar
-                ? [AppUploadUtil::formatFile(Files::USER_AVATARS_PATH, $resource->avatar)] ?? []
+                ? [AppUploadUtil::formatFile(Files::USER_AVATARS_PATH, $resource->avatar)]
                 : [],
             'avatar_name' => $resource->avatar,
+            'is_active' => $resource->is_active ?? true,
         ];
 
         // Campos adicionales según el contexto
         if ($editing) {
             // Datos completos para show/edit
-            $item['is_active'] = $resource->is_active ?? true;
             $item['created_at'] = $resource->created_at?->toISOString();
             $item['updated_at'] = $resource->updated_at?->toISOString();
         }

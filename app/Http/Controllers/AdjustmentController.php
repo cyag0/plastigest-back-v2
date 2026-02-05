@@ -48,10 +48,49 @@ class AdjustmentController extends CrudController
     }
 
     /**
+     * Sobrescribir el método de filtros básicos para adaptar a la tabla movements
+     */
+    protected function applyBasicFilters($query, array $params)
+    {
+        // Filtro por búsqueda general - buscar en campos relevantes de movements
+        if (isset($params['search']) && !empty($params['search'])) {
+            $search = $params['search'];
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.comments')) LIKE ?", ["%{$search}%"]);
+            });
+        }
+
+        // Filtro por company_id si existe
+        if (isset($params['company_id']) && !empty($params['company_id'])) {
+            $query->where('company_id', $params['company_id']);
+        }
+
+        // Filtro por fecha de creación
+        if (isset($params['date_from']) && !empty($params['date_from'])) {
+            $query->whereDate('created_at', '>=', $params['date_from']);
+        }
+
+        if (isset($params['date_to']) && !empty($params['date_to'])) {
+            $query->whereDate('created_at', '<=', $params['date_to']);
+        }
+    }
+
+    /**
      * Manejo de filtros personalizados
      */
     protected function handleQuery($query, array $params)
     {
+        // Filtrar por tipo de movimiento
+        if (isset($params['movement_type']) && !empty($params['movement_type'])) {
+            $query->where('movement_type', $params['movement_type']);
+        }
+
+        // Filtrar por razón del movimiento
+        if (isset($params['movement_reason']) && !empty($params['movement_reason'])) {
+            $query->where('movement_reason', $params['movement_reason']);
+        }
+
         // Filtrar por rango de fechas
         if (isset($params['start_date']) && isset($params['end_date'])) {
             $query->betweenDates($params['start_date'], $params['end_date']);

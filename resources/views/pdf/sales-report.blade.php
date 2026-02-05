@@ -143,12 +143,63 @@
         </div>
     </div>
 
+    {{-- Resumen de Gastos e Ingreso Neto --}}
+    @if($totalExpenses > 0)
+    <div class="summary-card" style="border-left-color: #DC2626;">
+        <div class="summary-grid">
+            <div class="summary-row">
+                <div class="summary-cell" style="width: 50%;">
+                    <div class="summary-label" style="color: #DC2626;">Total Gastos</div>
+                    <div class="summary-value" style="color: #DC2626;">-${{ number_format($totalExpenses, 2) }}</div>
+                </div>
+                <div class="summary-cell" style="width: 50%; background-color: #DCFCE7; border-radius: 5px;">
+                    <div class="summary-label" style="color: #16A34A;">Ingreso Neto</div>
+                    <div class="summary-value" style="color: #16A34A;">${{ number_format($salesReport->total_sales - $totalExpenses, 2) }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
+
     {{-- Notas --}}
     @if ($salesReport->notes)
         <div class="info-section">
             <strong style="color: #725C3A;">Notas:</strong>
             <div style="margin-top: 5px;">{{ $salesReport->notes }}</div>
         </div>
+    @endif
+
+    {{-- Detalle de Gastos --}}
+    @if($expenses->count() > 0)
+    <div class="section-title">Gastos del Día</div>
+    <table class="small-table">
+        <thead>
+            <tr>
+                <th style="width: 20%;">Categoría</th>
+                <th style="width: 35%;">Descripción</th>
+                <th style="width: 15%; text-align: center;">Método Pago</th>
+                <th style="width: 15%;">Usuario</th>
+                <th style="width: 15%; text-align: right;">Monto</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach($expenses as $expense)
+                <tr>
+                    <td>{{ $expense->category_label }}</td>
+                    <td>{{ $expense->description }}</td>
+                    <td class="text-center">{{ $expense->payment_method_label }}</td>
+                    <td>{{ $expense->user->name ?? 'N/A' }}</td>
+                    <td class="text-right" style="color: #DC2626;">-${{ number_format($expense->amount, 2) }}</td>
+                </tr>
+            @endforeach
+        </tbody>
+        <tfoot>
+            <tr style="background-color: #DC2626; color: white; font-weight: bold;">
+                <td colspan="4" class="text-right">TOTAL GASTOS:</td>
+                <td class="text-right">-${{ number_format($totalExpenses, 2) }}</td>
+            </tr>
+        </tfoot>
+    </table>
     @endif
 
     {{-- Productos Vendidos --}}

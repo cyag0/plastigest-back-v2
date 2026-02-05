@@ -226,6 +226,76 @@ class NotificationController extends CrudController
     }
 
     /**
+     * Crear notificaciones de prueba
+     */
+    public function createTestNotifications(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $company = CurrentCompany::get();
+
+            $notificationTypes = [
+                [
+                    'title' => 'Bienvenido a PlastiGest',
+                    'message' => 'Gracias por usar nuestra plataforma de gestión',
+                    'type' => 'info',
+                    'data' => ['welcome' => true]
+                ],
+                [
+                    'title' => 'Nueva venta registrada',
+                    'message' => 'Se ha registrado una nueva venta por $1,250.00',
+                    'type' => 'success',
+                    'data' => ['sale_id' => 1, 'amount' => 1250]
+                ],
+                [
+                    'title' => 'Stock bajo detectado',
+                    'message' => 'El producto "Bolsa de plástico 20x30" tiene stock bajo (5 unidades)',
+                    'type' => 'warning',
+                    'data' => ['product_id' => 1, 'stock' => 5]
+                ],
+                [
+                    'title' => 'Tarea pendiente',
+                    'message' => 'Tienes una tarea pendiente: "Inventario mensual". Vence en 2 días',
+                    'type' => 'alert',
+                    'data' => ['task_id' => 1]
+                ],
+                [
+                    'title' => 'Pago de internet vencido',
+                    'message' => 'El recordatorio "Pago de internet" venció hace 1 día',
+                    'type' => 'error',
+                    'data' => ['reminder_id' => 1]
+                ],
+            ];
+
+            $created = [];
+            foreach ($notificationTypes as $notificationData) {
+                $notification = Notification::create([
+                    'user_id' => $user->id,
+                    'company_id' => $company->id,
+                    'title' => $notificationData['title'],
+                    'message' => $notificationData['message'],
+                    'type' => $notificationData['type'],
+                    'data' => $notificationData['data'],
+                    'is_read' => false,
+                ]);
+                
+                $created[] = $notification;
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Se crearon ' . count($created) . ' notificaciones de prueba',
+                'data' => new NotificationResource($created[0]),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Validar si se puede eliminar
      */
     protected function canDelete(Model $model): array

@@ -21,7 +21,7 @@ class DatabaseSeeder extends Seeder
 
         // Ejecutar seeders en orden
         $this->command->info('🌱 Iniciando seeders...');
-        
+
         $this->call([
             ResourceSeeder::class,
             PermissionSeeder::class,
