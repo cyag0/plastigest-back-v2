@@ -22,14 +22,18 @@ class SaleResource extends Resources
 
         $item = [
             'id' => $resource->id,
-            'sale_number' => $resource->sale_number,
+            'sale_number' => $resource->sale_number ?? $resource->formatted_sale_number,
             'sale_date' => $resource->sale_date,
-            'document_number' => $resource->document_number,
             'status' => $resource->status->value,
             'status_label' => $resource->status->label(),
             'status_color' => $resource->status->color(),
-            'total_cost' => $resource->total_cost,
-            'payment_method' => $resource->content["payment_method"] ?? null,
+            'total' => $resource->total,
+            'subtotal' => $resource->subtotal,
+            'tax' => $resource->tax,
+            'discount' => $resource->discount,
+            'payment_method' => $resource->payment_method,
+            'payment_status' => $resource->payment_status,
+            'paid_amount' => $resource->paid_amount,
             'content' => $resource->content,
         ];
 
@@ -47,9 +51,14 @@ class SaleResource extends Resources
                 $detailData = [
                     'id' => $detail->id,
                     'product_id' => $detail->product_id,
+                    'package_id' => $detail->package_id,
+                    'unit_id' => $detail->unit_id,
                     'quantity' => $detail->quantity,
-                    'unit_cost' => $detail->unit_price,
-                    'total_cost' => $detail->total_price,
+                    'unit_price' => $detail->unit_price,
+                    'subtotal' => $detail->subtotal,
+                    'tax' => $detail->tax,
+                    'discount' => $detail->discount,
+                    'total' => $detail->total,
                 ];
 
                 // Información del producto
@@ -81,9 +90,8 @@ class SaleResource extends Resources
 
         // Campos adicionales según el contexto
         if ($editing) {
-            $item['comments'] = $resource->comments;
-            $item['notes'] = $resource->content['notes'] ?? null;
-            $item['location_id'] = $resource->location_origin_id;
+            $item['notes'] = $resource->notes;
+            $item['location_id'] = $resource->location_id;
             $item['created_at'] = $resource->created_at?->toISOString();
             $item['updated_at'] = $resource->updated_at?->toISOString();
         }

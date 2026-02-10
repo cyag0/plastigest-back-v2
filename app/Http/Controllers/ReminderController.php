@@ -51,10 +51,7 @@ class ReminderController extends CrudController
         // Filter by location_id
         $location = CurrentLocation::get();
         if ($location) {
-            $query->where(function ($q) use ($location) {
-                $q->where('location_id', $location->id)
-                    ->orWhereNull('location_id');
-            });
+            $query->where('location_id', $location->id);
         }
 
         // Filter by assigned user (default: current user)
@@ -152,13 +149,13 @@ class ReminderController extends CrudController
     {
         // Add company_id from current context
         $company = CurrentCompany::get();
-        if ($company && !isset($data['company_id'])) {
+        if ($company) {
             $data['company_id'] = $company->id;
         }
 
         // Add location_id from current context
         $location = CurrentLocation::get();
-        if ($location && !isset($data['location_id'])) {
+        if ($location) {
             $data['location_id'] = $location->id;
         }
 
@@ -171,11 +168,11 @@ class ReminderController extends CrudController
         if (!isset($data['is_recurring'])) {
             $data['is_recurring'] = false;
         }
-        
+
         if (!isset($data['notify_enabled'])) {
             $data['notify_enabled'] = true;
         }
-        
+
         if (!isset($data['notify_days_before'])) {
             $data['notify_days_before'] = 1;
         }
@@ -189,21 +186,21 @@ class ReminderController extends CrudController
     protected function afterStore(Model $model, Request $request): void
     {
         $reminder = $model;
-        
+
         Log::info('=== REMINDER CREATED ===', [
             'reminder_id' => $reminder->id,
             'title' => $reminder->title,
             'assigned_to_user_id' => $reminder->user_id,
             'created_by_user_id' => Auth::id(),
         ]);
-        
+
         // Solo notificar si el recordatorio se asignó a otro usuario
         if ($reminder->user_id !== Auth::id()) {
             Log::info('Enviando notificación push a usuario diferente', [
                 'to_user_id' => $reminder->user_id,
                 'from_user_id' => Auth::id(),
             ]);
-            
+
             $title = "Nuevo Recordatorio Asignado";
             $body = $reminder->title;
             $data = [

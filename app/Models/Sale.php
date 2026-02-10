@@ -3,24 +3,54 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Builder;
 use App\Enums\SaleStatus;
+use App\Models\Admin\Company;
+use App\Models\Admin\Customer;
+use App\Models\Admin\Location;
+use App\Services\MovementService;
 use Illuminate\Support\Facades\DB;
 use Exception;
 
 /**
- * Sale Model - Wrapper para movements con movement_type = 'exit' y movement_reason = 'sale'
+ * Sale Model - Modelo independiente para ventas
  *
  * @mixin IdeHelperSale
  */
-class Sale extends Movement
+class Sale extends Model
 {
+    use SoftDeletes;
+
     /**
-     * Especificar la tabla que debe usar este modelo
+     * La tabla asociada al modelo
      */
-    protected $table = 'movements';
+    protected $table = 'sales';
+
+    /**
+     * Los atributos que son asignables en masa
+     */
+    protected $fillable = [
+        'company_id',
+        'location_id',
+        'user_id',
+        'customer_id',
+        'sale_number',
+        'sale_date',
+        'status',
+        'subtotal',
+        'tax',
+        'discount',
+        'total',
+        'payment_method',
+        'payment_status',
+        'paid_amount',
+        'payment_history',
+        'content',
+        'notes',
+    ];
 
     /**
      * Los atributos que deben ser casteados
@@ -28,37 +58,68 @@ class Sale extends Movement
     protected $casts = [
         'status' => SaleStatus::class,
         'sale_date' => 'date',
-        'content' => 'json'
+        'content' => 'json',
+        'payment_history' => 'json',
+        'subtotal' => 'decimal:2',
+        'tax' => 'decimal:2',
+        'discount' => 'decimal:2',
+        'total' => 'decimal:2',
+        'paid_amount' => 'decimal:2',
     ];
 
     /**
-     * Configurar automáticamente el tipo de movimiento como sale
+     * Configurar automáticamente valores por defecto
      */
     protected static function booted()
     {
-        parent::booted();
-
-        // Automáticamente filtrar solo ventas
-        static::addGlobalScope('sale_scope', function (Builder $builder) {
-            $builder->where('movement_type', 'exit')
-                ->where('movement_reason', 'sale');
-        });
-
-        // Establecer valores por defecto al crear
         static::creating(function ($model) {
-            $model->movement_type = 'exit';
-            $model->movement_reason = 'sale';
-            $model->reference_type = 'sales_order';
-            $model->status = SaleStatus::DRAFT;
+            if (!$model->status) {
+                $model->status = SaleStatus::DRAFT;
+            }
+            if (!$model->sale_date) {
+                $model->sale_date = now()->toDateString();
+            }
         });
     }
 
     /**
-     * Obtener los detalles de la venta
+     * Relación con detalles de la venta
      */
     public function details(): HasMany
     {
-        return $this->hasMany(SaleDetail::class, 'movement_id');
+        return $this->hasMany(SaleDetail::class, 'sale_id');
+    }
+
+    /**
+     * Relación con la ubicación
+     */
+    public function location(): BelongsTo
+    {
+        return $this->belongsTo(Location::class);
+    }
+
+    /**
+     * Relación con la compañía
+     */
+    public function company(): BelongsTo
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    /**
+     * Relación con el usuario
+     */
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Relación con el cliente
+     */
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
     }
 
     /**
@@ -90,23 +151,15 @@ class Sale extends Movement
      */
     public function scopeBetweenDates(Builder $query, $startDate, $endDate): Builder
     {
-        return $query->whereBetween('movement_date', [$startDate, $endDate]);
+        return $query->whereBetween('sale_date', [$startDate, $endDate]);
     }
 
     /**
      * Accessor para el número de venta
      */
-    public function getSaleNumberAttribute(): string
+    public function getFormattedSaleNumberAttribute(): string
     {
-        return $this->document_number ?? 'SALE-' . str_pad($this->id, 6, '0', STR_PAD_LEFT);
-    }
-
-    /**
-     * Accessor para la fecha de venta
-     */
-    public function getSaleDateAttribute(): string
-    {
-        return $this->movement_date;
+        return $this->sale_number ?? 'SALE-' . str_pad($this->id, 6, '0', STR_PAD_LEFT);
     }
 
     /**
@@ -114,7 +167,7 @@ class Sale extends Movement
      */
     public function getTotalAmountAttribute(): float
     {
-        return $this->total_cost ?? 0;
+        return $this->total ?? 0;
     }
 
     /**
@@ -225,33 +278,35 @@ class Sale extends Movement
      */
     protected function validateAndUpdateStock(): void
     {
+        $movementService = new MovementService();
+        $locationId = $this->location_id;
+
         foreach ($this->details as $detail) {
-            // Buscar la relación product_location
-            $productLocation = DB::table('product_location')
-                ->where('product_id', $detail->product_id)
-                ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                ->first();
+            // Cargar producto para obtener su unit_id
+            $product = Product::findOrFail($detail->product_id);
 
-            if (!$productLocation) {
+            if (!$product->unit_id) {
                 throw new Exception(
-                    "El producto '{$detail->product->name}' no existe en la ubicación seleccionada"
+                    "El producto '{$product->name}' no tiene una unidad base definida"
                 );
             }
 
-            // Validar que hay suficiente stock
-            if ($productLocation->current_stock < $detail->quantity) {
+            try {
+                // Usar MovementService para decrementar stock
+                // MovementService se encargará de convertir a la unidad base del producto
+                $movementService->decrement(
+                    $locationId,
+                    $detail->product_id,
+                    $detail->unit_id, // Unidad en la que se vendió
+                    $detail->quantity,
+                    $detail->package_id // Package si se vendió como paquete
+                );
+            } catch (Exception $e) {
+                // Personalizar el mensaje de error con el nombre del producto
                 throw new Exception(
-                    "Stock insuficiente para el producto '{$detail->product->name}'. " .
-                        "Stock disponible: {$productLocation->current_stock}, " .
-                        "Cantidad solicitada: {$detail->quantity}"
+                    "Stock insuficiente para '{$product->name}'. " . $e->getMessage()
                 );
             }
-
-            // Decrementar stock
-            DB::table('product_location')
-                ->where('product_id', $detail->product_id)
-                ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                ->decrement('current_stock', $detail->quantity);
         }
     }
 
@@ -260,19 +315,25 @@ class Sale extends Movement
      */
     protected function revertStock(): void
     {
-        foreach ($this->details as $detail) {
-            // Incrementar el stock de vuelta
-            $productLocation = DB::table('product_location')
-                ->where('product_id', $detail->product_id)
-                ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                ->first();
+        $movementService = new MovementService();
+        $locationId = $this->location_id;
 
-            if ($productLocation) {
-                DB::table('product_location')
-                    ->where('product_id', $detail->product_id)
-                    ->where('location_id', $this->location_origin_id ?? $this->location_destination_id)
-                    ->increment('current_stock', $detail->quantity);
+        foreach ($this->details as $detail) {
+            // Cargar producto para obtener su unit_id
+            $product = Product::findOrFail($detail->product_id);
+
+            if (!$product->unit_id) {
+                continue; // Si no tiene unidad, omitir
             }
+
+            // Usar MovementService para incrementar stock de vuelta
+            $movementService->increment(
+                $locationId,
+                $detail->product_id,
+                $detail->unit_id, // Unidad en la que se vendió
+                $detail->quantity,
+                $detail->package_id // Package si se vendió como paquete
+            );
         }
     }
 

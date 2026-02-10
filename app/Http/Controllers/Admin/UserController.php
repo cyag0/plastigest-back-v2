@@ -178,7 +178,7 @@ class UserController extends CrudController
 
         if ($file && $file->isValid()) {
             $result = AppUploadUtil::saveFile($file, Files::USER_AVATARS_PATH);
-            
+
             if ($result['success']) {
                 $validatedData['avatar'] = basename($result['path']);
             }
@@ -194,7 +194,8 @@ class UserController extends CrudController
         }
 
         return $validatedData;
-    }    /**
+    }
+    /**
      * Procesar datos antes de actualizar
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
@@ -210,14 +211,14 @@ class UserController extends CrudController
         if ($request->hasFile('avatar')) {
             $newFiles = $request->file('avatar');
             $oldFiles = $model->avatar ? [$model->avatar] : [];
-            
+
             // Sincronizar archivos: elimina los antiguos y guarda los nuevos
             $result = AppUploadUtil::syncFilesByNames(
                 Files::USER_AVATARS_PATH,
                 is_array($newFiles) ? $newFiles : [$newFiles],
                 $oldFiles
             );
-            
+
             if (!empty($result['saved'])) {
                 $validatedData['avatar'] = $result['saved'][0]['name'];
             }

@@ -4,46 +4,75 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
 
 /**
- * SaleDetail Model - Wrapper para movement_details relacionados con ventas
+ * SaleDetail Model - Modelo independiente para detalles de venta
  *
  * @mixin IdeHelperSaleDetail
  */
-class SaleDetail extends MovementDetail
+class SaleDetail extends Model
 {
     /**
-     * Especificar la tabla que debe usar este modelo
+     * La tabla asociada al modelo
      */
-    protected $table = 'movements_details';
+    protected $table = 'sales_details';
 
     /**
-     * Configurar scope automático
+     * Los atributos que son asignables en masa
+     */
+    protected $fillable = [
+        'sale_id',
+        'product_id',
+        'package_id',
+        'unit_id',
+        'quantity',
+        'unit_price',
+        'subtotal',
+        'tax',
+        'discount',
+        'total',
+        'content',
+    ];
+
+    /**
+     * Los atributos que deben ser casteados
+     */
+    protected $casts = [
+        'content' => 'json',
+        'quantity' => 'decimal:3',
+        'unit_price' => 'decimal:2',
+        'subtotal' => 'decimal:2',
+        'tax' => 'decimal:2',
+        'discount' => 'decimal:2',
+        'total' => 'decimal:2',
+    ];
+
+    /**
+     * Configurar eventos del modelo
      */
     protected static function booted()
     {
-        parent::booted();
-
-        // Filtrar solo detalles de ventas
-        static::addGlobalScope('sale_detail_scope', function (Builder $builder) {
-            $builder->whereHas('movement', function ($query) {
-                $query->where('movement_type', 'exit')
-                    ->where('movement_reason', 'sale');
-            });
+        static::saving(function ($detail) {
+            // Calcular automáticamente subtotal y total si no están definidos
+            if (!$detail->subtotal) {
+                $detail->subtotal = $detail->quantity * $detail->unit_price;
+            }
+            if (!$detail->total) {
+                $detail->total = $detail->subtotal - $detail->discount + $detail->tax;
+            }
         });
     }
 
     /**
-     * Obtener la venta asociada
+     * Relación con la venta
      */
     public function sale(): BelongsTo
     {
-        return $this->belongsTo(Sale::class, 'movement_id');
+        return $this->belongsTo(Sale::class, 'sale_id');
     }
 
     /**
-     * Obtener el producto
+     * Relación con el producto
      */
     public function product(): BelongsTo
     {
@@ -51,10 +80,18 @@ class SaleDetail extends MovementDetail
     }
 
     /**
-     * Accessor para el subtotal
+     * Relación con el paquete
      */
-    public function getSubtotalAttribute(): float
+    public function package(): BelongsTo
     {
-        return $this->quantity * $this->unit_price;
+        return $this->belongsTo(ProductPackage::class, 'package_id');
+    }
+
+    /**
+     * Relación con la unidad
+     */
+    public function unit(): BelongsTo
+    {
+        return $this->belongsTo(Unit::class);
     }
 }

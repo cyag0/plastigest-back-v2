@@ -4,8 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\PurchaseV2;
 use App\Models\PurchaseDetailV2;
-use App\Models\Product;
-use App\Models\ProductPackage;
+use App\Services\MovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Utils\AppUploadUtil;
@@ -323,8 +322,9 @@ class PurchaseV2Controller extends Controller
             DB::beginTransaction();
 
             $purchase = PurchaseV2::inTransit()->findOrFail($id);
+            $movementService = new MovementService();
 
-            // Actualizar cantidades recibidas
+            // Actualizar cantidades recibidas e incrementar stock
             foreach ($validated['details'] as $detailData) {
                 $detail = $purchase->details()->findOrFail($detailData['id']);
                 $detail->update([
@@ -332,12 +332,15 @@ class PurchaseV2Controller extends Controller
                     'received_at' => now(),
                 ]);
 
-                // Actualizar stock (convertir paquetes a unidad base)
-                $this->updateStock($detail);
+                // Incrementar stock usando MovementService
+                $movementService->increment(
+                    $purchase->location_id,
+                    $detail->product_id,
+                    $detail->unit_id,
+                    $detail->quantity_received,
+                    $detail->package_id
+                );
             }
-
-            // Crear movimiento de entrada con detalles
-            $this->createPurchaseMovement($purchase);
 
             $purchase->update([
                 'status' => PurchaseV2::STATUS_RECEIVED,
@@ -360,62 +363,6 @@ class PurchaseV2Controller extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
-    }
-
-    /**
-     * Actualizar stock del producto al recibir
-     */
-    private function updateStock(PurchaseDetailV2 $detail)
-    {
-        $purchase = $detail->purchase;
-        $quantityToAdd = $detail->getQuantityInBaseUnit();
-
-        // Actualizar product_location
-        DB::table('product_location')
-            ->where('product_id', $detail->product_id)
-            ->where('location_id', $purchase->location_id)
-            ->increment('current_stock', $quantityToAdd);
-    }
-
-    /**
-     * Crear movimiento de entrada por recepción de compra
-     */
-    private function createPurchaseMovement(PurchaseV2 $purchase)
-    {
-        // Crear el movimiento principal
-        $movementId = DB::table('movements')->insertGetId([
-            'company_id' => $purchase->company_id,
-            'movement_type' => 'in',
-            'warehouse_destination_id' => $purchase->location_id,
-            'supplier_id' => $purchase->supplier_id,
-            'user_id' => Auth::id(),
-            'date' => now()->toDateString(),
-            'total_cost' => $purchase->total,
-            'status' => 'closed',
-            'comments' => 'Recepción de compra #' . $purchase->purchase_number,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        // Crear detalles del movimiento (productos ya convertidos a unidad base)
-        foreach ($purchase->details as $detail) {
-            $quantityInBaseUnit = $detail->getQuantityInBaseUnit();
-
-            DB::table('movements_details')->insert([
-                'movement_id' => $movementId,
-                'product_id' => $detail->product_id,
-                'quantity' => $quantityInBaseUnit,
-                'unit_cost' => $detail->unit_price,
-                'total_cost' => $quantityInBaseUnit * $detail->unit_price,
-                'comments' => $detail->package_id
-                    ? "Paquete: {$detail->package->package_name} (Original: {$detail->quantity} paquetes, Convertido: {$quantityInBaseUnit} unidades base)"
-                    : null,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
-
-        return $movementId;
     }
 
     /**
@@ -640,6 +587,8 @@ class PurchaseV2Controller extends Controller
      */
     public function index(Request $request)
     {
+        $location = CurrentLocation::get();
+
         $query = PurchaseV2::with(['supplier', 'user', 'details'])
             ->where('company_id', CurrentCompany::get()->id);
 
@@ -647,8 +596,9 @@ class PurchaseV2Controller extends Controller
             $query->where('status', $request->status);
         }
 
-        if ($request->has('location_id')) {
-            $query->where('location_id', $request->location_id);
+        if ($request->has('location_id') || $location) {
+            $locationId = $request->has('location_id') ? $request->location_id : $location->id;
+            $query->where('location_id', $locationId);
         }
 
         $purchases = $query->orderBy('created_at', 'desc')->paginate(20);

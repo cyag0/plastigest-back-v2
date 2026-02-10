@@ -102,12 +102,12 @@ class SaleController extends CrudController
 
         // Filtrar por ubicación
         if (isset($params['location_id'])) {
-            $query->where('location_origin_id', $params['location_id']);
+            $query->where('location_id', $params['location_id']);
         }
 
         // Filtrar por método de pago
         if (isset($params['payment_method']) && !empty($params['payment_method'])) {
-            $query->where('content->payment_method', $params['payment_method']);
+            $query->where('payment_method', $params['payment_method']);
         }
     }
 
@@ -132,6 +132,8 @@ class SaleController extends CrudController
             // Detalles de la venta
             'details' => 'required|array|min:1',
             'details.*.product_id' => 'required|exists:products,id',
+            'details.*.package_id' => 'nullable|exists:product_packages,id',
+            'details.*.unit_id' => 'required|exists:units,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
             'details.*.unit_price' => 'required|numeric|min:0',
         ]);
@@ -158,6 +160,8 @@ class SaleController extends CrudController
             // Detalles de la venta
             'details' => 'sometimes|required|array|min:1',
             'details.*.product_id' => 'required|exists:products,id',
+            'details.*.package_id' => 'nullable|exists:product_packages,id',
+            'details.*.unit_id' => 'required|exists:units,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
             'details.*.unit_price' => 'required|numeric|min:0',
         ]);
@@ -197,9 +201,8 @@ class SaleController extends CrudController
 
             // Preparar datos de la venta
             $saleData = [
-                'location_origin_id' => $location->id,
-                'location_destination_id' => $location->id,
-                'movement_date' => $data['movement_date'] ?? now()->toDateString(),
+                'location_id' => $location->id,
+                'sale_date' => $data['movement_date'] ?? now()->toDateString(),
                 'content' => $content,
                 'company_id' => $company->id,
                 'user_id' => $user->id,
@@ -211,7 +214,10 @@ class SaleController extends CrudController
             foreach ($data['details'] as $detail) {
                 $totalCost += $detail['quantity'] * $detail['unit_price'];
             }
-            $saleData['total_cost'] = $totalCost;
+            $saleData['total'] = $totalCost;
+            $saleData['subtotal'] = $totalCost;
+            $saleData['tax'] = 0;
+            $saleData['discount'] = 0;
 
             // Manejar pago inicial
             $paidAmount = $data['paid_amount'] ?? $totalCost;
@@ -238,13 +244,6 @@ class SaleController extends CrudController
             }
             $saleData['payment_history'] = $paymentHistory;
 
-            // Validar monto recibido para efectivo
-            /* if ($data['payment_method'] === 'efectivo' && isset($data['received_amount'])) {
-                if ($data['received_amount'] < $totalCost) {
-                    throw new \Exception('El monto recibido debe ser mayor o igual al total de la venta');
-                }
-            }
- */
             // Crear o actualizar venta
             /** @var Sale $sale */
             $sale = $callback($saleData);
@@ -258,12 +257,21 @@ class SaleController extends CrudController
 
                 // Crear nuevos detalles
                 foreach ($data['details'] as $detail) {
+                    $unitPrice = $detail['unit_price'];
+                    $quantity = $detail['quantity'];
+                    $subtotal = $quantity * $unitPrice;
+                    
                     SaleDetail::create([
-                        'movement_id' => $sale->id,
+                        'sale_id' => $sale->id,
                         'product_id' => $detail['product_id'],
-                        'quantity' => $detail['quantity'],
-                        'unit_cost' => $detail['unit_price'],
-                        'total_cost' => $detail['quantity'] * $detail['unit_price'],
+                        'package_id' => $detail['package_id'] ?? null,
+                        'unit_id' => $detail['unit_id'],
+                        'quantity' => $quantity,
+                        'unit_price' => $unitPrice,
+                        'subtotal' => $subtotal,
+                        'tax' => 0,
+                        'discount' => 0,
+                        'total' => $subtotal,
                     ]);
                 }
             }
@@ -402,31 +410,31 @@ class SaleController extends CrudController
             $endDate = $request->input('end_date');
 
             // Query base
-            $query = Sale::where('location_origin_id', $locationId);
+            $query = Sale::where('location_id', $locationId);
 
             if ($startDate) {
-                $query->where('movement_date', '>=', $startDate);
+                $query->where('sale_date', '>=', $startDate);
             }
             if ($endDate) {
-                $query->where('movement_date', '<=', $endDate);
+                $query->where('sale_date', '<=', $endDate);
             }
 
             // Estadísticas generales
             $totalSales = (clone $query)->count();
-            $totalAmount = (clone $query)->sum('total_cost');
+            $totalAmount = (clone $query)->sum('total');
             $averageAmount = $totalSales > 0 ? $totalAmount / $totalSales : 0;
 
             // Ventas del día
             $todaySales = (clone $query)
-                ->whereDate('movement_date', now()->toDateString())
+                ->whereDate('sale_date', now()->toDateString())
                 ->count();
             $todayAmount = (clone $query)
-                ->whereDate('movement_date', now()->toDateString())
-                ->sum('total_cost');
+                ->whereDate('sale_date', now()->toDateString())
+                ->sum('total');
 
             // Ventas por estado
             $byStatus = (clone $query)
-                ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total_cost) as total'))
+                ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total) as total'))
                 ->groupBy('status')
                 ->get()
                 ->mapWithKeys(function ($item) {
@@ -450,9 +458,9 @@ class SaleController extends CrudController
 
             // Ventas por método de pago
             $byPaymentMethod = (clone $query)
-                ->select(DB::raw("JSON_UNQUOTE(JSON_EXTRACT(content, '$.payment_method')) as payment_method"))
+                ->select('payment_method')
                 ->selectRaw('COUNT(*) as count')
-                ->selectRaw('SUM(total_cost) as total')
+                ->selectRaw('SUM(total) as total')
                 ->groupBy('payment_method')
                 ->get()
                 ->mapWithKeys(function ($item) {
@@ -471,11 +479,10 @@ class SaleController extends CrudController
                 });
 
             // Productos más vendidos
-            $topProducts = DB::table('movements_details')
-                ->join('movements', 'movements_details.movement_id', '=', 'movements.id')
-                ->join('products', 'movements_details.product_id', '=', 'products.id')
-                ->where('movements.location_origin_id', $locationId)
-                ->where('movements.movement_type', 'exit')
+            $topProducts = DB::table('sales_details')
+                ->join('sales', 'sales_details.sale_id', '=', 'sales.id')
+                ->join('products', 'sales_details.product_id', '=', 'products.id')
+                ->where('sales.location_id', $locationId)
                 ->where('movements.movement_reason', 'sale')
                 ->when($startDate, function ($q) use ($startDate) {
                     return $q->where('movements.movement_date', '>=', $startDate);
@@ -651,14 +658,12 @@ class SaleController extends CrudController
             $salesCount = $sales->count();
 
             foreach ($sales as $sale) {
-                $saleTotal = $sale->details->sum(function ($detail) {
-                    return $detail->quantity * $detail->unit_cost;
-                });
+                $saleTotal = $sale->total;
 
                 $totalSales += $saleTotal;
                 $totalProducts += $sale->details->sum('quantity');
 
-                $paymentMethod = $sale->content['payment_method'] ?? 'efectivo';
+                $paymentMethod = $sale->payment_method ?? 'efectivo';
                 if (isset($paymentMethods[$paymentMethod])) {
                     $paymentMethods[$paymentMethod] += $saleTotal;
                 }
@@ -679,7 +684,7 @@ class SaleController extends CrudController
                         ];
                     }
                     $productSales[$productId]['quantity'] += $detail->quantity;
-                    $productSales[$productId]['total'] += $detail->quantity * $detail->unit_cost;
+                    $productSales[$productId]['total'] += $detail->total;
                 }
             }
 
@@ -702,9 +707,7 @@ class SaleController extends CrudController
 
             foreach ($sales as $sale) {
                 $hour = (int) date('H', strtotime($sale->created_at));
-                $saleTotal = $sale->details->sum(function ($detail) {
-                    return $detail->quantity * $detail->unit_cost;
-                });
+                $saleTotal = $sale->total;
 
                 $salesByHour[$hour]['count']++;
                 $salesByHour[$hour]['total'] += $saleTotal;
@@ -822,12 +825,10 @@ class SaleController extends CrudController
                     'sales' => $sales->map(function ($sale) {
                         return [
                             'id' => $sale->id,
-                            'document_number' => $sale->document_number,
+                            'sale_number' => $sale->sale_number,
                             'customer_name' => $sale->content['customer_name'] ?? 'Cliente General',
-                            'payment_method' => $sale->content['payment_method'] ?? 'efectivo',
-                            'total' => round($sale->details->sum(function ($detail) {
-                                return $detail->quantity * $detail->unit_cost;
-                            }), 2),
+                            'payment_method' => $sale->payment_method ?? 'cash',
+                            'total' => round($sale->total, 2),
                             'created_at' => $sale->created_at->format('H:i:s'),
                         ];
                     }),

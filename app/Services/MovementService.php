@@ -2,36 +2,43 @@
 
 namespace App\Services;
 
-use App\Models\Movement;
-use App\Models\MovementDetail;
-use App\Models\ProductKardex;
+use App\Models\Product;
+use App\Models\ProductPackage;
+use App\Models\Unit;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Auth;
 use Exception;
+use Illuminate\Support\Facades\Log;
 
 class MovementService
 {
     /**
-     * Aprobar una transferencia (draft/ordered → ordered)
+     * Incrementar stock en una ubicación
+     *
+     * @param int $locationId ID de la ubicación
+     * @param int $productId ID del producto
+     * @param int $unitId ID de la unidad en la que viene la cantidad
+     * @param float $quantity Cantidad a incrementar (en la unidad especificada)
+     * @param int|null $packageId ID del paquete (opcional)
+     * @return void
+     * @throws Exception
      */
-    public function approve(Movement $movement, ?int $userId = null): Movement
+    public function increment(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null): void
     {
-        if (!in_array($movement->status, ['draft', 'ordered'])) {
-            throw new Exception('Solo se pueden aprobar transferencias en estado borrador u ordenado');
-        }
-
         DB::beginTransaction();
         try {
-            $content = $movement->content ?? [];
-            $content['approved_by'] = $userId ?? Auth::id();
-            $content['approved_at'] = now()->toISOString();
+            // Si hay package_id, usar el unit_id del producto base
+            if ($packageId) {
+                $product = Product::findOrFail($productId);
+                $unitId = $product->unit_id;
+            }
+            
+            // Convertir la cantidad a la unidad base del producto
+            $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
 
-            $movement->status = 'ordered';
-            $movement->content = $content;
-            $movement->save();
+            // Incrementar el stock
+            $this->incrementStock($locationId, $productId, $quantityInProductUnit);
 
             DB::commit();
-            return $movement->fresh();
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
@@ -39,27 +46,39 @@ class MovementService
     }
 
     /**
-     * Rechazar una transferencia (ordered → rejected)
+     * Decrementar stock en una ubicación
+     *
+     * @param int $locationId ID de la ubicación
+     * @param int $productId ID del producto
+     * @param int $unitId ID de la unidad en la que viene la cantidad
+     * @param float $quantity Cantidad a decrementar (en la unidad especificada)
+     * @param int|null $packageId ID del paquete (opcional)
+     * @return void
+     * @throws Exception
      */
-    public function reject(Movement $movement, string $reason, ?int $userId = null): Movement
+    public function decrement(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null): void
     {
-        if ($movement->status !== 'ordered') {
-            throw new Exception('Solo se pueden rechazar transferencias en estado ordenado');
-        }
-
         DB::beginTransaction();
         try {
-            $content = $movement->content ?? [];
-            $content['rejected_by'] = $userId ?? Auth::id();
-            $content['rejected_at'] = now()->toISOString();
-            $content['rejection_reason'] = $reason;
+            // Si hay package_id, usar el unit_id del producto base
+            if ($packageId) {
+                $product = Product::findOrFail($productId);
+                $unitId = $product->unit_id;
+            }
+            
+            // Convertir la cantidad a la unidad base del producto
+            $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
+            Log::info("Cantidad en unidad de producto para decrementar: {$quantityInProductUnit}");
 
-            $movement->status = 'rejected';
-            $movement->content = $content;
-            $movement->save();
+            // Validar que hay suficiente stock
+            $this->validateStock($locationId, $productId, $quantityInProductUnit);
+            Log::info("Stock validado para el producto ID {$productId} en la ubicación ID {$locationId}");
+
+            // Decrementar el stock
+            $this->decrementStock($locationId, $productId, $quantityInProductUnit);
+            Log::info("Stock decremented for product ID {$productId} in location ID {$locationId}");
 
             DB::commit();
-            return $movement->fresh();
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
@@ -67,147 +86,89 @@ class MovementService
     }
 
     /**
-     * Enviar una transferencia (ordered → in_transit)
-     * Decrementa stock en ubicación origen y crea registros kardex
+     * Convertir cantidad de una unidad específica a la unidad base del producto
+     *
+     * @param int $productId ID del producto
+     * @param int $unitId ID de la unidad en la que viene la cantidad
+     * @param float $quantity Cantidad en la unidad especificada
+     * @param int|null $packageId ID del paquete (opcional)
+     * @return float Cantidad convertida a la unidad base del producto
+     * @throws Exception
      */
-    public function ship(Movement $movement, array $shipmentData, ?int $userId = null): Movement
+    protected function convertToProductUnit(int $productId, int $unitId, float $quantity, ?int $packageId): float
     {
-        if ($movement->status !== 'ordered') {
-            throw new Exception('Solo se pueden enviar transferencias en estado ordenado');
+        // Obtener el producto con su unidad
+        $product = Product::with('unit')->findOrFail($productId);
+
+        if (!$product->unit_id) {
+            throw new Exception("El producto ID {$productId} no tiene una unidad base definida");
         }
 
-        DB::beginTransaction();
-        try {
-            // Obtener detalles directamente de la base de datos
-            $details = $movement->details;
+        // Si es un paquete, primero calcular la cantidad total del paquete
+        if ($packageId) {
+            $package = ProductPackage::findOrFail($packageId);
 
-            if ($details->isEmpty()) {
-                throw new Exception('No hay productos en esta transferencia');
+            // Validar que el paquete pertenece al producto
+            if ($package->product_id !== $productId) {
+                throw new Exception("El paquete ID {$packageId} no pertenece al producto ID {$productId}");
             }
 
-            foreach ($details as $detail) {
-                $quantityToShip = $detail->quantity;
-
-                // Validar que hay suficiente stock
-                $this->validateStock($movement->location_origin_id, $detail->product_id, $quantityToShip);
-
-                // Decrementar stock en origen
-                $this->decrementStock($movement->location_origin_id, $detail->product_id, $quantityToShip);
-
-                // Actualizar detalle con cantidad enviada
-                $detailContent = $detail->content ?? [];
-                $detailContent['quantity_shipped'] = $quantityToShip;
-                $detailContent['shipped_at'] = now()->toISOString();
-
-                $detail->content = $detailContent;
-                $detail->save();
-
-                // Registrar en kardex (salida)
-                /* $this->registerKardex(
-                    $movement->company_id,
-                    $movement->location_origin_id,
-                    $detail->product_id,
-                    $movement->id,
-                    $detail->id,
-                    'exit',
-                    'transfer_out',
-                    $quantityToShip,
-                    $detail->unit_cost,
-                    $movement->content['transfer_number'] ?? 'MOV-' . $movement->id,
-                    $detail->batch_number ?? null,
-                    $detail->expiry_date ?? null
-                ); */
-            }
-
-            // Actualizar estado del movimiento
-            $content = $movement->content ?? [];
-            $content['shipped_by'] = $userId ?? Auth::id();
-            $content['shipped_at'] = now()->toISOString();
-            $content['shipping_notes'] = $shipmentData['shipping_notes'] ?? null;
-
-            $movement->status = 'in_transit';
-            $movement->content = $content;
-            $movement->save();
-
-            DB::commit();
-            return $movement->fresh(['details.product']);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
+            // Para paquetes, solo multiplicar cantidad por quantity_per_package
+            // No hacemos conversión de unidad porque quantity_per_package ya define la conversión
+            // Ejemplo: 2 cajas * 10 unidades/caja = 20 unidades
+            return $quantity * $package->quantity_per_package;
+        } else {
+            // Para productos normales, convertir directamente de unit_id a product->unit_id
+            return $this->convertUnits($quantity, $unitId, $product->unit_id);
         }
     }
 
     /**
-     * Recibir una transferencia (in_transit → received/closed)
-     * Incrementa stock en ubicación destino y crea registros kardex
+     * Convertir cantidad de una unidad a otra
+     *
+     * @param float $quantity Cantidad a convertir
+     * @param int $fromUnitId ID de la unidad origen
+     * @param int $toUnitId ID de la unidad destino
+     * @return float Cantidad convertida
+     * @throws Exception
      */
-    public function receive(Movement $movement, array $receiptData, ?int $userId = null): Movement
+    protected function convertUnits(float $quantity, int $fromUnitId, int $toUnitId): float
     {
-        if ($movement->status !== 'in_transit') {
-            throw new Exception('Solo se pueden recibir transferencias en estado en tránsito');
+        // Si son la misma unidad, no hay conversión
+        if ($fromUnitId === $toUnitId) {
+            return $quantity;
         }
 
-        DB::beginTransaction();
-        try {
-            // Obtener detalles directamente de la base de datos
-            $details = $movement->details;
+        $fromUnit = Unit::with('baseUnit')->findOrFail($fromUnitId);
+        $toUnit = Unit::with('baseUnit')->findOrFail($toUnitId);
 
-            if ($details->isEmpty()) {
-                throw new Exception('No hay productos en esta transferencia');
-            }
+        // Validar que las unidades son del mismo tipo (tienen la misma unidad base)
+        $fromBaseUnitId = $fromUnit->base_unit_id ?? $fromUnitId;
+        $toBaseUnitId = $toUnit->base_unit_id ?? $toUnitId;
 
-            foreach ($details as $detail) {
-                $detailContent = $detail->content ?? [];
-                $quantityShipped = $detailContent['quantity_shipped'] ?? $detail->quantity;
-
-                // Incrementar stock en destino con la cantidad enviada
-                $this->incrementStock($movement->location_destination_id, $detail->product_id, $quantityShipped);
-
-                // Actualizar detalle con cantidad recibida
-                $detailContent['quantity_received'] = $quantityShipped;
-                $detailContent['received_at'] = now()->toISOString();
-
-                $detail->content = $detailContent;
-                $detail->save();
-
-                // Registrar en kardex (entrada)
-                /* $this->registerKardex(
-                    $movement->company_id,
-                    $movement->location_destination_id,
-                    $detail->product_id,
-                    $movement->id,
-                    $detail->id,
-                    'entry',
-                    'transfer_in',
-                    $quantityShipped,
-                    $detail->unit_cost,
-                    $movement->content['transfer_number'] ?? 'MOV-' . $movement->id,
-                    $detail->batch_number ?? null,
-                    $detail->expiry_date ?? null
-                ); */
-            }
-
-            // Actualizar estado del movimiento
-            $content = $movement->content ?? [];
-            $content['received_by'] = $userId ?? Auth::id();
-            $content['received_at'] = now()->toISOString();
-            $content['receiving_notes'] = $receiptData['receiving_notes'] ?? null;
-            $content['received_complete'] = true;
-
-            $movement->status = 'closed';
-            $movement->content = $content;
-            $movement->save();
-
-            DB::commit();
-            return $movement->fresh(['details.product']);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
+        if ($fromBaseUnitId !== $toBaseUnitId) {
+            throw new Exception("No se pueden convertir unidades de diferentes tipos (unidad {$fromUnitId} a unidad {$toUnitId})");
         }
+
+        // Convertir de fromUnit a unidad base
+        $fromFactor = $fromUnit->factor_to_base ?? 1;
+        $quantityInBaseUnit = $quantity * $fromFactor;
+
+        // Convertir de unidad base a toUnit
+        $toFactor = $toUnit->factor_to_base ?? 1;
+        $convertedQuantity = $quantityInBaseUnit / $toFactor;
+
+        return $convertedQuantity;
     }
 
     /**
-     * Validar que hay suficiente stock para enviar
+     * Validar que hay suficiente stock
+     *
+     * @param int $locationId ID de la ubicación
+     * @param int $productId ID del producto
+     * @param float $quantity Cantidad solicitada (en unidad base del producto)
+     * @return void
+     * @throws Exception
      */
     protected function validateStock(int $locationId, int $productId, float $quantity): void
     {
@@ -223,6 +184,12 @@ class MovementService
 
     /**
      * Decrementar stock en una ubicación
+     *
+     * @param int $locationId ID de la ubicación
+     * @param int $productId ID del producto
+     * @param float $quantity Cantidad a decrementar (en unidad base del producto)
+     * @return void
+     * @throws Exception
      */
     protected function decrementStock(int $locationId, int $productId, float $quantity): void
     {
@@ -239,6 +206,11 @@ class MovementService
 
     /**
      * Incrementar stock en una ubicación
+     *
+     * @param int $locationId ID de la ubicación
+     * @param int $productId ID del producto
+     * @param float $quantity Cantidad a incrementar (en unidad base del producto)
+     * @return void
      */
     protected function incrementStock(int $locationId, int $productId, float $quantity): void
     {
@@ -262,74 +234,5 @@ class MovementService
                 'updated_at' => now(),
             ]);
         }
-    }
-
-    /**
-     * Registrar operación en kardex
-     */
-    protected function registerKardex(
-        int $companyId,
-        int $locationId,
-        int $productId,
-        int $movementId,
-        int $detailId,
-        string $operationType,
-        string $operationReason,
-        float $quantity,
-        ?float $unitCost,
-        ?string $documentNumber = null,
-        ?string $batch = null,
-        ?string $expiryDate = null
-    ): void {
-        // Obtener el último registro del kardex para calcular el saldo
-        $lastKardex = ProductKardex::where('company_id', $companyId)
-            ->where('location_id', $locationId)
-            ->where('product_id', $productId)
-            ->orderBy('operation_date', 'desc')
-            ->orderBy('id', 'desc')
-            ->first();
-
-        $previousBalance = $lastKardex ? $lastKardex->balance : 0;
-        $previousValue = $lastKardex ? $lastKardex->balance_value : 0;
-        $previousAverage = $previousBalance > 0 ? ($previousValue / $previousBalance) : 0;
-
-        // Calcular nuevos valores según el tipo de operación
-        if ($operationType === 'entry') {
-            $entryQty = $quantity;
-            $exitQty = 0;
-            $newBalance = $previousBalance + $quantity;
-            $entryValue = $quantity * ($unitCost ?? $previousAverage);
-            $newValue = $previousValue + $entryValue;
-        } else {
-            $entryQty = 0;
-            $exitQty = $quantity;
-            $newBalance = $previousBalance - $quantity;
-            $exitValue = $quantity * ($unitCost ?? $previousAverage);
-            $newValue = $previousValue - $exitValue;
-        }
-
-        $newAverage = $newBalance > 0 ? ($newValue / $newBalance) : 0;
-
-        ProductKardex::create([
-            'company_id' => $companyId,
-            'location_id' => $locationId,
-            'product_id' => $productId,
-            'movement_id' => $movementId,
-            'movement_detail_id' => $detailId,
-            'operation_type' => $operationType,
-            'operation_reason' => $operationReason,
-            'operation_date' => now(),
-            'document_number' => $documentNumber,
-            'batch_number' => $batch,
-            'expiry_date' => $expiryDate,
-            'entry_quantity' => $entryQty,
-            'exit_quantity' => $exitQty,
-            'balance' => $newBalance,
-            'unit_cost' => $unitCost ?? $previousAverage,
-            'entry_value' => $entryValue ?? 0,
-            'exit_value' => $exitValue ?? 0,
-            'balance_value' => $newValue,
-            'average_cost' => $newAverage,
-        ]);
     }
 }

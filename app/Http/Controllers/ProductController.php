@@ -122,6 +122,7 @@ class ProductController extends CrudController
     {
         $location = CurrentLocation::get();
         $locationId = $location ? $location->id : (isset($params['location_id']) ? $params['location_id'] : null);
+        $isActive = isset($params['is_active']) ? (bool)$params['is_active'] : true;
 
         // Filtrar por empresa
         if (isset($params['company_id'])) {
@@ -142,15 +143,11 @@ class ProductController extends CrudController
         }
 
         // Filtrar por estado activo en la ubicación actual
-        if (isset($params['is_active'])) {
-            if ($locationId) {
-                $query->whereHas('locations', function ($q) use ($params, $locationId) {
-                    $q->where('location_id', $locationId)
-                        ->where('product_location.active', true);
-                });
-            }
-            // Eliminar el parámetro para evitar que se intente filtrar en la tabla products
-            unset($params['is_active']);
+        if ($locationId) {
+            $query->whereHas('locations', function ($q) use ($params, $locationId, $isActive) {
+                $q->where('location_id', $locationId)
+                    ->where('product_location.active', $isActive);
+            });
         }
 
         // Filtrar por stock bajo

@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\SupplierResource;
 use App\Models\Supplier;
+use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -46,10 +48,12 @@ class SupplierController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
+
+        $company = CurrentCompany::get();
+        $location = CurrentLocation::get();
+
         // Filtro por compañía
-        if (isset($params['company_id'])) {
-            $query->where('company_id', $params['company_id']);
-        }
+        $query->where('company_id', $company->id);
 
         // Filtro por estado activo/inactivo
         if (isset($params['is_active'])) {
