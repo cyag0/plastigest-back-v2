@@ -88,9 +88,10 @@ class WorkerResource extends Resources
                     'id' => $location->id,
                     'name' => $location->name,
                 ]);
+                $item['location_id'] = $resource->locations->first()?->id;
             } else {
                 $item['locations'] = $resource->locations;
-                $item['location_ids'] = $resource->locations->pluck('id')->toArray();
+                $item['location_id'] = $resource->locations->first()?->id;
             }
         }
 

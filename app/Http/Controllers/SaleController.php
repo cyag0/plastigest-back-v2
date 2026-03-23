@@ -260,7 +260,7 @@ class SaleController extends CrudController
                     $unitPrice = $detail['unit_price'];
                     $quantity = $detail['quantity'];
                     $subtotal = $quantity * $unitPrice;
-                    
+
                     SaleDetail::create([
                         'sale_id' => $sale->id,
                         'product_id' => $detail['product_id'],
@@ -483,18 +483,17 @@ class SaleController extends CrudController
                 ->join('sales', 'sales_details.sale_id', '=', 'sales.id')
                 ->join('products', 'sales_details.product_id', '=', 'products.id')
                 ->where('sales.location_id', $locationId)
-                ->where('movements.movement_reason', 'sale')
                 ->when($startDate, function ($q) use ($startDate) {
-                    return $q->where('movements.movement_date', '>=', $startDate);
+                    return $q->where('sales.sale_date', '>=', $startDate);
                 })
                 ->when($endDate, function ($q) use ($endDate) {
-                    return $q->where('movements.movement_date', '<=', $endDate);
+                    return $q->where('sales.sale_date', '<=', $endDate);
                 })
                 ->select(
                     'products.id',
                     'products.name',
-                    DB::raw('SUM(movements_details.quantity) as total_quantity'),
-                    DB::raw('SUM(movements_details.total_cost) as total_amount')
+                    DB::raw('SUM(sales_details.quantity) as total_quantity'),
+                    DB::raw('SUM(sales_details.total) as total_amount')
                 )
                 ->groupBy('products.id', 'products.name')
                 ->orderByDesc('total_amount')
@@ -512,11 +511,11 @@ class SaleController extends CrudController
             // Tendencia de ventas (últimos 6 meses)
             $sixMonthsAgo = now()->subMonths(6)->startOfMonth();
             $salesTrend = (clone $query)
-                ->where('movement_date', '>=', $sixMonthsAgo)
+                ->where('sale_date', '>=', $sixMonthsAgo)
                 ->select(
-                    DB::raw('DATE_FORMAT(movement_date, "%Y-%m") as month'),
+                    DB::raw('DATE_FORMAT(sale_date, "%Y-%m") as month'),
                     DB::raw('COUNT(*) as count'),
-                    DB::raw('SUM(total_cost) as total')
+                    DB::raw('SUM(total) as total')
                 )
                 ->groupBy('month')
                 ->orderBy('month')
@@ -853,7 +852,19 @@ class SaleController extends CrudController
     {
         try {
             $companyId = CurrentCompany::get()->id;
-            $locationId = CurrentLocation::get()->id;
+            $locationId = $request->integer('location_id') ?: CurrentLocation::get()->id;
+
+            $locationBelongsToCompany = DB::table('locations')
+                ->where('id', $locationId)
+                ->where('company_id', $companyId)
+                ->exists();
+
+            if (!$locationBelongsToCompany) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'La ubicación seleccionada no pertenece a la empresa actual',
+                ], 422);
+            }
 
             // Cargar productos activos para venta con sus paquetes
             $products = Product::where('company_id', $companyId)
@@ -873,6 +884,21 @@ class SaleController extends CrudController
                 ])
                 ->get();
 
+            // Formatear las imágenes de los productos manualmente
+            $productsWithImages = $products->map(function ($product) {
+                $productArray = $product->toArray();
+
+                // Formatear imagen principal si existe
+                if ($product->relationLoaded('mainImage') && $product->mainImage) {
+                    $productArray['main_image'] = \App\Utils\AppUploadUtil::formatFile(
+                        \App\Constants\Files::PRODUCT_IMAGES_PATH,
+                        $product->mainImage->image_path
+                    );
+                }
+
+                return $productArray;
+            });
+
             // Cargar unidades agrupadas por tipo
             $units = DB::table('units')
                 ->select('id', 'name', 'abbreviation', 'unit_type', 'is_base_unit', 'factor_to_base')
@@ -891,7 +917,7 @@ class SaleController extends CrudController
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'products' => $products,
+                    'products' => $productsWithImages,
                     'units' => $units,
                     'categories' => $categories,
                 ],

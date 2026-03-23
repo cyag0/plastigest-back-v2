@@ -7,6 +7,7 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\Permissions\RolesResource;
 use App\Models\Admin\Permission;
 use App\Models\Admin\Role;
+use App\Support\CurrentCompany;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -48,11 +49,11 @@ class RolesController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
-        // Implementar filtros específicos del modelo
-        // Ejemplo:
-        // if (isset($params['category_id'])) {
-        //     $query->where('category_id', $params['category_id']);
-        // }
+        $company = CurrentCompany::get();
+
+        if ($company) {
+            $query->where('company_id', $company->id);
+        }
     }
 
     /**
@@ -92,9 +93,13 @@ class RolesController extends CrudController
      */
     protected function processStoreData(array $validatedData, Request $request): array
     {
-        // Procesar datos antes de crear si es necesario
-        // Ejemplo: agregar company_id del usuario autenticado
-        // $validatedData['company_id'] = au th()->user()->company_id;
+        $company = CurrentCompany::get();
+
+        if (!$company) {
+            abort(422, 'No hay una empresa seleccionada para crear el rol.');
+        }
+
+        $validatedData['company_id'] = $company->id;
 
         return $validatedData;
     }
@@ -104,9 +109,13 @@ class RolesController extends CrudController
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
-        // Procesar datos antes de actualizar si es necesario
-        // Ejemplo: no permitir cambiar company_id
-        // unset($validatedData['company_id']);
+        $company = CurrentCompany::get();
+
+        if (!$company) {
+            abort(422, 'No hay una empresa seleccionada para actualizar el rol.');
+        }
+
+        $validatedData['company_id'] = $company->id;
 
         return $validatedData;
     }
@@ -130,8 +139,10 @@ class RolesController extends CrudController
      */
     protected function afterUpdate(Model $model, Request $request): void
     {
-        // Lógica adicional después de actualizar
-        // Ejemplo: sincronizar relaciones, logs, etc.
+        if ($request->has('permissions')) {
+            $permissions = array_keys(array_filter($request->input('permissions')));
+            $model->permissions()->sync($permissions);
+        }
     }
 
     /**

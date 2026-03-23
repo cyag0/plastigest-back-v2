@@ -26,44 +26,16 @@ class InventoryTransfer extends Model
         'to_location_id',
         'transfer_number',
         'status',
+        'content',
         'requested_by',
-        'approved_by',
-        'shipped_by',
-        'received_by',
         'total_cost',
         'notes',
-        'rejection_reason',
-        'requested_at',
-        'approved_at',
-        'shipped_at',
-        'received_at',
-        'cancelled_at',
-        'rejected_at',
-        // Nuevos campos para el flujo mejorado
-        'package_number',
-        'package_count',
-        'shipping_evidence',
-        'shipping_notes',
-        'receiving_notes',
-        'received_complete',
-        'received_partial',
-        'has_differences',
     ];
 
     protected $casts = [
         'status' => TransferStatus::class,
-        'requested_at' => 'datetime',
-        'approved_at' => 'datetime',
-        'shipped_at' => 'datetime',
-        'received_at' => 'datetime',
-        'cancelled_at' => 'datetime',
-        'rejected_at' => 'datetime',
+        'content' => 'array',
         'total_cost' => 'decimal:2',
-        'shipping_evidence' => 'array',
-        'received_complete' => 'boolean',
-        'received_partial' => 'boolean',
-        'has_differences' => 'boolean',
-        'package_count' => 'integer',
     ];
 
     /**
@@ -75,13 +47,90 @@ class InventoryTransfer extends Model
             if (!$model->transfer_number) {
                 $model->transfer_number = self::generateTransferNumber();
             }
-            if (!$model->requested_at) {
-                $model->requested_at = now();
-            }
             if (!$model->status) {
                 $model->status = TransferStatus::PENDING;
             }
+            if (!$model->content) {
+                $model->content = self::defaultWorkflowContent((int) ($model->requested_by ?? 0));
+            }
         });
+    }
+
+    /**
+     * Estructura JSON completa de content para transferencias.
+     *
+     * {
+     *   "current_step": 1,
+     *   "step_1": {
+     *     "status": "pending|approved|rejected",
+     *     "created_at": "ISO-8601",
+     *     "requested_by": 10,
+     *     "approved_at": "ISO-8601|null",
+     *     "approved_by": 20,
+     *     "rejected_at": "ISO-8601|null",
+     *     "rejected_by": 21,
+     *     "reason": "texto",
+     *     "items": [
+     *       {
+     *         "detail_id": 1,
+     *         "quantity_requested": 5.0
+     *       }
+     *     ]
+     *   },
+     *   "step_2": {
+     *     "status": "shipped",
+     *     "shipped_at": "ISO-8601",
+     *     "shipped_by": 30,
+     *     "items_count": 3
+     *   },
+     *   "step_3": {
+     *     "status": "received",
+     *     "received_at": "ISO-8601",
+     *     "received_by": 40,
+     *     "items_count": 3
+     *   }
+     * }
+     */
+    public static function defaultWorkflowContent(int $requestedBy = 0): array
+    {
+        return [
+            'current_step' => 1,
+            'ended_at_step' => 1,
+            'flow_state' => 'in_progress',
+            'step_1' => [
+                'status' => 'pending',
+                'created_at' => now()->toISOString(),
+                'requested_by' => $requestedBy,
+                'items' => [],
+            ],
+            'step_2' => null,
+            'step_3' => null,
+            'step_4' => [
+                'status' => 'pending',
+            ],
+            'progress' => [
+                'step_1' => [
+                    'visited' => true,
+                    'result' => 'pending',
+                    'ended_here' => false,
+                ],
+                'step_2' => [
+                    'visited' => false,
+                    'result' => 'pending',
+                    'ended_here' => false,
+                ],
+                'step_3' => [
+                    'visited' => false,
+                    'result' => 'pending',
+                    'ended_here' => false,
+                ],
+                'step_4' => [
+                    'visited' => false,
+                    'result' => 'pending',
+                    'ended_here' => false,
+                ],
+            ],
+        ];
     }
 
     /**
@@ -121,21 +170,6 @@ class InventoryTransfer extends Model
     public function requestedByUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'requested_by');
-    }
-
-    public function approvedByUser(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'approved_by');
-    }
-
-    public function shippedByUser(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'shipped_by');
-    }
-
-    public function receivedByUser(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'received_by');
     }
 
     public function details(): HasMany
@@ -228,129 +262,8 @@ class InventoryTransfer extends Model
     }
 
     /**
-     * Marcar como enviada (en tránsito) y decrementar stock de origen
-     */
-    public function ship(int $userId, array $shipmentData = []): bool
-    {
-        if ($this->status !== TransferStatus::APPROVED) {
-            throw new Exception("Solo se pueden enviar transferencias aprobadas");
-        }
-
-        DB::beginTransaction();
-        try {
-            // Decrementar stock en ubicación de origen
-            foreach ($this->details as $detail) {
-                $this->decrementOriginStock($detail);
-                
-                // Actualizar cantidad enviada
-                $detail->quantity_shipped = $detail->quantity_requested;
-                $detail->save();
-            }
-
-            // Actualizar información de envío
-            $this->status = TransferStatus::IN_TRANSIT;
-            $this->shipped_by = $userId;
-            $this->shipped_at = now();
-            
-            // Información adicional de empaque y evidencias
-            if (!empty($shipmentData['package_number'])) {
-                $this->package_number = $shipmentData['package_number'];
-            }
-            if (!empty($shipmentData['package_count'])) {
-                $this->package_count = $shipmentData['package_count'];
-            }
-            if (!empty($shipmentData['shipping_notes'])) {
-                $this->shipping_notes = $shipmentData['shipping_notes'];
-            }
-            if (!empty($shipmentData['shipping_evidence'])) {
-                $this->shipping_evidence = $shipmentData['shipping_evidence'];
-            }
-            
-            $this->save();
-
-            DB::commit();
-            return true;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
-    }
-
-    /**
-     * Recibir transferencia (con cantidades confirmadas)
-     */
-    public function receive(int $userId, array $receiptData): bool
-    {
-        if ($this->status !== TransferStatus::IN_TRANSIT) {
-            throw new Exception("Solo se pueden recibir transferencias en tránsito");
-        }
-
-        DB::beginTransaction();
-        try {
-            $hasAnyDifferences = false;
-            $receivedQuantities = $receiptData['received_quantities'] ?? [];
-            
-            // Actualizar cantidades recibidas e incrementar stock en destino
-            foreach ($this->details as $detail) {
-                $receivedQty = $receivedQuantities[$detail->id] ?? 0;
-                
-                $detail->quantity_received = $receivedQty;
-                
-                // Verificar si hay diferencias
-                if ($receivedQty !== $detail->quantity_shipped) {
-                    $hasAnyDifferences = true;
-                    $detail->has_difference = true;
-                    $detail->difference = $receivedQty - $detail->quantity_shipped;
-                }
-                
-                $detail->save();
-
-                // Incrementar stock en ubicación de destino
-                if ($receivedQty > 0) {
-                    $this->incrementDestinationStock($detail, $receivedQty);
-                }
-            }
-
-            // Actualizar información de recepción
-            $this->status = TransferStatus::COMPLETED;
-            $this->received_by = $userId;
-            $this->received_at = now();
-            $this->has_differences = $hasAnyDifferences;
-            
-            // Información adicional de recepción
-            if (!empty($receiptData['receiving_notes'])) {
-                $this->receiving_notes = $receiptData['receiving_notes'];
-            }
-            
-            // Determinar tipo de recepción
-            $totalReceived = array_sum($receivedQuantities);
-            $totalShipped = $this->details->sum('quantity_shipped');
-            
-            if ($totalReceived === $totalShipped) {
-                $this->received_complete = true;
-                $this->received_partial = false;
-            } elseif ($totalReceived > 0) {
-                $this->received_complete = false;
-                $this->received_partial = true;
-            } else {
-                // Rechazo total - cambiar a estado rechazado
-                $this->status = TransferStatus::REJECTED;
-                $this->received_complete = false;
-                $this->received_partial = false;
-                $this->rejection_reason = $receiptData['rejection_reason'] ?? 'Producto rechazado en recepción';
-            }
-
-            $this->save();
-            DB::commit();
-            return true;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
-    }
-
-    /**
      * Cancelar transferencia
+     * NOTA: La lógica de reversión de stock ahora se maneja en TransferService
      */
     public function cancel(string $reason = null): bool
     {
@@ -358,98 +271,11 @@ class InventoryTransfer extends Model
             throw new Exception("Esta transferencia no puede ser cancelada");
         }
 
-        DB::beginTransaction();
-        try {
-            // Si ya fue enviada, revertir el stock de origen
-            if ($this->status === TransferStatus::IN_TRANSIT) {
-                foreach ($this->details as $detail) {
-                    $this->incrementOriginStock($detail, $detail->quantity_shipped);
-                }
-            }
+        $this->status = TransferStatus::CANCELLED;
+        $this->rejection_reason = $reason;
+        $this->cancelled_at = now();
 
-            $this->status = TransferStatus::CANCELLED;
-            $this->rejection_reason = $reason;
-            $this->cancelled_at = now();
-            $this->save();
-
-            DB::commit();
-            return true;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
-    }
-
-    /**
-     * Decrementar stock en ubicación de origen
-     */
-    protected function decrementOriginStock(InventoryTransferDetail $detail): void
-    {
-        $productLocation = DB::table('product_location')
-            ->where('product_id', $detail->product_id)
-            ->where('location_id', $this->from_location_id)
-            ->first();
-
-        if (!$productLocation) {
-            throw new Exception(
-                "El producto ID {$detail->product_id} no existe en la ubicación de origen"
-            );
-        }
-
-        if ($productLocation->current_stock < $detail->quantity_requested) {
-            throw new Exception(
-                "Stock insuficiente para el producto ID {$detail->product_id}. " .
-                "Disponible: {$productLocation->current_stock}, " .
-                "Solicitado: {$detail->quantity_requested}"
-            );
-        }
-
-        DB::table('product_location')
-            ->where('product_id', $detail->product_id)
-            ->where('location_id', $this->from_location_id)
-            ->decrement('current_stock', $detail->quantity_requested);
-    }
-
-    /**
-     * Incrementar stock en ubicación de origen (en caso de cancelación)
-     */
-    protected function incrementOriginStock(InventoryTransferDetail $detail, float $quantity): void
-    {
-        DB::table('product_location')
-            ->where('product_id', $detail->product_id)
-            ->where('location_id', $this->from_location_id)
-            ->increment('current_stock', $quantity);
-    }
-
-    /**
-     * Incrementar stock en ubicación de destino
-     */
-    protected function incrementDestinationStock(InventoryTransferDetail $detail, float $quantity): void
-    {
-        // Buscar si existe el producto en la ubicación de destino
-        $productLocation = DB::table('product_location')
-            ->where('product_id', $detail->product_id)
-            ->where('location_id', $this->to_location_id)
-            ->first();
-
-        if ($productLocation) {
-            // Si existe, incrementar
-            DB::table('product_location')
-                ->where('product_id', $detail->product_id)
-                ->where('location_id', $this->to_location_id)
-                ->increment('current_stock', $quantity);
-        } else {
-            // Si no existe, crear el registro
-            DB::table('product_location')->insert([
-                'product_id' => $detail->product_id,
-                'location_id' => $this->to_location_id,
-                'current_stock' => $quantity,
-                'min_stock' => 0,
-                'max_stock' => 0,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
+        return $this->save();
     }
 
     /**
@@ -473,7 +299,7 @@ class InventoryTransfer extends Model
     /**
      * Métodos útiles para el nuevo flujo operativo
      */
-    
+
     /**
      * Verificar si es una petición (pendiente o rechazada)
      */
@@ -503,7 +329,7 @@ class InventoryTransfer extends Model
      */
     public function canBeApprovedByLocation(int $locationId): bool
     {
-        return $this->status === TransferStatus::PENDING && $this->from_location_id === $locationId;
+        return $this->status === TransferStatus::PENDING && $this->to_location_id === $locationId;
     }
 
     /**

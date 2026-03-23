@@ -20,6 +20,7 @@ class RolesResource extends Resources
             'id' => $resource->id,
             'name' => $resource->name,
             'description' => $resource->description,
+            'company_id' => $resource->company_id,
         ];
 
         // Campos adicionales según el contexto

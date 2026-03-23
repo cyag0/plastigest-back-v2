@@ -6,6 +6,8 @@ use App\Models\Product;
 use App\Models\Movement;
 use App\Models\Sale;
 use App\Models\Purchase;
+use App\Models\InventoryTransfer;
+use App\Models\InventoryTransferDetail;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
@@ -600,72 +602,69 @@ class ReportController extends Controller
         $period = $request->get('period', 'month'); // 'today', 'week', 'month', 'year'
         $dateRange = $this->getDateRange($period);
 
-        // Total de transferencias en el período
-        $totalTransfers = Movement::where('company_id', $companyId)
-            ->where('movement_type', 'transfer')
-            ->whereBetween('movement_date', $dateRange)
+        $baseQuery = InventoryTransfer::query()
+            ->where('company_id', $companyId)
+            ->whereBetween('created_at', $dateRange)
             ->when($locationId, function ($query) use ($locationId) {
                 $query->where(function ($q) use ($locationId) {
-                    $q->where('location_origin_id', $locationId)
-                        ->orWhere('location_destination_id', $locationId);
+                    $q->where('from_location_id', $locationId)
+                        ->orWhere('to_location_id', $locationId);
                 });
-            })
-            ->count();
+            });
+
+        // Total de transferencias en el período
+        $totalTransfers = (clone $baseQuery)->count();
 
         // Transferencias enviadas
-        $transfersSent = Movement::where('company_id', $companyId)
-            ->where('movement_type', 'transfer')
-            ->whereBetween('movement_date', $dateRange)
+        $transfersSent = (clone $baseQuery)
             ->when($locationId, function ($query) use ($locationId) {
-                $query->where('location_origin_id', $locationId);
+                $query->where('from_location_id', $locationId);
+            }, function ($query) {
+                $query->whereNotNull('from_location_id');
             })
             ->count();
 
         // Transferencias recibidas
-        $transfersReceived = Movement::where('company_id', $companyId)
-            ->where('movement_type', 'transfer')
-            ->whereBetween('movement_date', $dateRange)
+        $transfersReceived = (clone $baseQuery)
             ->when($locationId, function ($query) use ($locationId) {
-                $query->where('location_destination_id', $locationId);
+                $query->where('to_location_id', $locationId);
+            }, function ($query) {
+                $query->whereNotNull('to_location_id');
             })
             ->count();
 
         // Transferencias por estado
-        $transfersByStatus = Movement::where('company_id', $companyId)
-            ->where('movement_type', 'transfer')
-            ->whereBetween('movement_date', $dateRange)
-            ->when($locationId, function ($query) use ($locationId) {
-                $query->where(function ($q) use ($locationId) {
-                    $q->where('location_origin_id', $locationId)
-                        ->orWhere('location_destination_id', $locationId);
-                });
-            })
+        $transfersByStatus = (clone $baseQuery)
             ->select('status', DB::raw('count(*) as count'))
             ->groupBy('status')
             ->get()
             ->mapWithKeys(function ($item) {
-                return [$item->status => $item->count];
+                $status = $item->status;
+                if ($status instanceof \BackedEnum) {
+                    $status = $status->value;
+                }
+
+                return [(string) $status => (int) $item->count];
             });
 
         // Productos más transferidos
-        $topProducts = DB::table('movements_details')
-            ->join('movements', 'movements_details.movement_id', '=', 'movements.id')
-            ->join('products', 'movements_details.product_id', '=', 'products.id')
-            ->where('movements.company_id', $companyId)
-            ->where('movements.movement_type', 'transfer')
-            ->whereBetween('movements.movement_date', $dateRange)
+        $topProducts = InventoryTransferDetail::query()
+            ->join('inventory_transfers', 'inventory_transfer_details.transfer_id', '=', 'inventory_transfers.id')
+            ->join('products', 'inventory_transfer_details.product_id', '=', 'products.id')
+            ->where('inventory_transfers.company_id', $companyId)
+            ->whereBetween('inventory_transfers.created_at', $dateRange)
             ->when($locationId, function ($query) use ($locationId) {
                 $query->where(function ($q) use ($locationId) {
-                    $q->where('movements.location_origin_id', $locationId)
-                        ->orWhere('movements.location_destination_id', $locationId);
+                    $q->where('inventory_transfers.from_location_id', $locationId)
+                        ->orWhere('inventory_transfers.to_location_id', $locationId);
                 });
             })
             ->select(
                 'products.id',
                 'products.name',
                 'products.code',
-                DB::raw('SUM(movements_details.quantity) as total_quantity'),
-                DB::raw('COUNT(DISTINCT movements.id) as transfer_count')
+                DB::raw('SUM(COALESCE(inventory_transfer_details.quantity_shipped, inventory_transfer_details.quantity_requested, 0)) as total_quantity'),
+                DB::raw('COUNT(DISTINCT inventory_transfers.id) as transfer_count')
             )
             ->groupBy('products.id', 'products.name', 'products.code')
             ->orderByDesc('total_quantity')
@@ -673,35 +672,65 @@ class ReportController extends Controller
             ->get();
 
         // Ubicaciones con más transferencias
-        $topLocations = DB::table('movements')
-            ->leftJoin('locations as origin', 'movements.location_origin_id', '=', 'origin.id')
-            ->leftJoin('locations as destination', 'movements.location_destination_id', '=', 'destination.id')
-            ->where('movements.company_id', $companyId)
-            ->where('movements.movement_type', 'transfer')
-            ->whereBetween('movements.movement_date', $dateRange)
+        $originLocationCounts = (clone $baseQuery)
             ->select(
-                DB::raw('COALESCE(origin.name, destination.name) as location_name'),
+                'from_location_id as location_id',
                 DB::raw('COUNT(*) as transfer_count')
             )
-            ->groupBy('location_name')
-            ->orderByDesc('transfer_count')
-            ->limit(5)
+            ->whereNotNull('from_location_id')
+            ->groupBy('from_location_id')
             ->get();
+
+        $destinationLocationCounts = (clone $baseQuery)
+            ->select(
+                'to_location_id as location_id',
+                DB::raw('COUNT(*) as transfer_count')
+            )
+            ->whereNotNull('to_location_id')
+            ->groupBy('to_location_id')
+            ->get();
+
+        $locationTotals = collect();
+
+        foreach ($originLocationCounts as $row) {
+            $id = (int) $row->location_id;
+            $locationTotals[$id] = (int) ($locationTotals[$id] ?? 0) + (int) $row->transfer_count;
+        }
+
+        foreach ($destinationLocationCounts as $row) {
+            $id = (int) $row->location_id;
+            $locationTotals[$id] = (int) ($locationTotals[$id] ?? 0) + (int) $row->transfer_count;
+        }
+
+        $locationNames = DB::table('locations')
+            ->whereIn('id', $locationTotals->keys()->all())
+            ->pluck('name', 'id');
+
+        $topLocations = $locationTotals
+            ->map(function ($count, $locationId) use ($locationNames) {
+                return [
+                    'location_name' => $locationNames[$locationId] ?? ('Ubicación #' . $locationId),
+                    'transfer_count' => (int) $count,
+                ];
+            })
+            ->sortByDesc('transfer_count')
+            ->take(5)
+            ->values();
 
         // Transferencias por período (últimos 7 días o 12 meses según el período)
         if ($period === 'today' || $period === 'week') {
             // Últimos 7 días
-            $transfersByPeriod = Movement::where('company_id', $companyId)
-                ->where('movement_type', 'transfer')
-                ->whereBetween('movement_date', [now()->subDays(7), now()])
+            $transfersByPeriod = InventoryTransfer::query()
+                ->where('company_id', $companyId)
+                ->whereBetween('created_at', [now()->subDays(7), now()])
                 ->when($locationId, function ($query) use ($locationId) {
                     $query->where(function ($q) use ($locationId) {
-                        $q->where('location_origin_id', $locationId)
-                            ->orWhere('location_destination_id', $locationId);
+                        $q->where('from_location_id', $locationId)
+                            ->orWhere('to_location_id', $locationId);
                     });
                 })
                 ->select(
-                    DB::raw('DATE(movement_date) as date'),
+                    DB::raw('DATE(created_at) as date'),
                     DB::raw('COUNT(*) as count')
                 )
                 ->groupBy('date')
@@ -709,17 +738,17 @@ class ReportController extends Controller
                 ->get();
         } else {
             // Últimos 12 meses
-            $transfersByPeriod = Movement::where('company_id', $companyId)
-                ->where('movement_type', 'transfer')
-                ->whereBetween('movement_date', [now()->subMonths(12), now()])
+            $transfersByPeriod = InventoryTransfer::query()
+                ->where('company_id', $companyId)
+                ->whereBetween('created_at', [now()->subMonths(12), now()])
                 ->when($locationId, function ($query) use ($locationId) {
                     $query->where(function ($q) use ($locationId) {
-                        $q->where('location_origin_id', $locationId)
-                            ->orWhere('location_destination_id', $locationId);
+                        $q->where('from_location_id', $locationId)
+                            ->orWhere('to_location_id', $locationId);
                     });
                 })
                 ->select(
-                    DB::raw('DATE_FORMAT(movement_date, "%Y-%m") as month'),
+                    DB::raw('DATE_FORMAT(created_at, "%Y-%m") as month'),
                     DB::raw('COUNT(*) as count')
                 )
                 ->groupBy('month')
@@ -727,19 +756,24 @@ class ReportController extends Controller
                 ->get();
         }
 
-        // Tiempo promedio de procesamiento (diferencia entre created_at y updated_at para transferencias completadas)
-        $avgProcessingTime = Movement::where('company_id', $companyId)
-            ->where('movement_type', 'transfer')
+        // Tiempo promedio de procesamiento (diferencia entre creación y recepción para completadas)
+        $completedTransfers = (clone $baseQuery)
             ->where('status', 'completed')
-            ->whereBetween('movement_date', $dateRange)
-            ->when($locationId, function ($query) use ($locationId) {
-                $query->where(function ($q) use ($locationId) {
-                    $q->where('location_origin_id', $locationId)
-                        ->orWhere('location_destination_id', $locationId);
-                });
+            ->get(['created_at', 'updated_at', 'content']);
+
+        $avgProcessingTime = $completedTransfers
+            ->map(function ($transfer) {
+                $receivedAt = data_get($transfer->content, 'step_3.received_at');
+                $endAt = $receivedAt ? Carbon::parse($receivedAt) : $transfer->updated_at;
+
+                if (!$transfer->created_at || !$endAt) {
+                    return null;
+                }
+
+                return max($transfer->created_at->diffInMinutes($endAt) / 60, 0);
             })
-            ->select(DB::raw('AVG(TIMESTAMPDIFF(HOUR, created_at, updated_at)) as avg_hours'))
-            ->value('avg_hours');
+            ->reject(fn($value) => $value === null)
+            ->avg();
 
         return response()->json([
             'data' => [

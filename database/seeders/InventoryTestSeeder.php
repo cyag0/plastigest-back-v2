@@ -101,9 +101,8 @@ class InventoryTestSeeder extends Seeder
             foreach ($locations as $index => $location) {
                 $stockQuantity = $productData['stock_quantities'][$index] ?? 0;
                 
-                DB::table('product_location_stock')->updateOrInsert(
+                DB::table('product_location')->updateOrInsert(
                     [
-                        'company_id' => $company->id,
                         'location_id' => $location->id,
                         'product_id' => $product->id,
                     ],

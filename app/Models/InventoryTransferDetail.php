@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 /**
@@ -17,6 +16,8 @@ class InventoryTransferDetail extends Model
     protected $fillable = [
         'transfer_id',
         'product_id',
+        'package_id',
+        'unit_id',
         'quantity_requested',
         'quantity_shipped',
         'quantity_received',
@@ -55,11 +56,19 @@ class InventoryTransferDetail extends Model
     }
 
     /**
-     * Relación con los envíos (productos realmente enviados)
+     * Relación con el paquete (opcional)
      */
-    public function shipments(): HasMany
+    public function package(): BelongsTo
     {
-        return $this->hasMany(InventoryTransferShipment::class, 'transfer_detail_id');
+        return $this->belongsTo(ProductPackage::class, 'package_id');
+    }
+
+    /**
+     * Relación con la unidad
+     */
+    public function unit(): BelongsTo
+    {
+        return $this->belongsTo(Unit::class);
     }
 
     /**

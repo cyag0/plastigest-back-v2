@@ -80,6 +80,10 @@ class MovementResource extends JsonResource
             'rejection_reason' => $content['rejection_reason'] ?? null,
             'shipping_notes' => $content['shipping_notes'] ?? null,
             'receiving_notes' => $content['receiving_notes'] ?? null,
+            'shipping_evidence' => $content['shipping_evidence'] ?? [],
+            'receiving_evidence' => $content['receiving_evidence'] ?? [],
+            'workflow' => $content['workflow'] ?? [],
+            'adjustments' => $content['adjustments'] ?? [],
 
             // Details
             'details' => MovementDetailResource::collection($this->whenLoaded('details')),

@@ -49,7 +49,6 @@ class UserSeeder extends Seeder
                 $workerId = DB::table('workers')->insertGetId([
                     'company_id' => $location->company_id,
                     'user_id' => $user->id,
-                    'employee_number' => 'EMP-' . str_pad($location->id . $index, 5, '0', STR_PAD_LEFT),
                     'position' => $type['name'],
                     'department' => 'Operaciones',
                     'hire_date' => now()->subMonths(rand(1, 24)),

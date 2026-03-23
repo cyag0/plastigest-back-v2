@@ -150,8 +150,7 @@ class TestProductsWithStockSeeder extends Seeder
                 ]);
 
                 // Crear stock en ubicación principal
-                DB::table('product_location_stock')->insert([
-                    'company_id' => $company->id,
+                DB::table('product_location')->insert([
                     'location_id' => $mainLocation->id,
                     'product_id' => $product->id,
                     'current_stock' => $stockMain,
@@ -165,8 +164,7 @@ class TestProductsWithStockSeeder extends Seeder
 
                 // Crear stock en sucursal si existe
                 if ($branchLocation) {
-                    DB::table('product_location_stock')->insert([
-                        'company_id' => $company->id,
+                    DB::table('product_location')->insert([
                         'location_id' => $branchLocation->id,
                         'product_id' => $product->id,
                         'current_stock' => $stockBranch,

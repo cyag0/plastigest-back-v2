@@ -3,11 +3,6 @@
 namespace App\Services;
 
 use App\Models\InventoryTransfer;
-use App\Models\InventoryTransferDetail;
-use App\Models\InventoryTransferShipment;
-use App\Models\Movement;
-use App\Models\MovementDetail;
-use App\Models\ProductKardex;
 use App\Enums\TransferStatus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
@@ -15,6 +10,12 @@ use Exception;
 
 class TransferService
 {
+    protected MovementService $movementService;
+
+    public function __construct(MovementService $movementService)
+    {
+        $this->movementService = $movementService;
+    }
     /**
      * Aprobar transferencia
      */
@@ -26,13 +27,40 @@ class TransferService
 
         DB::beginTransaction();
         try {
+            $content = $transfer->content;
+            if (!is_array($content)) {
+                $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
+            }
+            $content = $this->normalizeWorkflowProgress($content);
+
             $transfer->status = TransferStatus::APPROVED;
-            $transfer->approved_by = Auth::id();
-            $transfer->approved_at = now();
+            $content['current_step'] = 2;
+            $content['flow_state'] = 'in_progress';
+            $content['ended_at_step'] = null;
+            $content['step_1'] = [
+                'status' => 'approved',
+                'approved_at' => now()->toISOString(),
+                'approved_by' => Auth::id(),
+                'items' => $data['items'] ?? [],
+            ];
+            $content['step_2'] = [
+                'status' => 'pending',
+            ];
+            $content['step_3'] = [
+                'status' => 'pending',
+            ];
+            $content['step_4'] = [
+                'status' => 'pending',
+            ];
+            $this->markProgress($content, 'step_1', true, 'completed', false);
+            $this->markProgress($content, 'step_2', false, 'pending', false);
+            $this->markProgress($content, 'step_3', false, 'pending', false);
+            $this->markProgress($content, 'step_4', false, 'pending', false);
+            $transfer->content = $content;
             $transfer->save();
 
             DB::commit();
-            return $transfer->load(['details.product', 'fromLocation', 'toLocation']);
+            return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
@@ -44,19 +72,60 @@ class TransferService
      */
     public function reject(InventoryTransfer $transfer, string $reason): InventoryTransfer
     {
-        if ($transfer->status !== TransferStatus::PENDING) {
-            throw new Exception("Solo se pueden rechazar transferencias pendientes");
+        if (in_array($transfer->status, [TransferStatus::COMPLETED, TransferStatus::CANCELLED, TransferStatus::REJECTED], true)) {
+            throw new Exception("Esta transferencia ya se encuentra en estado final y no puede rechazarse");
         }
 
         DB::beginTransaction();
         try {
+            $content = $transfer->content;
+            if (!is_array($content)) {
+                $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
+            }
+            $content = $this->normalizeWorkflowProgress($content);
+
+            $currentStatus = $transfer->status instanceof TransferStatus
+                ? $transfer->status->value
+                : (string) $transfer->status;
+            $endedStep = 1;
+            if ($currentStatus === TransferStatus::APPROVED->value) {
+                $endedStep = 2;
+            }
+            if ($currentStatus === TransferStatus::IN_TRANSIT->value) {
+                $endedStep = 3;
+            }
+
             $transfer->status = TransferStatus::REJECTED;
-            $transfer->rejected_at = now();
-            $transfer->rejection_reason = $reason;
+            $content['current_step'] = 4;
+            $content['flow_state'] = 'failed';
+            $content['ended_at_step'] = $endedStep;
+            $content['step_1'] = [
+                'status' => 'rejected',
+                'rejected_at' => now()->toISOString(),
+                'rejected_by' => Auth::id(),
+                'reason' => $reason,
+            ];
+            $content['step_2'] = [
+                'status' => $endedStep >= 2 ? ($endedStep === 2 ? 'failed' : 'completed') : 'skipped',
+            ];
+            $content['step_3'] = [
+                'status' => $endedStep >= 3 ? 'failed' : 'skipped',
+            ];
+            $content['step_4'] = [
+                'status' => 'failed',
+                'closed_at' => now()->toISOString(),
+                'closed_by' => Auth::id(),
+                'closed_reason' => $reason,
+            ];
+            $this->markProgress($content, 'step_1', true, $endedStep === 1 ? 'failed' : 'completed', $endedStep === 1);
+            $this->markProgress($content, 'step_2', $endedStep >= 2, $endedStep >= 2 ? ($endedStep === 2 ? 'failed' : 'completed') : 'skipped', $endedStep === 2);
+            $this->markProgress($content, 'step_3', $endedStep >= 3, $endedStep >= 3 ? 'failed' : 'skipped', $endedStep === 3);
+            $this->markProgress($content, 'step_4', true, 'failed', true);
+            $transfer->content = $content;
             $transfer->save();
 
             DB::commit();
-            return $transfer->load(['details.product', 'fromLocation', 'toLocation']);
+            return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
@@ -75,116 +144,78 @@ class TransferService
 
         DB::beginTransaction();
         try {
-            // Validar stock antes de procesar
-            foreach ($shipments as $shipmentData) {
-                $stockRecord = DB::table('product_location_stock')
-                    ->where('product_id', $shipmentData['product_id'])
-                    ->where('location_id', $transfer->from_location_id)
-                    ->where('company_id', $transfer->company_id)
-                    ->first();
-
-                if (!$stockRecord) {
-                    $product = DB::table('products')->find($shipmentData['product_id']);
-                    $location = DB::table('locations')->find($transfer->from_location_id);
-                    throw new Exception(
-                        "El producto '{$product->name}' no tiene stock registrado en '{$location->name}'. No se puede enviar este producto."
-                    );
-                }
-
-                if ($stockRecord->current_stock < $shipmentData['quantity_shipped']) {
-                    $product = DB::table('products')->find($shipmentData['product_id']);
-                    throw new Exception(
-                        "Stock insuficiente del producto '{$product->name}'. Disponible: {$stockRecord->current_stock}, Solicitado: {$shipmentData['quantity_shipped']}"
-                    );
-                }
+            $content = $transfer->content;
+            if (!is_array($content)) {
+                $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
             }
+            $content = $this->normalizeWorkflowProgress($content);
 
             $totalCost = 0;
 
-            // Crear movimiento de SALIDA en ubicación de origen
-            $exitMovement = Movement::create([
-                'company_id' => $transfer->company_id,
-                'location_origin_id' => $transfer->from_location_id,
-                'location_destination_id' => $transfer->to_location_id,
-                'movement_type' => 'exit',
-                'movement_reason' => 'transfer',
-                'reference_type' => 'transfer',
-                'reference_id' => $transfer->id,
-                'user_id' => Auth::id(),
-                'movement_date' => now(),
-                'status' => 'closed',
-            ]);
-
-            // Procesar cada envío
+            // Procesar cada envío directamente sobre el detalle
             foreach ($shipments as $shipmentData) {
                 $detail = $transfer->details()->find($shipmentData['transfer_detail_id']);
-                
+
                 if (!$detail) {
                     throw new Exception("Detalle de transferencia no encontrado");
                 }
 
-                // Crear registro de shipment
-                $shipment = InventoryTransferShipment::create([
-                    'transfer_detail_id' => $detail->id,
-                    'product_id' => $shipmentData['product_id'],
-                    'quantity_shipped' => $shipmentData['quantity_shipped'],
-                    'unit_cost' => $shipmentData['unit_cost'] ?? $detail->unit_cost,
-                    'batch_number' => $shipmentData['batch_number'] ?? null,
-                    'expiry_date' => $shipmentData['expiry_date'] ?? null,
-                    'notes' => $shipmentData['notes'] ?? null,
-                ]);
+                // Validar que no se envíe más de lo solicitado
+                if ($shipmentData['quantity_shipped'] > $detail->quantity_requested) {
+                    throw new Exception(
+                        "No se puede enviar más de lo solicitado. Solicitado: {$detail->quantity_requested}, Intentando enviar: {$shipmentData['quantity_shipped']}"
+                    );
+                }
 
-                // Actualizar cantidad enviada en detail
+                // Actualizar cantidad enviada y campos operativos en detalle
                 $detail->quantity_shipped = $shipmentData['quantity_shipped'];
+                $detail->unit_cost = $shipmentData['unit_cost'] ?? $detail->unit_cost;
+                $detail->batch_number = $shipmentData['batch_number'] ?? $detail->batch_number;
+                $detail->expiry_date = $shipmentData['expiry_date'] ?? $detail->expiry_date;
+                $detail->notes = $shipmentData['notes'] ?? $detail->notes;
                 $detail->save();
 
-                $totalCost += $shipment->total_cost;
+                $totalCost += (float) $detail->quantity_shipped * (float) ($detail->unit_cost ?? 0);
 
-                // Descuenta stock de la ubicación origen
-                $this->decrementStock(
+                // Usar MovementService para decrementar stock
+                // MovementService maneja la conversión de paquetes automáticamente
+                $this->movementService->decrement(
                     $transfer->from_location_id,
-                    $shipmentData['product_id'],
-                    $shipmentData['quantity_shipped']
-                );
-
-                // Registrar detalle del movimiento de salida
-                $movementDetail = MovementDetail::create([
-                    'movement_id' => $exitMovement->id,
-                    'product_id' => $shipmentData['product_id'],
-                    'quantity' => $shipmentData['quantity_shipped'],
-                    'unit_cost' => $shipmentData['unit_cost'] ?? $detail->unit_cost,
-                    'total_cost' => ($shipmentData['quantity_shipped'] * ($shipmentData['unit_cost'] ?? $detail->unit_cost)),
-                    'batch_number' => $shipmentData['batch_number'] ?? null,
-                ]);
-
-                // Registrar en kardex (SALIDA)
-                $this->registerKardex(
-                    $transfer->company_id,
-                    $transfer->from_location_id,
-                    $shipmentData['product_id'],
-                    $exitMovement->id,
-                    $movementDetail->id,
-                    'exit',
-                    'transfer',
-                    -$shipmentData['quantity_shipped'],
-                    $shipmentData['unit_cost'] ?? $detail->unit_cost,
-                    $transfer->transfer_number,
-                    $shipmentData['batch_number'] ?? null,
-                    $shipmentData['expiry_date'] ?? null
+                    $detail->product_id,
+                    $detail->unit_id,
+                    (float) $detail->quantity_shipped,
+                    $detail->package_id
                 );
             }
 
             // Actualizar transferencia
             $transfer->status = TransferStatus::IN_TRANSIT;
-            $transfer->shipped_by = Auth::id();
-            $transfer->shipped_at = now();
             $transfer->total_cost = $totalCost;
+            $content['current_step'] = 3;
+            $content['flow_state'] = 'in_progress';
+            $content['ended_at_step'] = null;
+            $content['step_2'] = [
+                'status' => 'shipped',
+                'shipped_at' => now()->toISOString(),
+                'shipped_by' => Auth::id(),
+                'items_count' => count($shipments),
+            ];
+            $content['step_3'] = [
+                'status' => 'pending',
+            ];
+            $content['step_4'] = [
+                'status' => 'pending',
+            ];
+            $this->markProgress($content, 'step_1', true, 'completed', false);
+            $this->markProgress($content, 'step_2', true, 'completed', false);
+            $this->markProgress($content, 'step_3', false, 'pending', false);
+            $this->markProgress($content, 'step_4', false, 'pending', false);
+            $transfer->content = $content;
             $transfer->save();
 
             DB::commit();
             return $transfer->load([
-                'details.product',
-                'details.shipments',
+                'details.product.mainImage',
                 'fromLocation',
                 'toLocation'
             ]);
@@ -206,89 +237,78 @@ class TransferService
 
         DB::beginTransaction();
         try {
-            // Crear movimiento de ENTRADA en ubicación de destino
-            $entryMovement = Movement::create([
-                'company_id' => $transfer->company_id,
-                'location_origin_id' => $transfer->from_location_id,
-                'location_destination_id' => $transfer->to_location_id,
-                'movement_type' => 'entry',
-                'movement_reason' => 'transfer',
-                'reference_type' => 'transfer',
-                'reference_id' => $transfer->id,
-                'user_id' => Auth::id(),
-                'movement_date' => now(),
-                'status' => 'closed',
-            ]);
+            $content = $transfer->content;
+            if (!is_array($content)) {
+                $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
+            }
+            $content = $this->normalizeWorkflowProgress($content);
 
-            // Procesar cada recepción
+            // Procesar cada recepción directamente sobre el detalle
             foreach ($receivedData as $item) {
-                $shipment = InventoryTransferShipment::find($item['shipment_id']);
-                
-                if (!$shipment) {
-                    throw new Exception("Envío no encontrado");
+                $detailId = (int) ($item['detail_id'] ?? 0);
+                $detail = $transfer->details()->find($detailId);
+
+                if (!$detail) {
+                    throw new Exception("Detalle de transferencia no encontrado");
                 }
 
-                $detail = $shipment->transferDetail;
-                $quantityReceived = $item['quantity_received'];
+                $quantityReceived = (float) $item['quantity_received'];
+                $quantityShipped = (float) $detail->quantity_shipped;
+
+                if ($quantityReceived > $quantityShipped) {
+                    throw new Exception("La cantidad recibida no puede superar la enviada");
+                }
 
                 // Actualizar cantidad recibida
                 $detail->quantity_received = $quantityReceived;
-                
+
                 // Si hay diferencia, registrar reporte
-                if ($quantityReceived < $shipment->quantity_shipped) {
-                    $difference = $shipment->quantity_shipped - $quantityReceived;
+                if ($quantityReceived < $quantityShipped) {
+                    $difference = $quantityShipped - $quantityReceived;
                     $detail->damage_report = ($item['damage_report'] ?? "Faltante: {$difference} unidades");
-                } elseif ($quantityReceived > $shipment->quantity_shipped) {
-                    $difference = $quantityReceived - $shipment->quantity_shipped;
-                    $detail->damage_report = "Sobrante: {$difference} unidades";
+                } else {
+                    $detail->damage_report = null;
                 }
-                
+
                 $detail->save();
 
-                // Incrementar stock en ubicación destino
-                $this->incrementStock(
+                // Usar MovementService para incrementar stock en destino
+                // MovementService maneja la conversión de paquetes automáticamente
+                $this->movementService->increment(
                     $transfer->to_location_id,
-                    $shipment->product_id,
-                    $quantityReceived
-                );
-
-                // Registrar detalle del movimiento de entrada
-                $movementDetail = MovementDetail::create([
-                    'movement_id' => $entryMovement->id,
-                    'product_id' => $shipment->product_id,
-                    'quantity' => $quantityReceived,
-                    'unit_cost' => $shipment->unit_cost,
-                    'total_cost' => ($quantityReceived * $shipment->unit_cost),
-                    'batch_number' => $shipment->batch_number,
-                ]);
-
-                // Registrar en kardex (ENTRADA)
-                $this->registerKardex(
-                    $transfer->company_id,
-                    $transfer->to_location_id,
-                    $shipment->product_id,
-                    $entryMovement->id,
-                    $movementDetail->id,
-                    'entry',
-                    'transfer',
+                    $detail->product_id,
+                    $detail->unit_id,
                     $quantityReceived,
-                    $shipment->unit_cost,
-                    $transfer->transfer_number,
-                    $shipment->batch_number,
-                    $shipment->expiry_date
+                    $detail->package_id
                 );
             }
 
             // Actualizar transferencia
             $transfer->status = TransferStatus::COMPLETED;
-            $transfer->received_by = Auth::id();
-            $transfer->received_at = now();
+            $content['current_step'] = 4;
+            $content['flow_state'] = 'completed';
+            $content['ended_at_step'] = 3;
+            $content['step_3'] = [
+                'status' => 'received',
+                'received_at' => now()->toISOString(),
+                'received_by' => Auth::id(),
+                'items_count' => count($receivedData),
+            ];
+            $content['step_4'] = [
+                'status' => 'completed',
+                'closed_at' => now()->toISOString(),
+                'closed_by' => Auth::id(),
+            ];
+            $this->markProgress($content, 'step_1', true, 'completed', false);
+            $this->markProgress($content, 'step_2', true, 'completed', false);
+            $this->markProgress($content, 'step_3', true, 'completed', true);
+            $this->markProgress($content, 'step_4', true, 'completed', true);
+            $transfer->content = $content;
             $transfer->save();
 
             DB::commit();
             return $transfer->load([
-                'details.product',
-                'details.shipments',
+                'details.product.mainImage',
                 'fromLocation',
                 'toLocation'
             ]);
@@ -298,137 +318,51 @@ class TransferService
         }
     }
 
-    /**
-     * Decrementar stock en ubicación
-     */
-    private function decrementStock(int $locationId, int $productId, float $quantity): void
+    private function normalizeWorkflowProgress(array $content): array
     {
-        $stockRecord = DB::table('product_location_stock')
-            ->where('product_id', $productId)
-            ->where('location_id', $locationId)
-            ->first();
+        $default = InventoryTransfer::defaultWorkflowContent((int) ($content['step_1']['requested_by'] ?? 0));
 
-        if (!$stockRecord) {
-            throw new Exception(
-                "El producto ID {$productId} no tiene stock registrado en la ubicación ID {$locationId}"
-            );
+        if (!isset($content['flow_state'])) {
+            $content['flow_state'] = $default['flow_state'];
         }
 
-        if ($stockRecord->current_stock < $quantity) {
-            throw new Exception(
-                "Stock insuficiente. Disponible: {$stockRecord->current_stock}, Requerido: {$quantity}"
-            );
+        if (!array_key_exists('ended_at_step', $content)) {
+            $content['ended_at_step'] = $default['ended_at_step'];
         }
 
-        DB::table('product_location_stock')
-            ->where('product_id', $productId)
-            ->where('location_id', $locationId)
-            ->decrement('current_stock', $quantity);
-    }
+        if (!isset($content['step_4']) || !is_array($content['step_4'])) {
+            $content['step_4'] = $default['step_4'];
+        }
 
-    /**
-     * Incrementar stock en ubicación
-     */
-    private function incrementStock(int $locationId, int $productId, float $quantity): void
-    {
-        $stockRecord = DB::table('product_location_stock')
-            ->where('product_id', $productId)
-            ->where('location_id', $locationId)
-            ->first();
+        if (!isset($content['progress']) || !is_array($content['progress'])) {
+            $content['progress'] = $default['progress'];
+        }
 
-        if ($stockRecord) {
-            // Si existe, incrementar
-            DB::table('product_location_stock')
-                ->where('product_id', $productId)
-                ->where('location_id', $locationId)
-                ->increment('current_stock', $quantity);
-        } else {
-            // Si no existe, crear registro con los datos mínimos necesarios
-            $location = DB::table('locations')->find($locationId);
-            if (!$location) {
-                throw new Exception("Ubicación ID {$locationId} no encontrada");
+        foreach (['step_1', 'step_2', 'step_3', 'step_4'] as $stepKey) {
+            if (!isset($content['progress'][$stepKey]) || !is_array($content['progress'][$stepKey])) {
+                $content['progress'][$stepKey] = $default['progress'][$stepKey];
             }
-            
-            DB::table('product_location_stock')->insert([
-                'company_id' => $location->company_id,
-                'location_id' => $locationId,
-                'product_id' => $productId,
-                'current_stock' => $quantity,
-                'reserved_stock' => 0,
-                'minimum_stock' => 0,
-                'maximum_stock' => null,
-                'average_cost' => 0,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
         }
+
+        return $content;
     }
 
-    /**
-     * Registrar movimiento en kardex
-     */
-    private function registerKardex(
-        int $companyId,
-        int $locationId,
-        int $productId,
-        int $movementId,
-        int $movementDetailId,
-        string $operationType,
-        string $operationReason,
-        float $quantity,
-        float $unitCost,
-        ?string $documentNumber = null,
-        ?string $batchNumber = null,
-        ?string $expiryDate = null
+    private function markProgress(
+        array &$content,
+        string $stepKey,
+        bool $visited,
+        string $result,
+        bool $endedHere
     ): void {
-        // Obtener stock anterior
-        $stockRecord = DB::table('product_location_stock')
-            ->where('product_id', $productId)
-            ->where('location_id', $locationId)
-            ->first();
-
-        $previousStock = $stockRecord ? $stockRecord->current_stock : 0;
-        $previousAverageCost = $stockRecord ? $stockRecord->average_cost : 0;
-
-        // Calcular nuevo stock basado en tipo de operación
-        $newStock = $operationType === 'entry' 
-            ? $previousStock + $quantity 
-            : $previousStock - abs($quantity);
-
-        // Calcular costo promedio ponderado
-        $runningAverageCost = $previousAverageCost;
-        if ($operationType === 'entry' && $newStock > 0) {
-            $totalValue = ($previousStock * $previousAverageCost) + ($quantity * $unitCost);
-            $runningAverageCost = $totalValue / $newStock;
+        if (!isset($content['progress']) || !is_array($content['progress'])) {
+            $content['progress'] = [];
         }
 
-        ProductKardex::create([
-            'company_id' => $companyId,
-            'location_id' => $locationId,
-            'product_id' => $productId,
-            'movement_id' => $movementId,
-            'movement_detail_id' => $movementDetailId,
-            'operation_type' => $operationType,
-            'operation_reason' => $operationReason,
-            'quantity' => $operationType === 'entry' ? $quantity : -abs($quantity),
-            'unit_cost' => $unitCost,
-            'total_cost' => ($quantity * $unitCost),
-            'previous_stock' => $previousStock,
-            'new_stock' => $newStock,
-            'running_average_cost' => $runningAverageCost,
-            'document_number' => $documentNumber,
-            'batch_number' => $batchNumber,
-            'expiry_date' => $expiryDate,
-            'user_id' => Auth::id(),
-            'operation_date' => now(),
-        ]);
-
-        // Actualizar el costo promedio en el stock si es una entrada
-        if ($operationType === 'entry' && $stockRecord) {
-            DB::table('product_location_stock')
-                ->where('product_id', $productId)
-                ->where('location_id', $locationId)
-                ->update(['average_cost' => $runningAverageCost]);
-        }
+        $content['progress'][$stepKey] = [
+            'visited' => $visited,
+            'result' => $result,
+            'ended_here' => $endedHere,
+            'updated_at' => now()->toISOString(),
+        ];
     }
 }

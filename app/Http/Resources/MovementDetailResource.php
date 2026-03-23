@@ -6,6 +6,7 @@ use App\Constants\Files;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\DB;
 
 class MovementDetailResource extends JsonResource
 {
@@ -17,6 +18,17 @@ class MovementDetailResource extends JsonResource
     public function toArray(Request $request): array
     {
         $content = $this->content ?? [];
+        $originLocationId = DB::table('movements')
+            ->where('id', $this->movement_id)
+            ->value('location_origin_id');
+
+        $availableStock = null;
+        if ($originLocationId) {
+            $availableStock = DB::table('product_location')
+                ->where('location_id', $originLocationId)
+                ->where('product_id', $this->product_id)
+                ->value('current_stock');
+        }
 
         return [
             'id' => $this->id,
@@ -86,6 +98,7 @@ class MovementDetailResource extends JsonResource
             // Differences tracking (for transfers)
             'has_difference' => $content['has_difference'] ?? false,
             'difference' => $content['difference'] ?? 0,
+            'available_stock' => $availableStock !== null ? (float) $availableStock : null,
 
             // Notes
             'notes' => $content['notes'] ?? null,

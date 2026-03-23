@@ -18,13 +18,16 @@ class Unit extends Model
     protected $fillable = [
         'name',
         'abbreviation',
+        'unit_type',
+        'is_base_unit',
         'company_id',
         'base_unit_id',
         'factor_to_base',
     ];
 
     protected $casts = [
-        'factor_to_base' => 'decimal:2',
+        'is_base_unit' => 'boolean',
+        'factor_to_base' => 'decimal:6',
     ];
 
     /**

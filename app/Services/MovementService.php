@@ -31,7 +31,7 @@ class MovementService
                 $product = Product::findOrFail($productId);
                 $unitId = $product->unit_id;
             }
-            
+
             // Convertir la cantidad a la unidad base del producto
             $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
 
@@ -65,7 +65,7 @@ class MovementService
                 $product = Product::findOrFail($productId);
                 $unitId = $product->unit_id;
             }
-            
+
             // Convertir la cantidad a la unidad base del producto
             $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
             Log::info("Cantidad en unidad de producto para decrementar: {$quantityInProductUnit}");
@@ -139,23 +139,25 @@ class MovementService
             return $quantity;
         }
 
-        $fromUnit = Unit::with('baseUnit')->findOrFail($fromUnitId);
-        $toUnit = Unit::with('baseUnit')->findOrFail($toUnitId);
+        $fromUnit = Unit::findOrFail($fromUnitId);
+        $toUnit = Unit::findOrFail($toUnitId);
 
-        // Validar que las unidades son del mismo tipo (tienen la misma unidad base)
-        $fromBaseUnitId = $fromUnit->base_unit_id ?? $fromUnitId;
-        $toBaseUnitId = $toUnit->base_unit_id ?? $toUnitId;
-
-        if ($fromBaseUnitId !== $toBaseUnitId) {
+        // Validar compatibilidad por tipo (mass, volume, quantity, etc.)
+        if ((string) $fromUnit->unit_type !== (string) $toUnit->unit_type) {
             throw new Exception("No se pueden convertir unidades de diferentes tipos (unidad {$fromUnitId} a unidad {$toUnitId})");
         }
 
+        $fromFactor = (float) ($fromUnit->factor_to_base ?? 1);
+        $toFactor = (float) ($toUnit->factor_to_base ?? 1);
+
+        if ($fromFactor <= 0 || $toFactor <= 0) {
+            throw new Exception("Factor de conversión inválido (unidad {$fromUnitId} a unidad {$toUnitId})");
+        }
+
         // Convertir de fromUnit a unidad base
-        $fromFactor = $fromUnit->factor_to_base ?? 1;
         $quantityInBaseUnit = $quantity * $fromFactor;
 
         // Convertir de unidad base a toUnit
-        $toFactor = $toUnit->factor_to_base ?? 1;
         $convertedQuantity = $quantityInBaseUnit / $toFactor;
 
         return $convertedQuantity;
@@ -193,6 +195,8 @@ class MovementService
      */
     protected function decrementStock(int $locationId, int $productId, float $quantity): void
     {
+        Log::info("Intentando decrementar stock para producto ID {$productId} en ubicación ID {$locationId} por cantidad {$quantity}");
+
         $updated = DB::table('product_location')
             ->where('location_id', $locationId)
             ->where('product_id', $productId)

@@ -94,8 +94,7 @@ class WorkerController extends CrudController
             'hire_date' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0',
             'is_active' => 'boolean',
-            'location_ids' => 'nullable|array',
-            'location_ids.*' => 'exists:locations,id',
+            'location_id' => 'required|exists:locations,id',
         ]);
     }
 
@@ -113,8 +112,7 @@ class WorkerController extends CrudController
             'hire_date' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0',
             'is_active' => 'boolean',
-            'location_ids' => 'nullable|array',
-            'location_ids.*' => 'exists:locations,id',
+            'location_id' => 'sometimes|exists:locations,id',
         ]);
     }
 
@@ -123,6 +121,12 @@ class WorkerController extends CrudController
      */
     protected function processStoreData(array $validatedData, Request $request): array
     {
+        $company = CurrentCompany::get();
+
+        if ($company) {
+            $validatedData['company_id'] = $company->id;
+        }
+
         return $validatedData;
     }
 
@@ -131,6 +135,12 @@ class WorkerController extends CrudController
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
+        $company = CurrentCompany::get();
+
+        if ($company) {
+            $validatedData['company_id'] = $company->id;
+        }
+
         return $validatedData;
     }
 
@@ -139,9 +149,11 @@ class WorkerController extends CrudController
      */
     protected function afterStore(Model $worker, Request $request): void
     {
-        // Sincronizar locations
-        if ($request->has('location_ids') && is_array($request->location_ids)) {
-            $worker->locations()->sync($request->location_ids);
+        $locationId = $request->input('location_id');
+
+        // Worker por locación: siempre dejar una sola locación asignada
+        if ($locationId) {
+            $worker->locations()->sync([(int) $locationId]);
         }
 
         // Recargar las relaciones
@@ -156,9 +168,11 @@ class WorkerController extends CrudController
      */
     protected function afterUpdate(Model $worker, Request $request): void
     {
-        // Sincronizar locations
-        if ($request->has('location_ids')) {
-            $worker->locations()->sync($request->location_ids);
+        $locationId = $request->input('location_id');
+
+        // Worker por locación: siempre dejar una sola locación asignada
+        if ($locationId) {
+            $worker->locations()->sync([(int) $locationId]);
         }
 
         // Recargar las relaciones

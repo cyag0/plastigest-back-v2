@@ -151,11 +151,11 @@ curl -X POST http://localhost/api/auth/admin/inventory-transfers \
 
 ### **Test 2: Listar Requisiciones Pendientes (Matriz)**
 
-**Endpoint:** `GET /api/auth/admin/inventory-transfers-pending-requests`
+**Endpoint:** `GET /api/auth/admin/movements/petitions`
 
 **cURL:**
 ```bash
-curl -X GET "http://localhost/api/auth/admin/inventory-transfers-pending-requests?company_id=1" \
+curl -X GET "http://localhost/api/auth/admin/movements/petitions?company_id=1" \
   -H "Authorization: Bearer TU_TOKEN_AQUI"
 ```
 
@@ -312,11 +312,11 @@ exit
 
 ### **Test 7: Listar Transferencias en Tránsito (Sucursal)**
 
-**Endpoint:** `GET /api/auth/admin/inventory-transfers-in-transit`
+**Endpoint:** `GET /api/auth/admin/movements/receipts`
 
 **cURL:**
 ```bash
-curl -X GET "http://localhost/api/auth/admin/inventory-transfers-in-transit?to_location_id=2" \
+curl -X GET "http://localhost/api/auth/admin/movements/receipts?to_location_id=2" \
   -H "Authorization: Bearer TU_TOKEN_AQUI"
 ```
 

@@ -18,6 +18,8 @@ class Files
     public const COMPANY_DOCUMENTS_PATH = self::BASE_PATH . '/companies/documents';
     public const CERTIFICATES_PATH = self::BASE_PATH . '/certificates';
     public const REPORTS_PATH = self::BASE_PATH . '/reports';
+    public const TRANSFER_EVIDENCE_PATH = self::BASE_PATH . '/transfers/evidence';
+    public const ADJUSTMENT_EVIDENCE_PATH = self::BASE_PATH . '/adjustments/evidence';
 
     // Rutas temporales
     public const TEMP_PATH = self::BASE_PATH . '/temp';
@@ -65,6 +67,8 @@ class Files
             'company_documents' => self::COMPANY_DOCUMENTS_PATH,
             'certificates' => self::CERTIFICATES_PATH,
             'reports' => self::REPORTS_PATH,
+            'transfer_evidence' => self::TRANSFER_EVIDENCE_PATH,
+            'adjustment_evidence' => self::ADJUSTMENT_EVIDENCE_PATH,
             'temp' => self::TEMP_PATH,
             'imports' => self::IMPORTS_PATH,
         ];

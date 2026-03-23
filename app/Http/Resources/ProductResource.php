@@ -56,7 +56,7 @@ class ProductResource extends Resources
             'product_type' => $this->product_type,
             'is_active' => $currentLocationActive,
             'for_sale' => $this->for_sale,
-            'current_stock' => (int) $currentStock ?? 0,
+            'current_stock' => (float) $currentStock ?? 0,
             'minimum_stock' => (int) $minimumStock,
             'maximum_stock' => (int) $maximumStock,
             'created_at' => $this->created_at,

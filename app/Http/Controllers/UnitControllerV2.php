@@ -171,64 +171,77 @@ class UnitControllerV2 extends CrudController
     public function getGroupedByBase(Request $request): JsonResponse
     {
         try {
-            $companyId = CurrentCompany::get()->id ?? $request->input('company_id') ?? current_company_id();
+            $currentCompany = CurrentCompany::get();
+            $companyId = $request->input('company_id') ?? ($currentCompany?->id);
+            $targetUnitId = (int) $request->input('unit_id', 0);
 
-            // Obtener todas las unidades de la compañía
-            $allUnits = Unit::where('company_id', $companyId)
+            // Incluir unidades globales (company_id null) y, si existe, unidades de la compañía actual
+            $allUnits = Unit::query()
+                ->where(function ($query) use ($companyId) {
+                    $query->whereNull('company_id');
+
+                    if ($companyId) {
+                        $query->orWhere('company_id', $companyId);
+                    }
+                })
                 ->orderBy('name')
                 ->get();
 
-            // Agrupar por unidad base
+            // Agrupar por tipo de unidad y elegir una base por tipo.
             $grouped = [];
+            $groupsByType = $allUnits->groupBy('unit_type');
 
-            // Primero, procesar las unidades base (aquellas sin base_unit_id)
-            $baseUnits = $allUnits->whereNull('base_unit_id');
+            foreach ($groupsByType as $unitType => $unitsInType) {
+                $baseUnit = $unitsInType->firstWhere('is_base_unit', true)
+                    ?? $unitsInType->first(function ($unit) {
+                        return (float) ($unit->factor_to_base ?? 0) === 1.0;
+                    })
+                    ?? $unitsInType->first();
 
-            foreach ($baseUnits as $baseUnit) {
-                // Obtener todas las unidades derivadas de esta base
-                $derivedUnits = $allUnits->where('base_unit_id', $baseUnit->id);
+                if (!$baseUnit) {
+                    continue;
+                }
 
-                // Crear el grupo con la unidad base primero y luego las derivadas
-                $grouped[$baseUnit->id] = [
-                    [
-                        'id' => $baseUnit->id,
-                        'name' => $baseUnit->name,
-                        'abbreviation' => $baseUnit->abbreviation,
-                        'base_unit_id' => null,
-                        'factor_to_base' => 1,
-                        'is_base' => true,
-                    ],
-                    ...$derivedUnits->map(function ($unit) {
+                $grouped[(string) $baseUnit->id] = $unitsInType
+                    ->sortBy(function ($unit) use ($baseUnit) {
+                        return (int) ($unit->id !== $baseUnit->id);
+                    })
+                    ->map(function ($unit) use ($baseUnit, $targetUnitId, $unitType) {
+                        $isBase = (int) $unit->id === (int) $baseUnit->id;
+
                         return [
                             'id' => $unit->id,
                             'name' => $unit->name,
                             'abbreviation' => $unit->abbreviation,
-                            'base_unit_id' => $unit->base_unit_id,
-                            'factor_to_base' => (float) $unit->factor_to_base,
-                            'is_base' => false,
+                            'unit_type' => $unitType,
+                            'base_unit_id' => $isBase ? null : $baseUnit->id,
+                            'factor_to_base' => (float) ($unit->factor_to_base ?? 1),
+                            'is_base' => $isBase,
+                            'is_target' => (int) $unit->id === $targetUnitId,
                         ];
-                    })->values()->toArray()
-                ];
+                    })
+                    ->values()
+                    ->toArray();
             }
 
-            // Verificar si hay unidades huérfanas (con base_unit_id que no existe)
-            $orphanUnits = $allUnits->whereNotNull('base_unit_id')
-                ->filter(function ($unit) use ($allUnits) {
-                    return !$allUnits->contains('id', $unit->base_unit_id);
-                });
+            // Si se solicita una unidad específica, devolver solo su grupo compatible.
+            if ($targetUnitId > 0) {
+                foreach ($grouped as $baseId => $units) {
+                    $exists = collect($units)->contains(fn($item) => (int) ($item['id'] ?? 0) === $targetUnitId);
+                    if ($exists) {
+                        return response()->json([
+                            'success' => true,
+                            'data' => [
+                                (string) $baseId => $units,
+                            ],
+                        ]);
+                    }
+                }
 
-            // Agrupar unidades huérfanas bajo su propio ID
-            foreach ($orphanUnits as $orphan) {
-                $grouped[$orphan->id] = [
-                    [
-                        'id' => $orphan->id,
-                        'name' => $orphan->name,
-                        'abbreviation' => $orphan->abbreviation,
-                        'base_unit_id' => null,
-                        'factor_to_base' => 1,
-                        'is_base' => true,
-                    ]
-                ];
+                return response()->json([
+                    'success' => true,
+                    'data' => [],
+                ]);
             }
 
             return response()->json([

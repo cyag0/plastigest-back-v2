@@ -15,10 +15,10 @@ use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
-use App\Http\Controllers\AdjustmentController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\CustomerNoteController;
 use App\Http\Controllers\InventoryTransferController;
+use App\Http\Controllers\InventoryAdjustmentController;
 use App\Http\Controllers\MovementController;
 use App\Http\Controllers\InventoryCountController;
 use App\Http\Controllers\InventoryCountDetailController;
@@ -52,11 +52,11 @@ Route::prefix('auth')->group(function () {
     // Ruta para servir archivos públicos con CORS
     Route::get('files/{path}', function ($path) {
         $fullPath = storage_path('app/public/' . $path);
-        
+
         if (!file_exists($fullPath)) {
             abort(404);
         }
-        
+
         return response()->file($fullPath);
     })->where('path', '.*');
     Route::post('register', [AuthController::class, 'register']);
@@ -201,7 +201,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('reminders', ReminderController::class);
 
             // Adjustment Management Routes (Ajustes de inventario: mermas, extravíos, etc.)
-            Route::apiResource('adjustments', AdjustmentController::class);
+            Route::apiResource('inventory-adjustments', InventoryAdjustmentController::class);
 
             // Inventory Management Routes
             Route::prefix('inventory')->group(function () {
@@ -238,10 +238,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('customer-notes', CustomerNoteController::class);
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
 
-            // Rutas de consulta rápida (LEGACY - mantener temporalmente para compatibilidad)
-            Route::get('inventory-transfers-pending-requests', [InventoryTransferController::class, 'pendingRequests']);
-            Route::get('inventory-transfers-in-transit', [InventoryTransferController::class, 'inTransit']);
-
             // === NUEVO SISTEMA DE TRANSFERENCIAS BASADO EN MOVEMENTS ===
             // Rutas para los 4 módulos del frontend
             Route::get('movements/petitions', [MovementController::class, 'petitions']);
@@ -265,13 +261,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // === SALES REPORTS ===
             Route::apiResource('sales-reports', \App\Http\Controllers\SalesReportController::class);
 
-            // === SISTEMA LEGACY DE INVENTORY TRANSFERS (mantener temporalmente) ===
-            // Rutas para el flujo de módulos específicos (deben ir antes del apiResource)
-            Route::get('inventory-transfers/petitions', [InventoryTransferController::class, 'petitions']);
-            Route::get('inventory-transfers/shipments', [InventoryTransferController::class, 'shipments']);
-            Route::get('inventory-transfers/receipts', [InventoryTransferController::class, 'receipts']);
-
-            // Rutas de transferencias de inventario (apiResource debe ir después de las rutas específicas)
+            // Sistema legacy de inventory transfers (solo CRUD + workflow)
             Route::apiResource('inventory-transfers', InventoryTransferController::class);
 
             // Rutas de workflow

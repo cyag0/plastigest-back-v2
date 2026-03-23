@@ -288,11 +288,10 @@ class InventoryService
      */
     public function getCurrentStock(int $productId, int $locationId, int $companyId): float
     {
-        // First check if there's a product_location_stock record
-        $stockRecord = DB::table('product_location_stock')
+        // First check if there's a product_location record
+        $stockRecord = DB::table('product_location')
             ->where('product_id', $productId)
             ->where('location_id', $locationId)
-            ->where('company_id', $companyId)
             ->first();
 
         if ($stockRecord) {
@@ -315,11 +314,10 @@ class InventoryService
      */
     private function updateProductLocationStock(int $productId, int $locationId, int $companyId, float $newStock, float $unitCost): void
     {
-        DB::table('product_location_stock')->updateOrInsert(
+        DB::table('product_location')->updateOrInsert(
             [
                 'product_id' => $productId,
-                'location_id' => $locationId,
-                'company_id' => $companyId
+                'location_id' => $locationId
             ],
             [
                 'current_stock' => $newStock,
@@ -429,23 +427,22 @@ class InventoryService
      */
     public function getInventoryReport(int $locationId, int $companyId, array $filters = []): array
     {
-        $query = DB::table('product_location_stock as pls')
-            ->join('products as p', 'pls.product_id', '=', 'p.id')
+        $query = DB::table('product_location as pl')
+            ->join('products as p', 'pl.product_id', '=', 'p.id')
             ->join('categories as c', 'p.category_id', '=', 'c.id')
-            ->where('pls.location_id', $locationId)
-            ->where('pls.company_id', $companyId)
+            ->where('pl.location_id', $locationId)
             ->select([
                 'p.id as product_id',
                 'p.name as product_name',
                 'p.code as product_code',
                 'c.name as category_name',
-                'pls.current_stock',
-                'pls.reserved_stock',
-                'pls.available_stock',
-                'pls.minimum_stock',
-                'pls.maximum_stock',
-                'pls.average_cost',
-                DB::raw('(pls.current_stock * pls.average_cost) as total_value')
+                'pl.current_stock',
+                'pl.reserved_stock',
+                DB::raw('(pl.current_stock - pl.reserved_stock) as available_stock'),
+                'pl.minimum_stock',
+                'pl.maximum_stock',
+                'pl.average_cost',
+                DB::raw('(pl.current_stock * pl.average_cost) as total_value')
             ]);
 
         // Apply filters

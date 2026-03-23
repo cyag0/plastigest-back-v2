@@ -6,6 +6,7 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\PurchaseResource;
 use App\Models\Product;
 use App\Models\Purchase;
+use App\Models\PurchaseDetail;
 use App\Models\Task;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -67,11 +68,11 @@ class PurchaseController extends CrudController
         // Filtro por búsqueda general
         if (isset($params['search']) && !empty($params['search'])) {
             $search = $params['search'];
-            
+
             $query->where(function ($q) use ($search) {
                 // Buscar en ID
                 $q->where('id', 'like', "%{$search}%");
-                
+
                 // Solo buscar en JSON si content no es null
                 $q->orWhere(function ($subQ) use ($search) {
                     $subQ->whereNotNull('content')
@@ -83,7 +84,7 @@ class PurchaseController extends CrudController
                 });
             });
         }
-        
+
         // Filtro por company_id si existe
         if (isset($params['company_id']) && !empty($params['company_id'])) {
             $query->where('company_id', $params['company_id']);
@@ -451,18 +452,22 @@ class PurchaseController extends CrudController
             Log::info('Generating purchase stats', [
                 'params' => $request->all(),
             ]);
-            $locationId = $request->input('location_id') ?? CurrentLocation::get()->id;
+            $companyId = CurrentCompany::id();
+            $locationId = $request->input('location_id') ?? CurrentLocation::id();
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
 
             // Query base
-            $query = Purchase::where('location_origin_id', $locationId);
+            $query = Purchase::where('company_id', $companyId)
+                ->when($locationId, function ($q) use ($locationId) {
+                    $q->where('location_origin_id', $locationId);
+                });
 
             if ($startDate) {
-                $query->where('movement_date', '>=', $startDate);
+                $query->whereDate('movement_date', '>=', $startDate);
             }
             if ($endDate) {
-                $query->where('movement_date', '<=', $endDate);
+                $query->whereDate('movement_date', '<=', $endDate);
             }
 
             // Estadísticas generales
@@ -520,34 +525,33 @@ class PurchaseController extends CrudController
                 });
 
             // Productos más comprados
-            $topProducts = DB::table('movements_details')
-                ->join('movements', 'movements_details.movement_id', '=', 'movements.id')
-                ->join('products', 'movements_details.product_id', '=', 'products.id')
-                ->where('movements.location_origin_id', $locationId)
-                ->where('movements.movement_type', 'entry')
-                ->where('movements.movement_reason', 'purchase')
-                ->when($startDate, function ($q) use ($startDate) {
-                    return $q->where('movements.movement_date', '>=', $startDate);
+            $topProducts = PurchaseDetail::query()
+                ->whereHas('purchase', function ($q) use ($locationId, $startDate, $endDate) {
+                    $q->when($locationId, function ($subQ) use ($locationId) {
+                        $subQ->where('location_origin_id', $locationId);
+                    })
+                        ->when($startDate, function ($subQ) use ($startDate) {
+                            $subQ->whereDate('movement_date', '>=', $startDate);
+                        })
+                        ->when($endDate, function ($subQ) use ($endDate) {
+                            $subQ->whereDate('movement_date', '<=', $endDate);
+                        });
                 })
-                ->when($endDate, function ($q) use ($endDate) {
-                    return $q->where('movements.movement_date', '<=', $endDate);
-                })
-                ->select(
-                    'products.name as product_name',
-                    DB::raw('SUM(movements_details.quantity) as total_quantity'),
-                    DB::raw('SUM(movements_details.total_cost) as total_amount')
-                )
-                ->groupBy('products.id', 'products.name')
-                ->orderByDesc('total_amount')
-                ->limit(10)
+                ->with('product:id,name')
                 ->get()
-                ->map(function ($item) {
+                ->groupBy('product_id')
+                ->map(function ($rows) {
+                    $first = $rows->first();
+
                     return [
-                        'product_name' => $item->product_name,
-                        'total_quantity' => (float) $item->total_quantity,
-                        'total_amount' => (float) $item->total_amount
+                        'product_name' => $first?->product?->name ?? 'Sin nombre',
+                        'total_quantity' => (float) $rows->sum('quantity'),
+                        'total_amount' => (float) $rows->sum('total_cost'),
                     ];
-                });
+                })
+                ->sortByDesc('total_amount')
+                ->take(10)
+                ->values();
 
             // Tendencia de compras (últimos 6 meses)
             $sixMonthsAgo = now()->subMonths(6)->startOfMonth();
