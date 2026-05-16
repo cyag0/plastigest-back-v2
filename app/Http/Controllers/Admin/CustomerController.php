@@ -20,6 +20,7 @@ class CustomerController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Customer::class;
+    protected ?string $permissionPrefix = 'customers';
 
     /**
      * Relaciones que se cargarán en el index

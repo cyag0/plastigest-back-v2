@@ -23,6 +23,7 @@ class MovementController extends CrudController
 {
     protected string $resource = MovementResource::class;
     protected string $model = Transfer::class;
+    protected ?string $permissionPrefix = 'movements';
     protected MovementService $movementService;
 
     public function __construct(MovementService $movementService)
@@ -767,7 +768,7 @@ class MovementController extends CrudController
                 ];
             }
 
-            $hasDifferences = collect($receivedItems)->contains(fn ($item) => (float) $item['difference'] > 0);
+            $hasDifferences = collect($receivedItems)->contains(fn($item) => (float) $item['difference'] > 0);
 
             $content['received_by'] = Auth::id();
             $content['received_by_name'] = $user?->name;

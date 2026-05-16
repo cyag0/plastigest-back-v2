@@ -8,7 +8,7 @@ use App\Models\InventoryCount;
 use App\Models\Product;
 use App\Models\Task;
 use App\Services\FirebaseService;
-use App\Services\NotificationService;
+use App\Notifications\NotificationEngine;
 use App\Services\TaskService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -31,6 +31,7 @@ class InventoryCountController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = InventoryCount::class;
+    protected ?string $permissionPrefix = 'inventory';
 
     /**
      * Relaciones que se cargarán en el index
@@ -253,13 +254,15 @@ class InventoryCountController extends CrudController
                 })
                 ->toArray();
 
-            // Llamar al servicio de notificaciones centralizado
-            NotificationService::notifyLowStockAfterCount(
-                $companyId,
-                $location->id,
-                $location->name,
-                $lowStockProducts
-            );
+            // Dispatch a low_stock notification for each product below minimum
+            foreach ($lowStockProducts as $p) {
+                NotificationEngine::dispatch('low_stock', $companyId, [
+                    'product'       => (object) $p,
+                    'location'      => $location,
+                    'current_stock' => $p['current_stock'],
+                    'minimum_stock' => $p['minimum_stock'],
+                ]);
+            }
         } catch (\Exception $e) {
             // No fallar el proceso de inventario si la notificación falla
             Log::error('Error checking low stock: ' . $e->getMessage());
@@ -301,15 +304,12 @@ class InventoryCountController extends CrudController
             ]);
 
             // 1. Notificar discrepancias encontradas
-            NotificationService::notifyInventoryDiscrepancies(
-                $inventoryCount->company_id,
-                $inventoryCount->location_id,
-                $inventoryCount->location->name,
-                $inventoryCount->id,
-                $inventoryCount->name,
-                $inventoryCount->count_date,
-                $discrepancies
-            );
+            NotificationEngine::dispatch('inventory_count_discrepancy', $inventoryCount->company_id, [
+                'inventory_count'     => $inventoryCount,
+                'location'            => $inventoryCount->location,
+                'discrepancies'       => $discrepancies,
+                'discrepancies_count' => count($discrepancies),
+            ]);
 
             // 2. Notificar asignación de tarea (solo al usuario asignado)
             app(TaskService::class)->notifyDiscrepanciesTaskCreated($task, $inventoryCount, $discrepancies);

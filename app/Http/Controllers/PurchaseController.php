@@ -10,15 +10,20 @@ use App\Models\PurchaseDetail;
 use App\Models\Task;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Services\CashMovementService;
 use App\Services\WhatsAppService;
 use App\Services\TaskService;
-use App\Services\NotificationService;
+use App\Notifications\NotificationEngine;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * @deprecated Este controlador gestiona el sistema de compras legacy (tabla `movements`).
+ * Usar PurchaseV2Controller para compras nuevas (tabla `purchases`).
+ */
 class PurchaseController extends CrudController
 {
     /**
@@ -30,6 +35,12 @@ class PurchaseController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Purchase::class;
+    protected ?string $permissionPrefix = 'purchases';
+
+    /**
+     * Columna de fecha principal: los filtros date_from/date_to se aplican sobre movement_date.
+     */
+    protected string $dateColumn = 'movement_date';
 
     /**
      * Relaciones que se cargarán en el index
@@ -107,14 +118,6 @@ class PurchaseController extends CrudController
             if (!empty($status) && $status !== 'null' && $status !== 'undefined') {
                 $query->where('status', $status);
             }
-        }
-
-        if (isset($params['start_date'])) {
-            $query->where('movement_date', '>=', $params['start_date']);
-        }
-
-        if (isset($params['end_date'])) {
-            $query->where('movement_date', '<=', $params['end_date']);
         }
     }
 
@@ -344,8 +347,20 @@ class PurchaseController extends CrudController
     {
         try {
             $purchase = Purchase::findOrFail($id);
+            $previousStatus = $purchase->status;
 
             if ($purchase->advanceStatus()) {
+                Log::info('Purchase status advanced', [
+                    'purchase_id' => $purchase->id,
+                    'previous_status' => $previousStatus,
+                    'new_status' => $purchase->status,
+                ]);
+
+                // Si acaba de ser recibida, registrar egreso en caja
+                if ($purchase->status->value === 'received' && $previousStatus->value !== 'received') {
+                    CashMovementService::fromPurchase($purchase);
+                }
+
                 return response()->json([
                     'success' => true,
                     'message' => "Estado actualizado a {$purchase->status->label()}",
@@ -411,6 +426,17 @@ class PurchaseController extends CrudController
                 // Si cambió a in_transit, crear tarea de recepción
                 if ($newStatus->value === 'in_transit' && $previousStatus->value !== 'in_transit') {
                     $this->createReceivePurchaseTask($purchase);
+                }
+
+                Log::info('Purchase status advanced', [
+                    'purchase_id' => $purchase->id,
+                    'previous_status' => $previousStatus,
+                    'new_status' => $purchase->status,
+                ]);
+
+                // Si acaba de ser recibida, registrar egreso en caja
+                if ($newStatus->value === 'received' && $previousStatus->value !== 'received') {
+                    CashMovementService::fromPurchase($purchase);
                 }
 
                 return response()->json([
@@ -824,14 +850,12 @@ class PurchaseController extends CrudController
                 ];
             })->toArray();
 
-            NotificationService::notifyPurchaseReceived(
-                $purchase->company_id,
-                $purchase->id,
-                $purchase->supplier->name,
-                $purchase->reference ?? 'N/A',
-                $purchase->purchase_date ?? now()->format('Y-m-d'),
-                $products
-            );
+            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
+                'purchase'      => $purchase,
+                'supplier_name' => $purchase->supplier->name,
+                'sub_type'      => 'received',
+                'products'      => $products,
+            ]);
 
             DB::commit();
 

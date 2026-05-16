@@ -35,6 +35,7 @@ class ProductController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Product::class;
+    protected ?string $permissionPrefix = 'products';
 
     /**
      * Relaciones que se cargarán en el index

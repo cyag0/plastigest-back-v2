@@ -24,6 +24,7 @@ class PurchaseV2 extends Model
         'delivery_date',
         'status',
         'total',
+        'payment_method',
         'notes',
         'document_number',
         'user_id',

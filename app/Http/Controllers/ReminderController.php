@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\ReminderResource;
 use App\Models\Reminder;
-use App\Services\NotificationService;
+use App\Services\FirebaseService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
@@ -16,6 +16,7 @@ class ReminderController extends CrudController
 {
     protected string $resource = ReminderResource::class;
     protected string $model = Reminder::class;
+    protected ?string $permissionPrefix = 'reminders';
 
     protected function indexRelations(): array
     {
@@ -211,7 +212,7 @@ class ReminderController extends CrudController
                 'created_by' => Auth::user()->name,
             ];
 
-            NotificationService::sendPushNotification(
+            app(FirebaseService::class)->sendToUser(
                 $reminder->user_id,
                 $title,
                 $body,

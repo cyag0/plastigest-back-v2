@@ -2,77 +2,77 @@
 
 namespace App\Support;
 
-use App\Models\Admin\Worker;
+use App\Models\Admin\Role;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class CurrentWorker
 {
     /**
-     * Obtener el worker activo del usuario actual para la empresa actual
-     *
-     * @return Worker|null
+     * Obtener el rol del usuario en la sucursal actual (tabla user_location_roles)
      */
-    public static function get(): ?Worker
+    public static function role(): ?Role
     {
         $user = Auth::user();
-
         if (!$user) {
             return null;
         }
 
-        $company = CurrentCompany::get();
-
-        if (!$company) {
+        $locationId = CurrentLocation::id();
+        if (!$locationId) {
             return null;
         }
 
-        return $user->getWorkerForCompany($company->id);
+        $entry = DB::table('user_location_roles')
+            ->where('user_id', $user->id)
+            ->where('location_id', $locationId)
+            ->first();
+
+        if (!$entry || !$entry->role_id) {
+            return null;
+        }
+
+        return Role::find($entry->role_id);
     }
 
     /**
-     * Obtener el worker activo del usuario actual para una empresa específica
-     *
-     * @param int $companyId
-     * @return Worker|null
+     * Verificar si el usuario actual tiene un permiso en la sucursal actual.
+     * Fallback a roles directos del usuario si no hay rol de sucursal.
      */
-    public static function getForCompany(int $companyId): ?Worker
+    public static function hasPermission(string $permissionName): bool
     {
         $user = Auth::user();
-
         if (!$user) {
-            return null;
+            return false;
         }
 
-        return $user->getWorkerForCompany($companyId);
+        // 1. Verificar por rol de sucursal actual
+        $locationId = CurrentLocation::id();
+        if ($locationId) {
+            $entry = DB::table('user_location_roles')
+                ->where('user_id', $user->id)
+                ->where('location_id', $locationId)
+                ->first();
+
+            if ($entry && $entry->role_id) {
+                $hasIt = Role::where('id', $entry->role_id)
+                    ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
+                    ->exists();
+
+                if ($hasIt) {
+                    return true;
+                }
+            }
+        }
+
+        // 2. Fallback: roles directos del usuario (tabla users_roles)
+        return $user->roles()
+            ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
+            ->exists();
     }
 
     /**
-     * Obtener el ID del worker activo
-     *
-     * @return int|null
-     */
-    public static function id(): ?int
-    {
-        $worker = self::get();
-        return $worker?->id;
-    }
-
-    /**
-     * Obtener el rol del worker activo
-     *
-     * @return \App\Models\Admin\Role|null
-     */
-    public static function role()
-    {
-        $worker = self::get();
-        return $worker?->role;
-    }
-
-    /**
-     * Verificar si el worker actual tiene un rol específico
-     *
-     * @param string $roleName
-     * @return bool
+     * Verificar si el usuario actual tiene un rol específico en la sucursal actual
      */
     public static function hasRole(string $roleName): bool
     {
@@ -81,10 +81,7 @@ class CurrentWorker
     }
 
     /**
-     * Verificar si el worker actual tiene alguno de los roles especificados
-     *
-     * @param array $roleNames
-     * @return bool
+     * Verificar si el usuario actual tiene alguno de los roles especificados
      */
     public static function hasAnyRole(array $roleNames): bool
     {
@@ -93,55 +90,72 @@ class CurrentWorker
     }
 
     /**
-     * Verificar si el worker actual tiene un permiso específico
-     *
-     * @param string $permissionName
-     * @return bool
-     */
-    public static function hasPermission(string $permissionName): bool
-    {
-        $role = self::role();
-
-        if (!$role) {
-            return false;
-        }
-
-        return $role->permissions()->where('name', $permissionName)->exists();
-    }
-
-    /**
-     * Verificar si el worker actual tiene todos los permisos especificados
-     *
-     * @param array $permissionNames
-     * @return bool
+     * Verificar si el usuario actual tiene todos los permisos especificados
      */
     public static function hasAllPermissions(array $permissionNames): bool
     {
         $role = self::role();
-
         if (!$role) {
             return false;
         }
 
-        $permissions = $role->permissions()->whereIn('name', $permissionNames)->pluck('name')->toArray();
-
-        return count($permissions) === count($permissionNames);
+        $found = $role->permissions()->whereIn('name', $permissionNames)->pluck('name')->toArray();
+        return count($found) === count($permissionNames);
     }
 
     /**
-     * Verificar si el worker actual tiene alguno de los permisos especificados
-     *
-     * @param array $permissionNames
-     * @return bool
+     * Verificar si el usuario actual tiene alguno de los permisos especificados
      */
     public static function hasAnyPermission(array $permissionNames): bool
     {
         $role = self::role();
-
         if (!$role) {
             return false;
         }
 
         return $role->permissions()->whereIn('name', $permissionNames)->exists();
+    }
+
+    /**
+     * Obtener todos los nombres de permiso del usuario para la sucursal actual.
+     * Combina permisos del rol de sucursal y roles directos del usuario.
+     *
+     * @return string[]
+     */
+    public static function permissions(): array
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return [];
+        }
+
+        $roleIds = [];
+
+        $locationId = CurrentLocation::id();
+        if ($locationId) {
+            $entry = DB::table('user_location_roles')
+                ->where('user_id', $user->id)
+                ->where('location_id', $locationId)
+                ->first();
+
+            if ($entry && $entry->role_id) {
+                $roleIds[] = (int) $entry->role_id;
+            }
+        }
+
+        $directRoleIds = $user->roles()->pluck('roles.id')->toArray();
+        $roleIds = array_unique(array_merge($roleIds, $directRoleIds));
+
+        if (empty($roleIds)) {
+            return [];
+        }
+
+        return DB::table('permissions')
+            ->join('role_permissions', 'permissions.id', '=', 'role_permissions.permission_id')
+            ->whereIn('role_permissions.role_id', $roleIds)
+            ->pluck('permissions.name')
+            ->unique()
+            ->values()
+            ->toArray();
     }
 }

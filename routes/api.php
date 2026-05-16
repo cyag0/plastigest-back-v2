@@ -29,10 +29,13 @@ use App\Http\Controllers\UnitControllerV2;
 use App\Http\Controllers\DeviceTokenController;
 use App\Http\Controllers\WhatsAppWebhookController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\NotificationPreferenceController;
 use App\Http\Controllers\ProductPackageController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\SalesReportController;
+use App\Http\Controllers\CashMovementController;
+use App\Http\Controllers\CashClosingController;
 use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\ReminderController;
 
@@ -89,6 +92,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('logout', [AuthController::class, 'logout']);
         Route::post('logout-all', [AuthController::class, 'logoutAll']);
         Route::get('me', [AuthController::class, 'me']);
+        Route::get('my-permissions', [AuthController::class, 'myPermissions']);
         Route::post('change-password', [AuthController::class, 'changePassword']);
 
         Route::prefix('admin')->group(function () {
@@ -121,9 +125,16 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('mark-all-as-read', [NotificationController::class, 'markAllAsRead']);
                 Route::post('{id}/mark-as-read', [NotificationController::class, 'markAsRead']);
                 Route::post('{id}/mark-as-unread', [NotificationController::class, 'markAsUnread']);
-                Route::post('create-test-notifications', [NotificationController::class, 'createTestNotifications']);
             });
             Route::apiResource('notifications', NotificationController::class);
+
+            // Preferencias de notificaciones por empresa
+            Route::prefix('notification-preferences')->group(function () {
+                Route::get('/', [NotificationPreferenceController::class, 'index']);
+                Route::patch('{eventType}', [NotificationPreferenceController::class, 'update']);
+                Route::post('reset', [NotificationPreferenceController::class, 'reset']);
+                Route::get('{eventType}/eligible-users', [NotificationPreferenceController::class, 'eligibleUsers']);
+            });
 
             // Rutas adicionales para imágenes de productos
             Route::prefix('products/{product}')->group(function () {
@@ -182,6 +193,11 @@ Route::middleware('auth:sanctum')->group(function () {
             });
 
             Route::apiResource('sales', SaleController::class);
+
+            // Cash Movement Routes
+            Route::get('cash-movements/stats', [CashMovementController::class, 'stats']);
+            Route::apiResource('cash-movements', CashMovementController::class);
+            Route::apiResource('cash-closings', CashClosingController::class);
 
             // Expense Management Routes
             Route::prefix('expenses')->group(function () {
@@ -283,6 +299,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('low-stock-products', [App\Http\Controllers\ReportController::class, 'lowStockProducts']);
                 Route::get('payment-methods', [App\Http\Controllers\ReportController::class, 'paymentMethods']);
                 Route::get('transfer-stats', [App\Http\Controllers\ReportController::class, 'transferStats']);
+            });
+
+            Route::prefix('reports-v2')->group(function () {
+                Route::get('dashboard', [App\Http\Controllers\ReportController::class, 'dashboardV2']);
             });
 
 

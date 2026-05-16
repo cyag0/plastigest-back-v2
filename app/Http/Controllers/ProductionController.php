@@ -21,6 +21,7 @@ class ProductionController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Production::class;
+    protected ?string $permissionPrefix = 'production';
 
     /**
      * Relaciones que se cargarán en el index

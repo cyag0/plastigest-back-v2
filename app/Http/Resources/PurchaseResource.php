@@ -35,6 +35,7 @@ class PurchaseResource extends Resources
             'supplier_id' => $resource->supplier_id,
             'comments' => $resource->comments ?? $resource->notes,
             'created_at' => $resource->created_at,
+            'payment_method' => $resource->payment_method,
         ];
 
         if ($resource->relationLoaded('details')) {
@@ -42,7 +43,7 @@ class PurchaseResource extends Resources
                 // Para index: solo contar detalles
                 $item['details_count'] = $resource->details->count();
                 $item['products_count'] = $resource->details->count();
-                $productNames = $resource->details->take(3)->map(function($detail) {
+                $productNames = $resource->details->take(3)->map(function ($detail) {
                     return $detail->product?->name;
                 })->filter()->toArray();
                 $item['products_summary'] = implode(', ', $productNames);

@@ -5,8 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Task;
 use App\Models\TaskComment;
 use App\Services\TaskService;
-use App\Services\NotificationService;
+use App\Notifications\NotificationEngine;
 use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -21,6 +22,10 @@ class TaskController extends Controller
      */
     public function index(Request $request)
     {
+        if (!CurrentWorker::hasPermission('tasks_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $user = $request->user();
         $company = CurrentCompany::get();
 
@@ -87,6 +92,10 @@ class TaskController extends Controller
      */
     public function show(Request $request, Task $task)
     {
+        if (!CurrentWorker::hasPermission('tasks_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
@@ -113,6 +122,10 @@ class TaskController extends Controller
      */
     public function store(Request $request)
     {
+        if (!CurrentWorker::hasPermission('tasks_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
 
         $validated = $request->validate([
@@ -145,14 +158,11 @@ class TaskController extends Controller
 
         // Enviar notificación si se asignó a alguien
         if ($task->assigned_to) {
-            NotificationService::notifyTaskAssigned(
-                $task->assigned_to,
-                $company->id,
-                $task->id,
-                $task->title,
-                $task->priority ?? 'medium',
-                $task->due_date
-            );
+            NotificationEngine::dispatch('task_event', $company->id, [
+                'task'       => $task,
+                'sub_type'   => 'assigned',
+                'actor_name' => $request->user()->name,
+            ], userId: $task->assigned_to);
         }
 
         return response()->json($task, 201);
@@ -163,6 +173,10 @@ class TaskController extends Controller
      */
     public function update(Request $request, Task $task)
     {
+        if (!CurrentWorker::hasPermission('tasks_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
@@ -194,6 +208,10 @@ class TaskController extends Controller
      */
     public function destroy(Request $request, Task $task)
     {
+        if (!CurrentWorker::hasPermission('tasks_delete')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
@@ -210,6 +228,10 @@ class TaskController extends Controller
      */
     public function changeStatus(Request $request, Task $task)
     {
+        if (!CurrentWorker::hasPermission('tasks_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
@@ -231,13 +253,11 @@ class TaskController extends Controller
                 $success = $task->complete($user);
                 // Notificar a quien asignó la tarea
                 if ($success && $task->assigned_by && $task->assigned_by !== $user->id) {
-                    NotificationService::notifyTaskCompleted(
-                        $task->assigned_by,
-                        $task->company_id,
-                        $task->id,
-                        $task->title,
-                        $user->name
-                    );
+                    NotificationEngine::dispatch('task_event', $task->company_id, [
+                        'task'       => $task,
+                        'sub_type'   => 'completed',
+                        'actor_name' => $user->name,
+                    ], userId: $task->assigned_by);
                 }
                 break;
             case 'cancel':
@@ -264,6 +284,10 @@ class TaskController extends Controller
      */
     public function addComment(Request $request, Task $task)
     {
+        if (!CurrentWorker::hasPermission('tasks_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
@@ -286,26 +310,24 @@ class TaskController extends Controller
 
         // Notificar al usuario asignado (si no es quien comentó)
         if ($task->assigned_to && $task->assigned_to !== $request->user()->id) {
-            NotificationService::notifyTaskComment(
-                $task->assigned_to,
-                $task->company_id,
-                $task->id,
-                $task->title,
-                $request->user()->name
-            );
+            NotificationEngine::dispatch('task_event', $task->company_id, [
+                'task'       => $task,
+                'sub_type'   => 'comment',
+                'actor_name' => $request->user()->name,
+            ], userId: $task->assigned_to);
         }
 
         // Notificar a quien creó la tarea (si no es quien comentó y no es el asignado)
-        if ($task->assigned_by && 
-            $task->assigned_by !== $request->user()->id && 
-            $task->assigned_by !== $task->assigned_to) {
-            NotificationService::notifyTaskComment(
-                $task->assigned_by,
-                $task->company_id,
-                $task->id,
-                $task->title,
-                $request->user()->name
-            );
+        if (
+            $task->assigned_by &&
+            $task->assigned_by !== $request->user()->id &&
+            $task->assigned_by !== $task->assigned_to
+        ) {
+            NotificationEngine::dispatch('task_event', $task->company_id, [
+                'task'       => $task,
+                'sub_type'   => 'comment',
+                'actor_name' => $request->user()->name,
+            ], userId: $task->assigned_by);
         }
 
         return response()->json($comment, 201);
@@ -316,6 +338,10 @@ class TaskController extends Controller
      */
     public function statistics(Request $request)
     {
+        if (!CurrentWorker::hasPermission('tasks_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $company = CurrentCompany::get();
         $query = Task::where('company_id', $company->id);
 

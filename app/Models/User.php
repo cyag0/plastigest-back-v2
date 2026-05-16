@@ -4,7 +4,8 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 
-use App\Models\Admin\Worker;
+use App\Models\Admin\Location;
+use App\Models\Admin\Role;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -58,11 +59,29 @@ class User extends Authenticatable
     }
 
     /**
-     * Relación con workers (un usuario puede ser worker en varias empresas)
+     * Sucursales asignadas al usuario con su rol por sucursal
      */
-    public function workers()
+    public function locationRoles()
     {
-        return $this->hasMany(Worker::class);
+        return $this->belongsToMany(
+            Location::class,
+            'user_location_roles',
+            'user_id',
+            'location_id'
+        )->withPivot('role_id')->withTimestamps();
+    }
+
+    /**
+     * Roles asignados directamente al usuario (tabla pivot users_roles)
+     */
+    public function roles()
+    {
+        return $this->belongsToMany(
+            Role::class,
+            'users_roles',
+            'user_id',
+            'role_id'
+        )->withTimestamps();
     }
 
     /**
@@ -76,17 +95,6 @@ class User extends Authenticatable
             'user_id',
             'company_id'
         )->withTimestamps();
-    }
-
-    /**
-     * Obtener el worker activo para una empresa específica
-     */
-    public function getWorkerForCompany(int $companyId): ?Worker
-    {
-        return $this->workers()
-            ->where('company_id', $companyId)
-            ->where('is_active', true)
-            ->first();
     }
 
     /**

@@ -1,0 +1,21 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../../../../../mnt/c/Users/cesar/Desktop/New frontend plastigest/plastigest"
+		}
+	],
+	"settings": {
+		"chat.instructionsFilesLocations": {
+			".vscode/agents/context": true
+		},
+		"chat.promptFilesLocations": {
+			".vscode/features/automate-documents-request": true,
+			".vscode/agents/prompts/planning": true,
+			".vscode/agents/prompts/feature-workflow": true,
+			".vscode/agents/prompts": true
+		}
+	}
+}

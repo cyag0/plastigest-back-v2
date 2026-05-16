@@ -20,6 +20,7 @@ class PermissionsController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Permission::class;
+    protected ?string $permissionPrefix = 'permissions';
 
     /**
      * Relaciones que se cargarán en el index

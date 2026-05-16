@@ -4,9 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Models\PurchaseV2;
 use App\Models\PurchaseDetailV2;
+use App\Services\CashMovementService;
 use App\Services\MovementService;
+use App\Notifications\NotificationEngine;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use App\Utils\AppUploadUtil;
 use App\Constants\Files;
 use Illuminate\Http\Request;
@@ -23,11 +26,16 @@ class PurchaseV2Controller extends Controller
      */
     public function upsertDraft(Request $request)
     {
+        if (!CurrentWorker::hasPermission('purchases_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $validated = $request->validate([
                 'purchase_id' => 'nullable|exists:purchases,id',
                 'supplier_id' => 'nullable|exists:suppliers,id',
                 'notes' => 'nullable|string',
+                'payment_method' => 'nullable|in:cash,card,transfer,other',
                 'items' => 'nullable|array',
                 'items.*.id' => 'required_with:items|string',
                 'items.*.product_id' => 'required_with:items|integer|exists:products,id',
@@ -69,6 +77,7 @@ class PurchaseV2Controller extends Controller
                 $purchase->update([
                     'supplier_id' => $validated['supplier_id'] ?? $purchase->supplier_id,
                     'notes' => $validated['notes'] ?? $purchase->notes,
+                    'payment_method' => $validated['payment_method'] ?? $purchase->payment_method,
                 ]);
             }
 
@@ -149,6 +158,10 @@ class PurchaseV2Controller extends Controller
      */
     public function getDraft(Request $request)
     {
+        if (!CurrentWorker::hasPermission('purchases_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $companyId = CurrentCompany::get()->id;
         $locationId = CurrentLocation::get()->id;
 
@@ -177,6 +190,10 @@ class PurchaseV2Controller extends Controller
      */
     public function show($id)
     {
+        if (!CurrentWorker::hasPermission('purchases_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $companyId = CurrentCompany::get()->id;
             $locationId = CurrentLocation::get()->id;
@@ -228,6 +245,7 @@ class PurchaseV2Controller extends Controller
                                 'subtotal' => $detail->total ?? ($detail->quantity * $detail->unit_price),
                             ];
                         }),
+                        'payment_method' => $purchase->payment_method,
                         'details_count' => $purchase->details->count(),
                     ],
                 ]
@@ -246,10 +264,15 @@ class PurchaseV2Controller extends Controller
      */
     public function confirm(Request $request, $id)
     {
+        if (!CurrentWorker::hasPermission('purchases_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $validated = $request->validate([
                 'expected_delivery_date' => 'nullable|date|after_or_equal:today',
                 'document_number' => 'nullable|string|max:255',
+                'payment_method' => 'nullable|in:cash,card,transfer,other',
             ]);
 
             $purchase = PurchaseV2::draft()->findOrFail($id);
@@ -265,6 +288,7 @@ class PurchaseV2Controller extends Controller
                 'status' => PurchaseV2::STATUS_ORDERED,
                 'expected_delivery_date' => $validated['expected_delivery_date'] ?? null,
                 'document_number' => $validated['document_number'] ?? null,
+                'payment_method' => $validated['payment_method'] ?? $purchase->payment_method ?? 'other',
             ]);
 
             return response()->json([
@@ -286,6 +310,10 @@ class PurchaseV2Controller extends Controller
      */
     public function markInTransit(Request $request, $id)
     {
+        if (!CurrentWorker::hasPermission('purchases_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $purchase = PurchaseV2::ordered()->findOrFail($id);
 
@@ -312,6 +340,10 @@ class PurchaseV2Controller extends Controller
      */
     public function receive(Request $request, $id)
     {
+        if (!CurrentWorker::hasPermission('purchases_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $validated = $request->validate([
                 'details' => 'required|array',
@@ -348,6 +380,25 @@ class PurchaseV2Controller extends Controller
                 'received_by' => Auth::id(),
             ]);
 
+            // Registrar egreso en caja
+            CashMovementService::fromPurchaseV2($purchase);
+
+            // Notificar recepción de compra
+            $purchase->load(['supplier', 'details.product']);
+            $products = $purchase->details->map(function ($detail) {
+                return [
+                    'name'     => $detail->product?->name ?? '',
+                    'quantity' => $detail->quantity_received,
+                ];
+            })->toArray();
+
+            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
+                'purchase'      => $purchase,
+                'supplier_name' => $purchase->supplier?->name ?? '',
+                'sub_type'      => 'received',
+                'products'      => $products,
+            ]);
+
             DB::commit();
 
             return response()->json([
@@ -370,6 +421,10 @@ class PurchaseV2Controller extends Controller
      */
     public function addDetail(Request $request)
     {
+        if (!CurrentWorker::hasPermission('purchases_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $validated = $request->validate([
                 'purchase_id' => 'nullable|exists:purchases,id',
@@ -446,6 +501,10 @@ class PurchaseV2Controller extends Controller
      */
     public function updateDetail(Request $request, $detailId)
     {
+        if (!CurrentWorker::hasPermission('purchases_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             // Log para debug
             Log::info('UpdateDetail Request', [
@@ -516,6 +575,10 @@ class PurchaseV2Controller extends Controller
      */
     public function removeDetail(Request $request, $detailId)
     {
+        if (!CurrentWorker::hasPermission('purchases_delete')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             DB::beginTransaction();
 
@@ -557,6 +620,10 @@ class PurchaseV2Controller extends Controller
      */
     public function cancel(Request $request, $id)
     {
+        if (!CurrentWorker::hasPermission('purchases_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $purchase = PurchaseV2::whereIn('status', [
                 PurchaseV2::STATUS_DRAFT,
@@ -587,6 +654,10 @@ class PurchaseV2Controller extends Controller
      */
     public function index(Request $request)
     {
+        if (!CurrentWorker::hasPermission('purchases_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $location = CurrentLocation::get();
 
         $query = PurchaseV2::with(['supplier', 'user', 'details'])

@@ -23,6 +23,7 @@ class UnitControllerV2 extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Unit::class;
+    protected ?string $permissionPrefix = 'units';
 
     /**
      * Relaciones que se cargarán en el index

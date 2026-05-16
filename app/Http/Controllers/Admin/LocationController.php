@@ -23,6 +23,7 @@ class LocationController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Location::class;
+    protected ?string $permissionPrefix = 'locations';
 
     /**
      * Relaciones que se cargarán en el index

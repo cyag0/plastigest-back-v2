@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Database\Eloquent\Model;
+use App\Support\CurrentWorker;
 
 abstract class CrudController extends Controller
 {
@@ -19,6 +20,29 @@ abstract class CrudController extends Controller
     protected string $model;
 
     /**
+     * Columna de fecha principal del recurso.
+     * Se usa como destino de los filtros date_from/date_to y start_date/end_date.
+     * Estándar: date_from/date_to → filtro por esta columna.
+     * Alias soportado: start_date/end_date apunta a la misma columna.
+     * Sobrescribir en clases hijas para usar la fecha de dominio correcta.
+     * Ejemplos: 'sale_date', 'movement_date', 'purchase_date'
+     */
+    protected string $dateColumn = 'created_at';
+
+    /**
+     * Prefijo del recurso para verificación de permisos.
+     * Si se define, los métodos CRUD verificarán automáticamente que el usuario
+     * tenga el permiso correspondiente antes de ejecutar la acción.
+     *
+     * Formato esperado: nombre del recurso en snake_case (ej. 'products', 'sales').
+     * Permisos generados: {prefix}_list, {prefix}_create, {prefix}_update,
+     *                     {prefix}_delete, {prefix}_read
+     *
+     * Dejar en null para deshabilitar las verificaciones automáticas (retrocompatibilidad).
+     */
+    protected ?string $permissionPrefix = null;
+
+    /**
      * Relaciones que se cargarán en el index
      * Debe ser implementado por las clases hijas
      */
@@ -30,11 +54,88 @@ abstract class CrudController extends Controller
      */
     abstract protected function handleQuery($query, array $params);
 
+    // ─── Verificaciones de permisos ──────────────────────────────────────────
+
+    /**
+     * Verificar si el usuario actual puede listar el recurso.
+     * Retorna null si no hay prefijo configurado (sin restricción).
+     */
+    protected function canIndex(): bool
+    {
+        if (!$this->permissionPrefix) {
+            return true;
+        }
+        return CurrentWorker::hasPermission("{$this->permissionPrefix}_list");
+    }
+
+    /**
+     * Verificar si el usuario actual puede crear el recurso.
+     * Retorna true si no hay prefijo configurado (sin restricción).
+     */
+    protected function canStore(): bool
+    {
+        if (!$this->permissionPrefix) {
+            return true;
+        }
+        return CurrentWorker::hasPermission("{$this->permissionPrefix}_create");
+    }
+
+    /**
+     * Verificar si el usuario actual puede editar/actualizar el recurso.
+     * Retorna true si no hay prefijo configurado (sin restricción).
+     */
+    protected function canEdit(): bool
+    {
+        if (!$this->permissionPrefix) {
+            return true;
+        }
+        return CurrentWorker::hasPermission("{$this->permissionPrefix}_update");
+    }
+
+    /**
+     * Verificar si el usuario actual puede eliminar el recurso.
+     * Complementa al método canDelete() existente (que valida reglas de negocio).
+     * Retorna true si no hay prefijo configurado (sin restricción).
+     */
+    protected function canDestroy(): bool
+    {
+        if (!$this->permissionPrefix) {
+            return true;
+        }
+        return CurrentWorker::hasPermission("{$this->permissionPrefix}_delete");
+    }
+
+    /**
+     * Verificar si el usuario actual puede ver un recurso individual.
+     * Retorna true si no hay prefijo configurado (sin restricción).
+     */
+    protected function canRead(): bool
+    {
+        if (!$this->permissionPrefix) {
+            return true;
+        }
+        return CurrentWorker::hasPermission("{$this->permissionPrefix}_read");
+    }
+
+    /**
+     * Respuesta estándar de acceso denegado (403).
+     */
+    protected function forbiddenResponse(string $action = 'realizar esta acción')
+    {
+        return response()->json([
+            'message' => "No tienes permiso para {$action}.",
+        ], 403);
+    }
+
     /**
      * Mostrar lista de recursos con filtros, orden y paginación
      */
     public function index(Request $request)
     {
+        if (!$this->canIndex()) {
+            return $this->forbiddenResponse('listar este recurso');
+        }
+
         // Obtener parámetros de la request
         $params = $request->all();
 
@@ -89,13 +190,17 @@ abstract class CrudController extends Controller
             $query->where('company_id', $params['company_id']);
         }
 
-        // Filtro por fecha de creación
-        if (isset($params['date_from'])) {
-            $query->whereDate('created_at', '>=', $params['date_from']);
+        // Filtro por fecha principal del recurso.
+        // Acepta date_from/date_to (estándar) o start_date/end_date (alias para compatibilidad).
+        $dateFrom = $params['date_from'] ?? $params['start_date'] ?? null;
+        $dateTo   = $params['date_to']   ?? $params['end_date']   ?? null;
+
+        if ($dateFrom) {
+            $query->whereDate($this->dateColumn, '>=', $dateFrom);
         }
 
-        if (isset($params['date_to'])) {
-            $query->whereDate('created_at', '<=', $params['date_to']);
+        if ($dateTo) {
+            $query->whereDate($this->dateColumn, '<=', $dateTo);
         }
     }
 
@@ -140,6 +245,10 @@ abstract class CrudController extends Controller
      */
     public function show($id)
     {
+        if (!$this->canRead()) {
+            return $this->forbiddenResponse('ver este recurso');
+        }
+
         try {
             // Buscar el modelo
             $model = $this->findModelForShow($id);
@@ -193,6 +302,10 @@ abstract class CrudController extends Controller
      */
     public function store(Request $request)
     {
+        if (!$this->canStore()) {
+            return $this->forbiddenResponse('crear este recurso');
+        }
+
         try {
             // Validar los datos de entrada
             $validatedData = $this->validateStoreData($request);
@@ -279,6 +392,10 @@ abstract class CrudController extends Controller
      */
     public function update(Request $request, $id)
     {
+        if (!$this->canEdit()) {
+            return $this->forbiddenResponse('editar este recurso');
+        }
+
         try {
             // Buscar el modelo
             $model = $this->findModel($id);
@@ -361,6 +478,10 @@ abstract class CrudController extends Controller
      */
     public function destroy($id)
     {
+        if (!$this->canDestroy()) {
+            return $this->forbiddenResponse('eliminar este recurso');
+        }
+
         try {
             // Buscar el modelo
             $model = $this->findModel($id);

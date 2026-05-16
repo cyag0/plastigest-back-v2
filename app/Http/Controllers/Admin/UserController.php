@@ -23,13 +23,14 @@ class UserController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = User::class;
+    protected ?string $permissionPrefix = 'users';
 
     /**
      * Relaciones que se cargarán en el index
      */
     protected function indexRelations(): array
     {
-        return ['companies'];
+        return ['companies', 'roles'];
     }
 
     /**
@@ -37,7 +38,7 @@ class UserController extends CrudController
      */
     protected function getShowRelations(): array
     {
-        return ['companies'];
+        return ['companies', 'roles', 'locationRoles'];
     }
 
     /**
@@ -110,8 +111,11 @@ class UserController extends CrudController
             'role_ids.*' => 'exists:roles,id',
             'company_ids' => 'nullable|array',
             'company_ids.*' => 'exists:companies,id',
-            'location_ids' => 'nullable|array',
-            'location_ids.*' => 'exists:locations,id',
+
+            // Sucursales con rol asignado
+            'location_roles' => 'nullable|array',
+            'location_roles.*.location_id' => 'required_with:location_roles|exists:locations,id',
+            'location_roles.*.role_id' => 'nullable|exists:roles,id',
         ]);
 
         // Validar avatar por separado (puede venir como array o como archivo único)
@@ -140,8 +144,11 @@ class UserController extends CrudController
             'role_ids.*' => 'exists:roles,id',
             'company_ids' => 'nullable|array',
             'company_ids.*' => 'exists:companies,id',
-            'location_ids' => 'nullable|array',
-            'location_ids.*' => 'exists:locations,id',
+
+            // Sucursales con rol asignado
+            'location_roles' => 'nullable|array',
+            'location_roles.*.location_id' => 'required_with:location_roles|exists:locations,id',
+            'location_roles.*.role_id' => 'nullable|exists:roles,id',
         ]);
 
         // Validar avatar por separado
@@ -245,12 +252,17 @@ class UserController extends CrudController
             $user->companies()->sync($request->company_ids);
         }
 
-        // Sincronizar sucursales
-        if ($request->has('location_ids') && is_array($request->location_ids)) {
-            $user->locations()->sync($request->location_ids);
+        // Sincronizar sucursales+rol
+        if ($request->has('location_roles') && is_array($request->location_roles)) {
+            $sync = [];
+            foreach ($request->location_roles as $lr) {
+                if (!empty($lr['location_id'])) {
+                    $sync[$lr['location_id']] = ['role_id' => $lr['role_id'] ?? null];
+                }
+            }
+            $user->locationRoles()->sync($sync);
         }
 
-        // Recargar las relaciones
         $relations = $this->getShowRelations();
         if (!empty($relations)) {
             $user->load($relations);
@@ -271,11 +283,17 @@ class UserController extends CrudController
             $user->companies()->sync($request->company_ids);
         }
 
-        if ($request->has('location_ids')) {
-            $user->locations()->sync($request->location_ids);
+        // Sincronizar sucursales+rol
+        if ($request->has('location_roles')) {
+            $sync = [];
+            foreach ((array) $request->location_roles as $lr) {
+                if (!empty($lr['location_id'])) {
+                    $sync[$lr['location_id']] = ['role_id' => $lr['role_id'] ?? null];
+                }
+            }
+            $user->locationRoles()->sync($sync);
         }
 
-        // Recargar las relaciones
         $relations = $this->getShowRelations();
         if (!empty($relations)) {
             $user->load($relations);
@@ -287,14 +305,6 @@ class UserController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // No permitir eliminar si tiene workers asociados
-        if ($model->workers()->exists()) {
-            return [
-                'can_delete' => false,
-                'message' => 'No se puede eliminar porque tiene trabajadores asociados'
-            ];
-        }
-
         return [
             'can_delete' => true,
             'message' => ''

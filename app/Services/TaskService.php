@@ -10,12 +10,11 @@ use App\Models\Adjustment;
 use App\Models\Transfer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Notifications\NotificationEngine;
 
 class TaskService
 {
-    public function __construct(
-        private NotificationService $notificationService
-    ) {}
+    public function __construct() {}
 
     /**
      * Create task from purchase confirmation
@@ -230,7 +229,11 @@ class TaskService
             $task->update(['assigned_to' => $assignedUser->id]);
 
             // Send notification
-            $this->notificationService->sendTaskAssigned($task, $assignedUser);
+            NotificationEngine::dispatch('task_event', $task->company_id, [
+                'task'       => $task,
+                'sub_type'   => 'assigned',
+                'actor_name' => 'Sistema',
+            ], userId: $assignedUser->id);
         }
     }
 
@@ -249,7 +252,11 @@ class TaskService
             $task->update(['assigned_to' => $manager->id]);
 
             // Send notification
-            $this->notificationService->sendTaskAssigned($task, $manager);
+            NotificationEngine::dispatch('task_event', $task->company_id, [
+                'task'       => $task,
+                'sub_type'   => 'assigned',
+                'actor_name' => 'Sistema',
+            ], userId: $manager->id);
         } else {
             // Fallback to any admin
             $this->autoAssignTask($task);
@@ -279,7 +286,11 @@ class TaskService
 
         foreach ($tasks as $task) {
             if ($task->assignedTo) {
-                $this->notificationService->sendTaskReminder($task, $task->assignedTo);
+                NotificationEngine::dispatch('task_event', $task->company_id, [
+                    'task'       => $task,
+                    'sub_type'   => 'overdue',
+                    'actor_name' => 'Sistema',
+                ], userId: $task->assignedTo->id);
                 $sent++;
             }
         }
@@ -293,28 +304,16 @@ class TaskService
     public function notifyPurchaseTaskCreated(Task $task, Purchase $purchase): void
     {
         try {
-            $title = "📋 Nueva Tarea: Recibir Compra";
-            $message = "Se te ha asignado la tarea de recibir la compra de {$purchase->supplier->name}";
-
-            $data = [
-                'type' => 'task_assigned',
-                'task_id' => $task->id,
-                'task_type' => $task->type,
-                'priority' => $task->priority,
-                'due_date' => $task->due_date?->toISOString(),
-                'purchase_id' => $purchase->id,
-                'location_id' => $purchase->location_id,
-            ];
-
             // Notificar a usuarios con permiso de compras
-            NotificationService::notifyUsersWithPermission(
-                $purchase->company_id,
-                'purchases_manage',
-                $title,
-                $message,
-                'task',
-                $data
-            );
+            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
+                'purchase'      => $purchase,
+                'supplier_name' => $purchase->supplier->name,
+                'sub_type'      => 'in_transit',
+                'products'      => $purchase->details->map(fn($d) => [
+                    'name'     => $d->product->name,
+                    'quantity' => $d->quantity,
+                ])->toArray(),
+            ]);
 
             Log::info('Purchase task assignment notification sent', [
                 'task_id' => $task->id,
@@ -335,31 +334,13 @@ class TaskService
         try {
             $discrepanciesCount = count($discrepancies);
 
-            $title = "📋 Nueva Tarea: Revisar Discrepancias";
-            $message = "Se te ha asignado revisar {$discrepanciesCount} discrepancia(s) del conteo '{$inventoryCount->name}'";
-
-            $data = [
-                'type' => 'task_assigned',
-                'task_id' => $task->id,
-                'task_type' => $task->type,
-                'priority' => $task->priority,
-                'due_date' => $task->due_date?->toISOString(),
-                'inventory_count_id' => $inventoryCount->id,
-                'discrepancies_count' => $discrepanciesCount,
-                'location_id' => $inventoryCount->location_id,
-                'user_id' => $inventoryCount->user_id,
-            ];
-
             // Notificar solo al usuario asignado (assigned_to)
             if ($task->assigned_to) {
-                NotificationService::create(
-                    $task->assigned_to,
-                    $inventoryCount->company_id,
-                    $title,
-                    $message,
-                    'task',
-                    $data
-                );
+                NotificationEngine::dispatch('task_event', $inventoryCount->company_id, [
+                    'task'       => $task,
+                    'sub_type'   => 'assigned',
+                    'actor_name' => 'Sistema',
+                ], userId: $task->assigned_to);
             }
 
             Log::info('Discrepancies task assignment notification sent', [

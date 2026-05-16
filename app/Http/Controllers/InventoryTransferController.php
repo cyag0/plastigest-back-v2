@@ -14,6 +14,7 @@ use App\Services\TransferService;
 use App\Utils\AppUploadUtil;
 use App\Enums\TransferStatus;
 use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
@@ -34,6 +35,10 @@ class InventoryTransferController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $query = InventoryTransfer::with([
                 'fromLocation',
@@ -138,6 +143,10 @@ class InventoryTransferController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             // Obtener compañía actual automáticamente
             $currentCompany = CurrentCompany::get();
@@ -253,6 +262,10 @@ class InventoryTransferController extends Controller
      */
     public function show(int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $transfer = InventoryTransfer::with([
                 'fromLocation',
@@ -281,6 +294,10 @@ class InventoryTransferController extends Controller
      */
     public function update(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $transfer = InventoryTransfer::findOrFail($id);
 
@@ -382,6 +399,10 @@ class InventoryTransferController extends Controller
      */
     public function destroy(int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_delete')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $transfer = InventoryTransfer::findOrFail($id);
 
@@ -410,6 +431,10 @@ class InventoryTransferController extends Controller
      */
     public function approve(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $transfer = InventoryTransfer::findOrFail($id);
 
@@ -432,6 +457,10 @@ class InventoryTransferController extends Controller
      */
     public function reject(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $validator = Validator::make($request->all(), [
                 'rejection_reason' => 'required|string|max:500'
@@ -465,6 +494,10 @@ class InventoryTransferController extends Controller
      */
     public function ship(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $transfer = InventoryTransfer::with('details')->findOrFail($id);
 
@@ -577,6 +610,10 @@ class InventoryTransferController extends Controller
      */
     public function receive(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $transfer = InventoryTransfer::with('details')->findOrFail($id);
 

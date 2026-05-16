@@ -21,7 +21,13 @@ enum Resources: string
     case REPORTS = 'reports';
     case DASHBOARD = 'dashboard';
     case SETTINGS = 'settings';
-    case WORKERS = 'workers';
+    case EXPENSES = 'expenses';
+    case NOTIFICATIONS = 'notifications';
+    case TRANSFERS = 'transfers';
+    case TASKS = 'tasks';
+    case REMINDERS = 'reminders';
+    case PRODUCTION = 'production';
+    case CASH_MOVEMENTS = 'cash_movements';
 
     /**
      * Obtener el label legible del recurso
@@ -46,7 +52,13 @@ enum Resources: string
             self::REPORTS => 'Reportes',
             self::DASHBOARD => 'Panel Principal',
             self::SETTINGS => 'Configuración',
-            self::WORKERS => 'Trabajadores',
+            self::EXPENSES => 'Gastos',
+            self::NOTIFICATIONS => 'Notificaciones',
+            self::TRANSFERS => 'Transferencias de Inventario',
+            self::TASKS => 'Tareas',
+            self::REMINDERS => 'Recordatorios',
+            self::PRODUCTION => 'Producción',
+            self::CASH_MOVEMENTS => 'Movimientos de Caja',
         };
     }
 
@@ -73,7 +85,13 @@ enum Resources: string
             self::REPORTS => 'Generación de reportes',
             self::DASHBOARD => 'Tablero de control principal',
             self::SETTINGS => 'Configuraciones del sistema',
-            self::WORKERS => 'Gestión de trabajadores de la empresa',
+            self::EXPENSES => 'Registro y control de gastos',
+            self::NOTIFICATIONS => 'Gestión de notificaciones y preferencias',
+            self::TRANSFERS => 'Transferencias de inventario entre ubicaciones',
+            self::TASKS => 'Gestión de tareas internas',
+            self::REMINDERS => 'Recordatorios y alertas programadas',
+            self::PRODUCTION => 'Control de producción y órdenes',
+            self::CASH_MOVEMENTS => 'Movimientos de caja y tesorería',
         };
     }
 
@@ -100,7 +118,13 @@ enum Resources: string
             self::REPORTS => 'chart-line',
             self::DASHBOARD => 'view-dashboard',
             self::SETTINGS => 'cog',
-            self::WORKERS => 'account-hard-hat',
+            self::EXPENSES => 'currency-usd',
+            self::NOTIFICATIONS => 'bell',
+            self::TRANSFERS => 'transfer',
+            self::TASKS => 'checkbox-marked-outline',
+            self::REMINDERS => 'alarm',
+            self::PRODUCTION => 'factory',
+            self::CASH_MOVEMENTS => 'cash-multiple',
         };
     }
 

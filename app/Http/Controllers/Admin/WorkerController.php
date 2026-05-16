@@ -20,6 +20,7 @@ class WorkerController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = \App\Models\Admin\Worker::class;
+    protected ?string $permissionPrefix = 'workers';
 
     /**
      * Relaciones que se cargarán en el index

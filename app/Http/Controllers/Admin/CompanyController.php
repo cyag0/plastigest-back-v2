@@ -21,6 +21,7 @@ class CompanyController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Company::class;
+    protected ?string $permissionPrefix = 'companies';
 
     /**
      * Relaciones que se cargarán en el index

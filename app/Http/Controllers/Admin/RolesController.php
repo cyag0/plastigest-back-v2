@@ -23,6 +23,7 @@ class RolesController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Role::class;
+    protected ?string $permissionPrefix = 'roles';
 
     /**
      * Relaciones que se cargarán en el index

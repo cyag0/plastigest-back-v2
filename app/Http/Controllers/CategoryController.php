@@ -20,6 +20,7 @@ class CategoryController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Category::class;
+    protected ?string $permissionPrefix = 'categories';
 
     /**
      * Relaciones que se cargarán en el index

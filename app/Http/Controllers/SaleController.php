@@ -9,9 +9,11 @@ use App\Models\SaleDetail;
 use App\Models\Product;
 use App\Models\Expense;
 use App\Enums\SaleStatus;
+use App\Services\CashMovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
-use App\Services\NotificationService;
+use App\Notifications\NotificationEngine;
+use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
@@ -30,6 +32,12 @@ class SaleController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Sale::class;
+    protected ?string $permissionPrefix = 'sales';
+
+    /**
+     * Columna de fecha principal: los filtros date_from/date_to se aplican sobre sale_date.
+     */
+    protected string $dateColumn = 'sale_date';
 
     /**
      * Relaciones que se cargarán en el index
@@ -93,11 +101,6 @@ class SaleController extends CrudController
         // Filtrar por estado
         if (isset($params['status']) && !empty($params['status'])) {
             $query->where('status', $params['status']);
-        }
-
-        // Filtrar por rango de fechas
-        if (isset($params['start_date']) && isset($params['end_date'])) {
-            $query->betweenDates($params['start_date'], $params['end_date']);
         }
 
         // Filtrar por ubicación
@@ -283,6 +286,15 @@ class SaleController extends CrudController
 
                 // Verificar stock bajo después de la venta
                 $this->checkLowStockAndNotify($sale);
+
+                // Registrar ingreso en caja si hay pago inicial
+                if ($paidAmount > 0) {
+                    CashMovementService::fromSale(
+                        $sale,
+                        (float) $paidAmount,
+                        $data['payment_method'] ?? 'cash'
+                    );
+                }
             }
 
             // Recargar relaciones
@@ -597,14 +609,14 @@ class SaleController extends CrudController
                 // Si el stock actual es menor al mínimo, enviar notificación
                 if ($currentStock < $minimumStock) {
                     $product = Product::find($detail->product_id);
+                    $location = \App\Models\Admin\Location::find($locationId);
 
-                    NotificationService::notifyLowStock(
-                        $companyId,
-                        $locationId,
-                        $product,
-                        $currentStock,
-                        $minimumStock
-                    );
+                    NotificationEngine::dispatch('low_stock', $companyId, [
+                        'product'       => $product,
+                        'location'      => $location,
+                        'current_stock' => $currentStock,
+                        'minimum_stock' => $minimumStock,
+                    ]);
                 }
             }
         } catch (\Exception $e) {
@@ -984,6 +996,14 @@ class SaleController extends CrudController
             }
 
             $sale->save();
+
+            // Registrar ingreso en caja por este pago
+            CashMovementService::fromSale(
+                $sale,
+                (float) $newAmount,
+                $validated['payment_method'],
+                $validated['notes'] ?? null
+            );
 
             // Recargar relaciones
             $sale->load($this->getShowRelations());

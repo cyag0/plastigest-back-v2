@@ -22,6 +22,7 @@ class SupplierController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Supplier::class;
+    protected ?string $permissionPrefix = 'suppliers';
 
     /**
      * Relaciones que se cargarán en el index

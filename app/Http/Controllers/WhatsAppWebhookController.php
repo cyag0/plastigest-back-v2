@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Purchase;
 use App\Models\Task;
-use App\Services\NotificationService;
+use App\Notifications\NotificationEngine;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -289,15 +289,13 @@ class WhatsAppWebhookController extends Controller
                 ];
             })->toArray();
 
-            // Enviar notificación usando el servicio centralizado
-            NotificationService::notifyPurchaseReceived(
-                $purchase->company_id,
-                $purchase->id,
-                $purchase->supplier->name,
-                $purchase->reference ?? 'N/A',
-                $purchase->purchase_date ?? now()->format('Y-m-d'),
-                $products
-            );
+            // Enviar notificación usando NotificationEngine
+            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
+                'purchase'      => $purchase,
+                'supplier_name' => $purchase->supplier->name,
+                'sub_type'      => 'received',
+                'products'      => $products,
+            ]);
 
             Log::info('Purchase received notification sent', [
                 'purchase_id' => $purchase->id
@@ -354,27 +352,18 @@ class WhatsAppWebhookController extends Controller
     protected function notifyPurchaseTaskAssignment(Task $task, Purchase $purchase)
     {
         try {
-            $title = "📋 Nueva Tarea: Recibir Compra";
-            $message = "Se te ha asignado la tarea de recibir la compra de {$purchase->supplier->name}";
+            $purchase->load(['supplier', 'details.product']);
 
-            $data = [
-                'type' => 'task_assigned',
-                'task_id' => $task->id,
-                'task_type' => $task->type,
-                'priority' => $task->priority,
-                'due_date' => $task->due_date?->toISOString(),
-                'purchase_id' => $purchase->id,
-            ];
-
-            // Notificar a usuarios con permiso de compras
-            NotificationService::notifyUsersWithPermission(
-                $purchase->company_id,
-                'purchases_manage',
-                $title,
-                $message,
-                'task',
-                $data
-            );
+            // Notificar a usuarios con permiso de compras via NotificationEngine (task_event)
+            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
+                'purchase'      => $purchase,
+                'supplier_name' => $purchase->supplier->name,
+                'sub_type'      => 'in_transit',
+                'products'      => $purchase->details->map(fn($d) => [
+                    'name'     => $d->product->name,
+                    'quantity' => $d->quantity,
+                ])->toArray(),
+            ]);
 
             Log::info('Purchase task assignment notification sent', [
                 'task_id' => $task->id,

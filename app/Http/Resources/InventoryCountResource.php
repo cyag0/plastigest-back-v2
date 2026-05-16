@@ -108,9 +108,43 @@ class InventoryCountResource extends Resources
             $countedProducts = $resource->details->count();
             $pendingProducts = max(0, $totalProducts - $countedProducts);
 
+            // details by product_id
+            $details = [];
+
+
+            foreach ($resource->details as $detail) {
+                $details['product_' . $detail->product_id] = [
+                    'id' => $detail->id,
+                    'product_id' => $detail->product_id,
+                    'location_id' => $detail->location_id,
+                    'system_quantity' => $detail->system_quantity,
+                    'counted_quantity' => $detail->counted_quantity,
+                    'difference' => $detail->difference,
+                    'notes' => $detail->notes,
+                ];
+
+                // Incluir datos del producto si está cargado
+                if ($detail->relationLoaded('product')) {
+                    $details['product_' . $detail->product_id]['product'] = [
+                        'id' => $detail->product->id,
+                        'name' => $detail->product->name,
+                        'code' => $detail->product->code,
+                        'image' => $detail->product->main_image?->uri ?? null,
+                        'unit' => $detail->product->unit ? [
+                            'name' => $detail->product->unit->name,
+                            'abbreviation' => $detail->product->unit->abbreviation,
+                        ] : null,
+                    ];
+                }
+            }
+
+            $item['details'] = $details;
+
             if ($countedProducts && $item["status"] === "planning") {
                 $item["status"] = "counting";
             }
+
+
 
             $item['progress'] = [
                 'total' => $totalProducts,

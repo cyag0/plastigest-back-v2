@@ -41,8 +41,15 @@ class PermissionSeeder extends Seeder
             // Operaciones
             [Resources::INVENTORY, [Actions::READ, Actions::UPDATE, Actions::LIST, Actions::MANAGE]],
             [Resources::MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::LIST]],
+            [Resources::TRANSFERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::SALES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::PURCHASES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
+            [Resources::PRODUCTION, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::EXPENSES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::EXPORT]],
+            [Resources::TASKS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::REMINDERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::NOTIFICATIONS, [Actions::READ, Actions::LIST, Actions::MANAGE]],
+            [Resources::CASH_MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
 
             // Reportes y Dashboard
             [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT]],

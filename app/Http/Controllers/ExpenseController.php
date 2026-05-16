@@ -6,6 +6,7 @@ use App\Http\Resources\ExpenseResource;
 use App\Models\Expense;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
@@ -18,6 +19,10 @@ class ExpenseController extends Controller
      */
     public function index(Request $request)
     {
+        if (!CurrentWorker::hasPermission('expenses_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
 
@@ -37,7 +42,7 @@ class ExpenseController extends Controller
         // Filtrar por rango de fechas (acepta ambas nomenclaturas)
         $startDate = $request->input('start_date') ?? $request->input('date_range_from');
         $endDate = $request->input('end_date') ?? $request->input('date_range_to');
-        
+
         if ($startDate && $endDate) {
             $query->whereBetween('expense_date', [$startDate, $endDate]);
         }
@@ -73,6 +78,10 @@ class ExpenseController extends Controller
      */
     public function store(Request $request)
     {
+        if (!CurrentWorker::hasPermission('expenses_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'category' => 'required|string|in:' . implode(',', array_keys(Expense::getCategories())),
             'amount' => 'required|numeric|min:0.01',
@@ -120,6 +129,10 @@ class ExpenseController extends Controller
      */
     public function show($id)
     {
+        if (!CurrentWorker::hasPermission('expenses_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $companyId = CurrentCompany::id();
 
         $expense = Expense::with(['user', 'location', 'company'])
@@ -134,6 +147,10 @@ class ExpenseController extends Controller
      */
     public function update(Request $request, $id)
     {
+        if (!CurrentWorker::hasPermission('expenses_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $companyId = CurrentCompany::id();
 
         $expense = Expense::where('company_id', $companyId)->findOrFail($id);
@@ -177,6 +194,10 @@ class ExpenseController extends Controller
      */
     public function destroy($id)
     {
+        if (!CurrentWorker::hasPermission('expenses_delete')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $companyId = CurrentCompany::id();
 
         $expense = Expense::where('company_id', $companyId)->findOrFail($id);
@@ -208,6 +229,10 @@ class ExpenseController extends Controller
      */
     public function statistics(Request $request)
     {
+        if (!CurrentWorker::hasPermission('expenses_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
 

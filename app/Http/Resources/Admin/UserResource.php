@@ -55,6 +55,25 @@ class UserResource extends Resources
             }
         }
 
+        // Relación con roles
+        if ($resource->relationLoaded('roles')) {
+            $item['roles'] = $resource->roles->map(fn($role) => [
+                'id'   => $role->id,
+                'name' => $role->name,
+            ]);
+            $item['role_ids'] = $resource->roles->pluck('id')->toArray();
+        }
+
+        // Sucursales y rol por sucursal (tabla user_location_roles)
+        if ($resource->relationLoaded('locationRoles')) {
+            $item['location_roles'] = $resource->locationRoles->map(fn($location) => [
+                'location_id'   => $location->id,
+                'location_name' => $location->name,
+                'role_id'       => $location->pivot->role_id,
+                'company_id'    => $location->company_id,
+            ])->values()->toArray();
+        }
+
         return $item;
     }
 }

@@ -11,6 +11,7 @@ use App\Models\Unit;
 use App\Services\MovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use App\Utils\AppUploadUtil;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
@@ -27,6 +28,10 @@ class InventoryAdjustmentController extends Controller
 
     public function index(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $companyId = CurrentCompany::get()?->id;
             if (!$companyId) {
@@ -83,6 +88,10 @@ class InventoryAdjustmentController extends Controller
 
     public function show(int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $detail = InventoryAdjustmentDetail::with([
                 'location',
@@ -102,6 +111,10 @@ class InventoryAdjustmentController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_manage')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validated = $request->validate([
             'applied_at' => 'nullable|date',
             'notes' => 'nullable|string',
@@ -196,6 +209,10 @@ class InventoryAdjustmentController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_manage')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validated = $request->validate([
             'location_id' => 'sometimes|required|exists:locations,id',
             'product_id' => 'sometimes|required|exists:products,id',
@@ -275,6 +292,10 @@ class InventoryAdjustmentController extends Controller
 
     public function destroy(int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_manage')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $companyId = CurrentCompany::get()?->id;
             if (!$companyId) {

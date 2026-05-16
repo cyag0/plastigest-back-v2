@@ -6,9 +6,13 @@ use App\Services\InventoryService;
 use App\Models\Movement;
 use App\Models\InventoryTransfer;
 use App\Models\ProductKardex;
+use App\Models\Product;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
 
 class InventoryController extends Controller
 {
@@ -24,6 +28,10 @@ class InventoryController extends Controller
      */
     public function processMovement(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_manage')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'company_id' => 'required|exists:companies,id',
             'location_id' => 'required|exists:locations,id',
@@ -70,6 +78,10 @@ class InventoryController extends Controller
      */
     public function getMovements(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $query = Movement::with(['details.product', 'location', 'user']);
 
         // Apply filters
@@ -107,6 +119,10 @@ class InventoryController extends Controller
      */
     public function getMovement(int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $movement = Movement::with(['details.product', 'location', 'user'])
             ->findOrFail($id);
 
@@ -121,6 +137,10 @@ class InventoryController extends Controller
      */
     public function createTransfer(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'company_id' => 'required|exists:companies,id',
             'origin_location_id' => 'required|exists:locations,id',
@@ -164,6 +184,10 @@ class InventoryController extends Controller
      */
     public function approveTransfer(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'approvals' => 'required|array',
             'approvals.*' => 'numeric|min:0'
@@ -198,6 +222,10 @@ class InventoryController extends Controller
      */
     public function confirmTransfer(Request $request, int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'confirmations' => 'required|array',
             'confirmations.*' => 'numeric|min:0'
@@ -232,6 +260,10 @@ class InventoryController extends Controller
      */
     public function getTransfers(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $query = InventoryTransfer::with(['details.product', 'originLocation', 'destinationLocation', 'requestedBy']);
 
         // Apply filters
@@ -265,6 +297,10 @@ class InventoryController extends Controller
      */
     public function getTransfer(int $id): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('transfers_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $transfer = InventoryTransfer::with([
             'details.product',
             'originLocation',
@@ -285,6 +321,10 @@ class InventoryController extends Controller
      */
     public function getCurrentStock(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('inventory_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'product_id' => 'required|exists:products,id',
             'location_id' => 'required|exists:locations,id',
@@ -316,6 +356,10 @@ class InventoryController extends Controller
      */
     public function getInventoryReport(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('reports_view')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'location_id' => 'required|exists:locations,id',
             'company_id' => 'required|exists:companies,id',
@@ -349,6 +393,10 @@ class InventoryController extends Controller
      */
     public function getKardexReport(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('reports_view')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'product_id' => 'required|exists:products,id',
             'location_id' => 'required|exists:locations,id',
@@ -384,6 +432,10 @@ class InventoryController extends Controller
      */
     public function getDashboardStats(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('dashboard_view')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'company_id' => 'required|exists:companies,id',
             'location_id' => 'nullable|exists:locations,id'
@@ -397,18 +449,63 @@ class InventoryController extends Controller
             ], 422);
         }
 
-        // TODO: Implement dashboard statistics logic
-        // This could include:
-        // - Total products in stock
-        // - Low stock alerts
-        // - Recent movements
-        // - Top products by movement
-        // - Stock value by category
+        $companyId = $request->company_id;
+        $locationId = $request->location_id;
+
+        // Period: default to current month
+        $period = $request->get('period', 'month');
+        $dateRange = match ($period) {
+            'today' => [Carbon::today(), Carbon::now()],
+            'week'  => [Carbon::now()->startOfWeek(), Carbon::now()],
+            default => [Carbon::now()->startOfMonth(), Carbon::now()],
+        };
+
+        // Total active products for the company
+        $totalProducts = Product::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->count();
+
+        // Total stock and inventory value from product_location
+        $stockQuery = DB::table('product_location')
+            ->join('products', 'product_location.product_id', '=', 'products.id')
+            ->where('products.company_id', $companyId)
+            ->where('products.is_active', true);
+
+        if ($locationId) {
+            $stockQuery->where('product_location.location_id', $locationId);
+        }
+
+        $totalStock = (clone $stockQuery)->sum('product_location.current_stock');
+
+        $inventoryValue = (clone $stockQuery)->sum(
+            DB::raw('product_location.current_stock * products.purchase_price')
+        );
+
+        // Products with stock below minimum
+        $lowStockProducts = (clone $stockQuery)
+            ->whereRaw('product_location.current_stock < product_location.minimum_stock')
+            ->whereRaw('product_location.minimum_stock > 0')
+            ->count();
+
+        // Movement count in period
+        $movementsQuery = Movement::where('company_id', $companyId)
+            ->whereBetween('movement_date', $dateRange);
+
+        if ($locationId) {
+            $movementsQuery->where('location_origin_id', $locationId);
+        }
+
+        $movementsCount = $movementsQuery->count();
 
         return response()->json([
             'success' => true,
-            'message' => 'Dashboard stats - To be implemented',
-            'data' => []
+            'data' => [
+                'total_products'     => $totalProducts,
+                'total_stock'        => round((float) $totalStock, 2),
+                'inventory_value'    => round((float) $inventoryValue, 2),
+                'movements_count'    => $movementsCount,
+                'low_stock_products' => $lowStockProducts,
+            ]
         ]);
     }
 }

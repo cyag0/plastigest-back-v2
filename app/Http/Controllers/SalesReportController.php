@@ -20,6 +20,7 @@ class SalesReportController extends CrudController
 {
     protected string $resource = SalesReportResource::class;
     protected string $model = SalesReport::class;
+    protected ?string $permissionPrefix = 'reports';
 
     protected function indexRelations(): array
     {
@@ -128,7 +129,7 @@ class SalesReportController extends CrudController
         $data['total_cash'] = $data['total_cash'] ?? 0;
         $data['total_card'] = $data['total_card'] ?? 0;
         $data['total_transfer'] = $data['total_transfer'] ?? 0;
-        
+
         // Calculate expenses if not provided
         if (!isset($data['total_expenses']) && isset($data['report_date']) && isset($data['location_id'])) {
             $expenses = Expense::where('location_id', $data['location_id'])
@@ -138,7 +139,7 @@ class SalesReportController extends CrudController
         } else {
             $data['total_expenses'] = $data['total_expenses'] ?? 0;
         }
-        
+
         // Calculate net income
         $totalSales = $data['total_sales'] ?? 0;
         $totalExpenses = $data['total_expenses'] ?? 0;

@@ -9,7 +9,6 @@ use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
-use App\Support\CurrentLocation;
 
 class InventoryCountDetailController extends CrudController
 {
@@ -22,6 +21,7 @@ class InventoryCountDetailController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = InventoryCountDetail::class;
+    protected ?string $permissionPrefix = 'inventory';
 
     /**
      * Relaciones que se cargarán en el index
@@ -102,9 +102,13 @@ class InventoryCountDetailController extends CrudController
         try {
             DB::beginTransaction();
 
-            CurrentLocation::id();
+            if ($method === 'update') {
+                $detail = $callback($data);
+                DB::commit();
+                return $detail;
+            }
 
-            $data[]
+            $data['location_id'] = CurrentLocation::id();
             $detail = InventoryCountDetail::whereProductId($data['product_id'])
                 ->whereInventoryCountId($data['inventory_count_id']);
 
@@ -120,14 +124,11 @@ class InventoryCountDetailController extends CrudController
 
             /** @var InventoryCountDetail $detail */
 
-
             // Cambiar estado del inventario a "in_progress" si está en "planning"
-            if ($method === 'create') {
-                $inventoryCount = $detail->inventoryCount;
-                if ($inventoryCount->status === 'planning') {
-                    $inventoryCount->status = 'counting';
-                    $inventoryCount->save();
-                }
+            $inventoryCount = $detail->inventoryCount;
+            if ($inventoryCount->status === 'planning') {
+                $inventoryCount->status = 'counting';
+                $inventoryCount->save();
             }
 
             DB::commit();

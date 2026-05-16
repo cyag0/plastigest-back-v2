@@ -2,11 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Admin\Role;
 use App\Models\User;
+use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
 use Error;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -146,77 +150,55 @@ class AuthController extends Controller
     {
         try {
             $user = $request->user();
+            $user->load(['companies', 'roles.permissions', 'locationRoles']);
 
-            // Cargar todos los workers con sus relaciones
-            $user->load(['workers.company', 'workers.role.permissions']);
+            $roles = $user->roles->map(fn($role) => [
+                'id'          => $role->id,
+                'name'        => $role->name,
+                'description' => $role->description ?? null,
+                'is_system'   => $role->is_system ?? false,
+            ])->values()->toArray();
 
-            $roles = [];
-            $permissions = [];
-            $companies = [];
+            $permissions = $user->roles->flatMap(fn($role) => $role->permissions)
+                ->unique('id')
+                ->map(fn($p) => [
+                    'id'          => $p->id,
+                    'name'        => $p->name,
+                    'description' => $p->description ?? null,
+                    'resource'    => $p->resource ?? null,
+                ])->values()->toArray();
 
-            // Obtener roles y permisos únicos de todos los workers
-            if ($user->workers->isNotEmpty()) {
-                // Recopilar todos los roles únicos
-                $rolesCollection = $user->workers
-                    ->pluck('role')
-                    ->filter()
-                    ->unique('id');
+            $companies = $user->companies->map(fn($c) => [
+                'id'            => $c->id,
+                'name'          => $c->name,
+                'business_name' => $c->business_name ?? null,
+            ])->values()->toArray();
 
-                $roles = $rolesCollection->map(function ($role) {
-                    return [
-                        'id' => $role->id,
-                        'name' => $role->name,
-                        'description' => $role->description,
-                        'is_system' => $role->is_system ?? false,
-                    ];
-                })->values()->toArray();
-
-                // Obtener todos los permisos únicos de todos los roles
-                $permissionsCollection = $rolesCollection->flatMap(function ($role) {
-                    return $role->permissions ?? collect();
-                })->unique('id');
-
-                $permissions = $permissionsCollection->map(function ($permission) {
-                    return [
-                        'id' => $permission->id,
-                        'name' => $permission->name,
-                        'description' => $permission->description,
-                        'resource' => $permission->resource,
-                    ];
-                })->values()->toArray();
-
-                // Obtener todas las empresas donde trabaja
-                $companies = $user->workers->map(function ($worker) {
-                    return [
-                        'id' => $worker->company->id,
-                        'name' => $worker->company->name,
-                        'business_name' => $worker->company->business_name,
-                        'worker_id' => $worker->id,
-                        'role' => $worker->role ? [
-                            'id' => $worker->role->id,
-                            'name' => $worker->role->name,
-                        ] : null,
-                    ];
-                })->values()->toArray();
-            }
+            $locationRoles = $user->locationRoles->map(fn($loc) => [
+                'location_id'   => $loc->id,
+                'location_name' => $loc->name,
+                'role_id'       => $loc->pivot->role_id,
+                'company_id'    => $loc->company_id,
+            ])->values()->toArray();
 
             return response()->json([
                 'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
+                    'id'                => $user->id,
+                    'name'              => $user->name,
+                    'email'             => $user->email,
                     'email_verified_at' => $user->email_verified_at,
-                    'created_at' => $user->created_at,
-                    'updated_at' => $user->updated_at,
-                    'roles' => $roles,
-                    'permissions' => $permissions,
-                    'companies' => $companies,
+                    'created_at'        => $user->created_at,
+                    'updated_at'        => $user->updated_at,
+                    'roles'             => $roles,
+                    'permissions'       => $permissions,
+                    'companies'         => $companies,
+                    'location_roles'    => $locationRoles,
                 ]
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al obtener información del usuario',
-                'error' => $e->getMessage()
+                'error'   => $e->getMessage()
             ], 500);
         }
     }
@@ -261,6 +243,51 @@ class AuthController extends Controller
             return response()->json([
                 'message' => 'Error al cambiar la contraseña',
                 'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Retorna los permisos del usuario autenticado para la sucursal actual.
+     * El contexto de sucursal se lee automáticamente del middleware (X-Location-ID).
+     */
+    public function myPermissions(): JsonResponse
+    {
+        try {
+            $user     = Auth::user();
+            $locationId = CurrentLocation::id();
+
+            if (!$user || !$locationId) {
+                return response()->json([
+                    'permissions' => [],
+                    'role'        => null,
+                    'company_id'  => CurrentCompany::id(),
+                ], 200);
+            }
+
+            $entry = DB::table('user_location_roles')
+                ->where('user_id', $user->id)
+                ->where('location_id', $locationId)
+                ->first();
+
+            $role = ($entry && $entry->role_id)
+                ? Role::with('permissions')->find($entry->role_id)
+                : null;
+
+            $permissions = $role
+                ? $role->permissions->pluck('name')->values()->toArray()
+                : [];
+
+            return response()->json([
+                'permissions' => $permissions,
+                'role'        => $role ? ['id' => $role->id, 'name' => $role->name] : null,
+                'company_id'  => CurrentCompany::id(),
+                'location_id' => $locationId,
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Error al obtener permisos',
+                'error'   => $e->getMessage(),
             ], 500);
         }
     }
