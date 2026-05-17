@@ -9,16 +9,18 @@
                 <td>Proveedor</td>
                 <td>{{ $supplier_name ?? '—' }}</td>
             </tr>
-            @if (!empty($purchase))
+            <tr>
+                <td>Compra #</td>
+                <td>{{ $purchase_number ?? ($purchase->id ?? '—') }}</td>
+            </tr>
+            <tr>
+                <td>Estado</td>
+                <td>{{ $status_label ?? '—' }}</td>
+            </tr>
+            @if (!empty($total))
                 <tr>
-                    <td>Compra #</td>
-                    <td>{{ $purchase->id }}</td>
-                </tr>
-            @endif
-            @if (!empty($sub_type))
-                <tr>
-                    <td>Estado</td>
-                    <td>{{ $sub_type === 'received' ? 'Recibida' : 'En Tránsito' }}</td>
+                    <td>Total</td>
+                    <td>${{ number_format((float) $total, 2) }}</td>
                 </tr>
             @endif
         </table>

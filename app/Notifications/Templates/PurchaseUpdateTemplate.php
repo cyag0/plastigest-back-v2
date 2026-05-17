@@ -47,6 +47,30 @@ class PurchaseUpdateTemplate extends BaseNotificationTemplate
         return 'emails.notifications.purchase-update';
     }
 
+    public function getEmailData(): array
+    {
+        $purchase     = $this->context['purchase'] ?? null;
+        $subType      = $this->context['sub_type'] ?? '';
+        $supplierName = $this->context['supplier_name'] ?? 'Proveedor';
+        $products     = $this->context['products'] ?? [];
+
+        return array_merge(parent::getEmailData(), [
+            'purchase'        => $purchase,
+            'purchase_id'     => $purchase?->id,
+            'purchase_number' => $purchase?->purchase_number,
+            'supplier_name'   => $supplierName,
+            'sub_type'        => $subType,
+            'status_label'    => match ($subType) {
+                'in_transit' => 'En tránsito',
+                'received'   => 'Recibida',
+                default      => 'Actualizada',
+            },
+            'products'        => is_array($products) ? $products : [],
+            'products_count'  => is_countable($products) ? count($products) : 0,
+            'total'           => $purchase?->total,
+        ]);
+    }
+
     public function getPushData(): array
     {
         return [
