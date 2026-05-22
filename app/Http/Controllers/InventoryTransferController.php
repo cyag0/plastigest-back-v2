@@ -672,7 +672,8 @@ class InventoryTransferController extends Controller
                     $request,
                     "items.{$index}.adjustment_evidence",
                     $transfer->id,
-                    "step_3_item_{$detailId}"
+                    "step_3_item_{$detailId}",
+                    false
                 );
 
                 if ($difference > 0 && !$reason) {
@@ -721,7 +722,7 @@ class InventoryTransferController extends Controller
                 }
             }
 
-            $savedEvidence = $this->saveEvidenceFiles($request, 'evidence', $transfer->id, 'step_3');
+            $savedEvidence = $this->saveEvidenceFiles($request, 'evidence', $transfer->id, 'step_3', false);
             $savedEvidenceNames = array_values(array_map(
                 static fn(array $file) => (string) ($file['name'] ?? ''),
                 $savedEvidence
@@ -939,6 +940,10 @@ class InventoryTransferController extends Controller
             throw new Exception("El producto no tiene unidad base definida");
         }
 
+        if (!$product->unit) {
+            throw new Exception("La unidad base del producto no existe");
+        }
+
         // Si hay paquete, usar quantity_per_package
         if ($packageId) {
             $package = \App\Models\ProductPackage::findOrFail($packageId);
@@ -956,29 +961,93 @@ class InventoryTransferController extends Controller
         }
 
         // Conversión entre unidades
-        $fromUnit = \App\Models\Unit::with('baseUnit')->findOrFail($unitId);
+        $fromUnit = \App\Models\Unit::findOrFail($unitId);
         $toUnit = $product->unit;
 
-        $fromBaseUnitId = $fromUnit->base_unit_id ?? $unitId;
-        $toBaseUnitId = $toUnit->base_unit_id ?? $product->unit_id;
-
-        if ($fromBaseUnitId !== $toBaseUnitId) {
-            throw new Exception("No se pueden convertir unidades de diferentes tipos");
+        if (!$this->unitsAreCompatible($fromUnit, $toUnit)) {
+            throw new Exception(
+                sprintf(
+                    'La unidad seleccionada %s no es compatible con la unidad base %s del producto',
+                    $this->formatUnitLabel($fromUnit),
+                    $this->formatUnitLabel($toUnit),
+                )
+            );
         }
 
-        $fromFactor = $fromUnit->factor_to_base ?? 1;
-        $quantityInBaseUnit = $quantity * $fromFactor;
+        $fromFactor = (float) ($fromUnit->factor_to_base ?? 1);
+        $toFactor = (float) ($toUnit->factor_to_base ?? 1);
 
-        $toFactor = $toUnit->factor_to_base ?? 1;
+        if ($fromFactor <= 0 || $toFactor <= 0) {
+            throw new Exception(
+                "Factor de conversión inválido (unidad {$unitId} a unidad {$product->unit_id})"
+            );
+        }
+
+        $quantityInBaseUnit = $quantity * $fromFactor;
         $convertedQuantity = $quantityInBaseUnit / $toFactor;
 
         return $convertedQuantity;
     }
 
+    protected function unitsAreCompatible(\App\Models\Unit $fromUnit, \App\Models\Unit $toUnit): bool
+    {
+        $fromType = $this->normalizeUnitType($fromUnit->unit_type);
+        $toType = $this->normalizeUnitType($toUnit->unit_type);
+
+        if ($fromType !== '' && $toType !== '' && $fromType === $toType) {
+            return true;
+        }
+
+        $fromFamilyId = $this->resolveUnitFamilyId($fromUnit);
+        $toFamilyId = $this->resolveUnitFamilyId($toUnit);
+
+        return $fromFamilyId !== null
+            && $toFamilyId !== null
+            && $fromFamilyId === $toFamilyId;
+    }
+
+    protected function resolveUnitFamilyId(\App\Models\Unit $unit): ?int
+    {
+        if ($unit->is_base_unit) {
+            return (int) $unit->id;
+        }
+
+        if ($unit->base_unit_id) {
+            return (int) $unit->base_unit_id;
+        }
+
+        $normalizedType = $this->normalizeUnitType($unit->unit_type);
+        if ($normalizedType === '') {
+            return null;
+        }
+
+        return crc32($normalizedType);
+    }
+
+    protected function normalizeUnitType(?string $unitType): string
+    {
+        return strtolower(trim((string) $unitType));
+    }
+
+    protected function formatUnitLabel(\App\Models\Unit $unit): string
+    {
+        $abbreviation = trim((string) ($unit->abbreviation ?? ''));
+        $name = trim((string) ($unit->name ?? ''));
+        $type = $this->normalizeUnitType($unit->unit_type);
+
+        $label = $abbreviation !== '' ? $abbreviation : ($name !== '' ? $name : '#' . $unit->id);
+
+        if ($type === '') {
+            return $label;
+        }
+
+        return sprintf('%s (%s)', $label, $type);
+    }
+
     /**
      * Guarda evidencia usando AppUploadUtil para transferencias legacy.
      */
-    protected function saveEvidenceFiles(Request $request, string $field, int $transferId, string $step): array
+    protected function saveEvidenceFiles(Request $request, string $field, int $transferId, string $step, bool $required = true): array
     {
         $files = $request->file($field, []);
 
@@ -1010,7 +1079,7 @@ class InventoryTransferController extends Controller
             ];
         }
 
-        if (empty($saved)) {
+        if (empty($saved) && $required) {
             throw new Exception('Debes adjuntar al menos una evidencia válida');
         }
 

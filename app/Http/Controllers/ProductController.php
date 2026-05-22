@@ -118,13 +118,13 @@ class ProductController extends CrudController
 
     /**
      * Manejo de filtros personalizados
-     */
+     */                                                                                                                                                                                                                                 
     protected function handleQuery($query, array $params)
     {
         $location = CurrentLocation::get();
         $locationId = $location ? $location->id : (isset($params['location_id']) ? $params['location_id'] : null);
         $isActive = isset($params['is_active']) ? (bool)$params['is_active'] : true;
-
+                                    
         // Filtrar por empresa
         if (isset($params['company_id'])) {
             $company = CurrentCompany::get();

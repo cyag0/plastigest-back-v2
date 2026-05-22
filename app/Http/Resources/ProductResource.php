@@ -26,6 +26,7 @@ class ProductResource extends Resources
         // Get current location data from pivot table if available
         $currentLocationActive = $this->is_active; // fallback to product's is_active
         $currentStock = null;
+        $reservedStock = null;
         $minimumStock = null;
         $maximumStock = null;
 
@@ -37,6 +38,7 @@ class ProductResource extends Resources
             if ($currentLocation) {
                 $currentLocationActive = $currentLocation->pivot->active ?? false;
                 $currentStock = $currentLocation->pivot->current_stock ?? 0;
+                $reservedStock = $currentLocation->pivot->reserved_stock ?? 0;
                 $minimumStock = $currentLocation->pivot->minimum_stock ?? 0;
                 $maximumStock = $currentLocation->pivot->maximum_stock ?? null;
             }
@@ -57,6 +59,8 @@ class ProductResource extends Resources
             'is_active' => $currentLocationActive,
             'for_sale' => $this->for_sale,
             'current_stock' => (float) $currentStock ?? 0,
+            'reserved_stock' => (float) $reservedStock ?? 0,
+            'available_stock' => ((float) $currentStock ?? 0) - ((float) $reservedStock ?? 0),
             'minimum_stock' => (int) $minimumStock,
             'maximum_stock' => (int) $maximumStock,
             'created_at' => $this->created_at,

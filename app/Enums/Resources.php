@@ -18,6 +18,7 @@ enum Resources: string
     case MOVEMENTS = 'movements';
     case SALES = 'sales';
     case PURCHASES = 'purchases';
+    case SALES_ORDERS = 'sales_orders';
     case REPORTS = 'reports';
     case DASHBOARD = 'dashboard';
     case SETTINGS = 'settings';
@@ -49,6 +50,7 @@ enum Resources: string
             self::MOVEMENTS => 'Movimientos',
             self::SALES => 'Ventas',
             self::PURCHASES => 'Compras',
+            self::SALES_ORDERS => 'Pedidos de Venta',
             self::REPORTS => 'Reportes',
             self::DASHBOARD => 'Panel Principal',
             self::SETTINGS => 'Configuración',
@@ -82,6 +84,7 @@ enum Resources: string
             self::MOVEMENTS => 'Movimientos de inventario',
             self::SALES => 'Gestión de ventas',
             self::PURCHASES => 'Administración de compras',
+            self::SALES_ORDERS => 'Gestión de pedidos de venta',
             self::REPORTS => 'Generación de reportes',
             self::DASHBOARD => 'Tablero de control principal',
             self::SETTINGS => 'Configuraciones del sistema',
@@ -115,6 +118,7 @@ enum Resources: string
             self::MOVEMENTS => 'swap-horizontal',
             self::SALES => 'cash-register',
             self::PURCHASES => 'shopping',
+            self::SALES_ORDERS => 'clipboard-list',
             self::REPORTS => 'chart-line',
             self::DASHBOARD => 'view-dashboard',
             self::SETTINGS => 'cog',
@@ -158,6 +162,7 @@ enum Resources: string
             self::INVENTORY,
             self::SALES,
             self::PURCHASES,
+            self::SALES_ORDERS,
             self::REPORTS,
         ];
 

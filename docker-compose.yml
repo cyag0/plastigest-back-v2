@@ -20,6 +20,7 @@ services:
         volumes:
             - '.:/var/www/html'
             - './docker/supervisor/supervisord.conf:/etc/supervisor/conf.d/supervisord.conf'
+            - './docker/php/xdebug.ini:/etc/php/8.4/cli/conf.d/20-xdebug.ini'
         networks:
             - sail
         depends_on:

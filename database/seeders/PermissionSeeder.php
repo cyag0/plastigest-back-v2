@@ -26,7 +26,7 @@ class PermissionSeeder extends Seeder
             [Resources::COMPANIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
 
             // Empresa (para admins de empresa)
-            [Resources::WORKERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            // [Resources::WORKERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::LOCATIONS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::ROLES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::PERMISSIONS, [Actions::READ, Actions::LIST]],
@@ -43,6 +43,7 @@ class PermissionSeeder extends Seeder
             [Resources::MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::LIST]],
             [Resources::TRANSFERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::SALES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::SALES_ORDERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::PURCHASES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
             [Resources::PRODUCTION, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::EXPENSES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::EXPORT]],

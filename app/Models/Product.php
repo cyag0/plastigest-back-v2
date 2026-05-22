@@ -112,7 +112,7 @@ class Product extends Model
     public function locations()
     {
         return $this->belongsToMany(Location::class, 'product_location')
-            ->withPivot(['current_stock', 'minimum_stock', 'active', 'maximum_stock'])
+            ->withPivot(['current_stock', 'reserved_stock', 'minimum_stock', 'active', 'maximum_stock'])
             ->withTimestamps();
     }
 
@@ -123,7 +123,7 @@ class Product extends Model
     {
         return $this->belongsToMany(\App\Models\Admin\Location::class, 'product_location')
             ->wherePivot('active', true)
-            ->withPivot(['current_stock', 'minimum_stock', 'active'])
+            ->withPivot(['current_stock', 'reserved_stock', 'minimum_stock', 'active'])
             ->withTimestamps();
     }
 

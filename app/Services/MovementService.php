@@ -11,6 +11,11 @@ use Illuminate\Support\Facades\Log;
 
 class MovementService
 {
+    public function quantityInProductUnit(int $productId, int $unitId, float $quantity, ?int $packageId = null): float
+    {
+        return $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
+    }
+
     /**
      * Incrementar stock en una ubicación
      *

@@ -34,6 +34,7 @@ use App\Http\Controllers\ProductPackageController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\SalesReportController;
+use App\Http\Controllers\SalesOrderController;
 use App\Http\Controllers\CashMovementController;
 use App\Http\Controllers\CashClosingController;
 use App\Http\Controllers\ExpenseController;
@@ -193,6 +194,16 @@ Route::middleware('auth:sanctum')->group(function () {
             });
 
             Route::apiResource('sales', SaleController::class);
+
+            Route::prefix('sales-orders')->group(function () {
+                Route::get('initial-data', [SalesOrderController::class, 'getInitialData']);
+                Route::post('{id}/prepare', [SalesOrderController::class, 'prepare']);
+                Route::post('{id}/ship', [SalesOrderController::class, 'ship']);
+                Route::post('{id}/deliver', [SalesOrderController::class, 'deliver']);
+                Route::post('{id}/cancel', [SalesOrderController::class, 'cancel']);
+            });
+
+            Route::apiResource('sales-orders', SalesOrderController::class);
 
             // Cash Movement Routes
             Route::get('cash-movements/stats', [CashMovementController::class, 'stats']);
