@@ -9,6 +9,7 @@ use App\Models\ProductPackage;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderDetail;
 use App\Models\Unit;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
@@ -30,6 +31,14 @@ class SalesOrderStockServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        $user = User::create([
+            'name' => 'Tester',
+            'email' => 'tester@example.com',
+            'password' => bcrypt('secret'),
+            'is_active' => true,
+        ]);
+        $this->actingAs($user);
 
         $this->company = Company::create([
             'name' => 'Empresa Demo',
@@ -239,5 +248,61 @@ class SalesOrderStockServiceTest extends TestCase
         $this->assertSame('0.000', number_format((float) $reservedStock, 3, '.', ''));
         $this->assertNull($order->fresh()->reserved_at);
         $this->assertSame('0.000', $order->fresh('details')->details[0]->reserved_quantity_base);
+    }
+
+    public function test_checkout_releases_reservation_and_decrements_real_stock(): void
+    {
+        $order = SalesOrder::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'order_number' => 'SOR-TEST-0003',
+            'order_date' => now()->toDateString(),
+            'channel' => 'admin',
+            'service_mode' => 'delivery',
+            'status' => 'preparing',
+            'reserved_at' => now(),
+            'subtotal' => 20,
+            'tax_amount' => 0,
+            'discount_amount' => 0,
+            'total_amount' => 20,
+        ]);
+
+        SalesOrderDetail::create([
+            'sales_order_id' => $order->id,
+            'product_id' => $this->product->id,
+            'package_id' => null,
+            'unit_id' => $this->kilogram->id,
+            'requested_quantity' => 2,
+            'reserved_quantity_base' => 2,
+            'unit_price' => 10,
+            'line_subtotal' => 20,
+            'line_total' => 20,
+        ]);
+
+        $this->product->locations()->updateExistingPivot($this->location->id, [
+            'reserved_stock' => 2,
+            'updated_at' => now(),
+        ]);
+
+        $service = app()->make('App\\Services\\SalesOrderStockService');
+        $sale = $service->checkoutOrder($order->fresh('details'), [
+            'payment_method' => 'cash',
+            'paid_amount' => 20,
+        ]);
+
+        $pivot = $this->product->fresh()
+            ->locations()
+            ->where('location_id', $this->location->id)
+            ->firstOrFail()
+            ->pivot;
+
+        $this->assertSame('4.000', number_format((float) $pivot->current_stock, 3, '.', ''));
+        $this->assertSame('0.000', number_format((float) $pivot->reserved_stock, 3, '.', ''));
+
+        $order = $order->fresh();
+        $this->assertSame('delivered', $order->status->value);
+        $this->assertSame($sale->id, $order->sale_id);
+        $this->assertNotNull($order->delivered_at);
+        $this->assertSame('closed', $sale->status->value);
     }
 }

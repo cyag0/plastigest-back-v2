@@ -201,6 +201,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('{id}/ship', [SalesOrderController::class, 'ship']);
                 Route::post('{id}/deliver', [SalesOrderController::class, 'deliver']);
                 Route::post('{id}/cancel', [SalesOrderController::class, 'cancel']);
+                Route::post('{id}/checkout', [SalesOrderController::class, 'checkout']);
             });
 
             Route::apiResource('sales-orders', SalesOrderController::class);

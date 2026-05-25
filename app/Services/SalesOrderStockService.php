@@ -2,8 +2,13 @@
 
 namespace App\Services;
 
+use App\Enums\SaleStatus;
+use App\Enums\SalesOrderStatus;
 use App\Models\Product;
+use App\Models\Sale;
+use App\Models\SaleDetail;
 use App\Models\SalesOrder;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -198,6 +203,122 @@ class SalesOrderStockService
             }
 
             $order->forceFill(['reserved_at' => null])->save();
+        });
+    }
+
+    /**
+     * Convert a sales order into a closed sale, releasing the reservation
+     * and decrementing real stock atomically.
+     *
+     * @param  array{payment_method?: string, paid_amount?: float|int, notes?: string|null}  $payment
+     */
+    public function checkoutOrder(SalesOrder $order, array $payment = []): Sale
+    {
+        if ($order->status === SalesOrderStatus::CANCELLED || $order->status === SalesOrderStatus::DELIVERED) {
+            throw ValidationException::withMessages([
+                'status' => ['El pedido ya no puede cobrarse en su estado actual.'],
+            ]);
+        }
+
+        if ($order->sale_id) {
+            throw ValidationException::withMessages([
+                'status' => ['El pedido ya está vinculado a una venta.'],
+            ]);
+        }
+
+        $order->loadMissing('details');
+
+        if ($order->details->isEmpty()) {
+            throw ValidationException::withMessages([
+                'details' => ['El pedido no tiene productos para cobrar.'],
+            ]);
+        }
+
+        return DB::transaction(function () use ($order, $payment): Sale {
+            // 1. Release any pending reservation so the sale's decrement
+            //    operates on the same baseline as the previously available stock.
+            $this->releaseOrder($order);
+            $order->refresh();
+            $order->loadMissing('details');
+
+            // 2. Build a fresh Sale linked to the order.
+            $subtotal = (float) $order->details->sum('line_subtotal');
+            $total = (float) ($order->total_amount ?? $subtotal);
+            $paymentMethod = $payment['payment_method'] ?? 'cash';
+            $paidAmount = isset($payment['paid_amount']) ? (float) $payment['paid_amount'] : $total;
+            $paymentStatus = $paidAmount >= $total
+                ? 'paid'
+                : ($paidAmount > 0 ? 'partial' : 'pending');
+
+            $sale = Sale::create([
+                'company_id' => $order->company_id,
+                'location_id' => $order->location_id,
+                'user_id' => Auth::id() ?? $order->updated_by ?? $order->created_by,
+                'customer_id' => $order->customer_id,
+                'sale_date' => now()->toDateString(),
+                'status' => SaleStatus::DRAFT,
+                'subtotal' => $subtotal,
+                'tax' => 0,
+                'discount' => 0,
+                'total' => $total,
+                'payment_method' => $paymentMethod,
+                'payment_status' => $paymentStatus,
+                'paid_amount' => $paidAmount,
+                'payment_history' => $paidAmount > 0
+                    ? [[
+                        'amount' => $paidAmount,
+                        'payment_method' => $paymentMethod,
+                        'date' => now()->toDateTimeString(),
+                        'notes' => $payment['notes'] ?? null,
+                    ]]
+                    : [],
+                'content' => [
+                    'customer_name' => $order->customer_name_snapshot,
+                    'customer_phone' => $order->customer_phone_snapshot,
+                    'customer_email' => $order->customer_email_snapshot,
+                    'sales_order_id' => $order->id,
+                    'sales_order_number' => $order->order_number,
+                    'notes' => $payment['notes'] ?? $order->notes,
+                ],
+                'notes' => $payment['notes'] ?? $order->notes,
+            ]);
+
+            foreach ($order->details as $detail) {
+                $lineSubtotal = (float) $detail->line_subtotal;
+                $lineTotal = (float) $detail->line_total;
+
+                SaleDetail::create([
+                    'sale_id' => $sale->id,
+                    'product_id' => $detail->product_id,
+                    'package_id' => $detail->package_id,
+                    'unit_id' => $detail->unit_id,
+                    'quantity' => $detail->requested_quantity,
+                    'unit_price' => $detail->unit_price,
+                    'subtotal' => $lineSubtotal,
+                    'tax' => 0,
+                    'discount' => 0,
+                    'total' => $lineTotal,
+                ]);
+            }
+
+            // 3. Close the sale so real stock is decremented via MovementService.
+            $sale->load('details');
+            $sale->transitionTo(SaleStatus::CLOSED);
+
+            // 4. Link the sale and mark the order as delivered.
+            $order->forceFill([
+                'sale_id' => $sale->id,
+                'status' => SalesOrderStatus::DELIVERED,
+                'delivered_at' => $order->delivered_at ?: now(),
+            ])->save();
+
+            foreach ($order->details as $detail) {
+                $detail->forceFill([
+                    'delivered_quantity' => $detail->requested_quantity,
+                ])->save();
+            }
+
+            return $sale->fresh('details');
         });
     }
 }

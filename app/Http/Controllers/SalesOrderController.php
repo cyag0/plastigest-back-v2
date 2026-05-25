@@ -298,6 +298,51 @@ class SalesOrderController extends CrudController
         return $this->transition($id, SalesOrderStatus::CANCELLED, 'Pedido cancelado');
     }
 
+    public function checkout(Request $request, int $id)
+    {
+        if (!$this->canEdit() || !CurrentWorker::hasPermission('sales_orders_update')) {
+            return $this->forbiddenResponse('cobrar este pedido');
+        }
+
+        $validated = $request->validate([
+            'payment_method' => 'sometimes|in:cash,card,transfer,credit',
+            'paid_amount' => 'sometimes|numeric|min:0',
+            'notes' => 'nullable|string',
+        ]);
+
+        try {
+            $order = SalesOrder::with($this->getShowRelations())->findOrFail($id);
+            $stockService = app()->make('App\\Services\\SalesOrderStockService');
+            $sale = $stockService->checkoutOrder($order, $validated);
+
+            $order->refresh();
+            $order->load($this->getShowRelations());
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Pedido cobrado y convertido a venta',
+                'data' => new $this->resource($order, ['editing' => true]),
+                'sale' => [
+                    'id' => $sale->id,
+                    'sale_number' => $sale->sale_number,
+                    'total' => $sale->total,
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No se pudo cobrar el pedido',
+                'errors' => $exception->errors(),
+            ], 422);
+        } catch (\Throwable $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al cobrar el pedido',
+                'error' => $exception->getMessage(),
+            ], 422);
+        }
+    }
+
     private function transition(int $id, SalesOrderStatus $targetStatus, string $message)
     {
         if (!$this->canEdit() || !CurrentWorker::hasPermission('sales_orders_update')) {
