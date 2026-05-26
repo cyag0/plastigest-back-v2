@@ -10,6 +10,7 @@ use App\Models\InventoryTransfer;
 use App\Models\InventoryTransferDetail;
 use App\Models\InventoryAdjustmentDetail;
 use App\Http\Resources\InventoryTransferResource;
+use App\Services\TaskService;
 use App\Services\TransferService;
 use App\Utils\AppUploadUtil;
 use App\Enums\TransferStatus;
@@ -24,10 +25,12 @@ use Exception;
 class InventoryTransferController extends Controller
 {
     protected TransferService $transferService;
+    protected TaskService $taskService;
 
-    public function __construct(TransferService $transferService)
+    public function __construct(TransferService $transferService, TaskService $taskService)
     {
         $this->transferService = $transferService;
+        $this->taskService = $taskService;
     }
 
     /**
@@ -237,6 +240,15 @@ class InventoryTransferController extends Controller
                 'details.product.mainImage'
             ]);
 
+            try {
+                $this->taskService->createFromInventoryTransfer($transfer, 'approve');
+            } catch (Exception $taskException) {
+                Log::warning('Could not create approve_transfer task after transfer creation', [
+                    'transfer_id' => $transfer->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'message' => 'Transferencia creada exitosamente',
                 'data' => new InventoryTransferResource($transfer),
@@ -414,6 +426,19 @@ class InventoryTransferController extends Controller
 
             $transfer->cancel('Cancelada por el usuario');
 
+            try {
+                $this->taskService->cancelRelatedTasks(
+                    InventoryTransfer::class,
+                    (int) $transfer->id,
+                    ['approve_transfer', 'send_transfer', 'receive_transfer']
+                );
+            } catch (Exception $taskException) {
+                Log::warning('Could not cancel related tasks for cancelled transfer', [
+                    'transfer_id' => $transfer->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'message' => 'Transferencia cancelada exitosamente',
             ]);
@@ -439,6 +464,21 @@ class InventoryTransferController extends Controller
             $transfer = InventoryTransfer::findOrFail($id);
 
             $transfer = $this->transferService->approve($transfer, $request->all());
+
+            try {
+                $this->taskService->completeRelatedTask(
+                    InventoryTransfer::class,
+                    (int) $transfer->id,
+                    'approve_transfer',
+                    Auth::id() ? (int) Auth::id() : null
+                );
+                $this->taskService->createFromInventoryTransfer($transfer, 'send');
+            } catch (Exception $taskException) {
+                Log::warning('Could not advance transfer tasks after approve', [
+                    'transfer_id' => $transfer->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Transferencia aprobada exitosamente',
@@ -476,6 +516,19 @@ class InventoryTransferController extends Controller
             $transfer = InventoryTransfer::findOrFail($id);
 
             $transfer = $this->transferService->reject($transfer, $request->rejection_reason);
+
+            try {
+                $this->taskService->cancelRelatedTasks(
+                    InventoryTransfer::class,
+                    (int) $transfer->id,
+                    ['approve_transfer', 'send_transfer', 'receive_transfer']
+                );
+            } catch (Exception $taskException) {
+                Log::warning('Could not cancel transfer tasks after reject', [
+                    'transfer_id' => $transfer->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Transferencia rechazada',
@@ -592,6 +645,21 @@ class InventoryTransferController extends Controller
 
             $transfer->content = $content;
             $transfer->save();
+
+            try {
+                $this->taskService->completeRelatedTask(
+                    InventoryTransfer::class,
+                    (int) $transfer->id,
+                    'send_transfer',
+                    Auth::id() ? (int) Auth::id() : null
+                );
+                $this->taskService->createFromInventoryTransfer($transfer, 'receive');
+            } catch (Exception $taskException) {
+                Log::warning('Could not advance transfer tasks after ship', [
+                    'transfer_id' => $transfer->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Transferencia enviada exitosamente',
@@ -815,6 +883,29 @@ class InventoryTransferController extends Controller
 
             $transfer->content = $content;
             $transfer->save();
+
+            $differenceTasksData = array_values(array_filter(
+                $auditItems,
+                static fn(array $item): bool => (float) ($item['difference'] ?? 0) > 0
+            ));
+
+            try {
+                $this->taskService->completeRelatedTask(
+                    InventoryTransfer::class,
+                    (int) $transfer->id,
+                    'receive_transfer',
+                    Auth::id() ? (int) Auth::id() : null
+                );
+
+                if ($differenceTasksData !== []) {
+                    $this->taskService->createTransferDiscrepancyTask($transfer, $differenceTasksData);
+                }
+            } catch (Exception $taskException) {
+                Log::warning('Could not finalize transfer tasks after receive', [
+                    'transfer_id' => $transfer->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Transferencia recibida exitosamente',

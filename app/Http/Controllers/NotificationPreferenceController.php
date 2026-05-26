@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Admin\Worker;
 use App\Models\NotificationPreference;
+use App\Models\User;
 use App\Notifications\Services\TemplateResolver;
 use App\Support\CurrentCompany;
 use Illuminate\Http\Request;
@@ -88,9 +88,9 @@ class NotificationPreferenceController extends Controller
 
     /**
      * Return the users eligible to receive a specific event type notification.
-     * These are the active workers in the company who have the required permission.
+     * These are the active users in the company/location who have the required permission.
      */
-    public function eligibleUsers(string $eventType, TemplateResolver $resolver)
+    public function eligibleUsers(Request $request, string $eventType, TemplateResolver $resolver)
     {
         $validEventTypes = array_keys(NotificationPreference::getDefaults());
 
@@ -98,23 +98,43 @@ class NotificationPreferenceController extends Controller
             return response()->json(['success' => false, 'message' => 'Tipo de evento inválido'], 422);
         }
 
+        $validated = $request->validate([
+            'location_id' => 'nullable|integer|exists:locations,id',
+        ]);
+
         $company = CurrentCompany::get();
 
         // Resolve the permission required for this event type
         $template = $resolver->resolve($eventType, []);
         $permission = $template->getDefaultPermission();
+        $locationId = $validated['location_id'] ?? null;
 
-        $query = Worker::where('company_id', $company->id)
-            ->where('is_active', true)
-            ->with('user');
+        $query = User::where('is_active', true)
+            ->whereHas('companies', fn($q) => $q->where('companies.id', $company->id));
+
+        if ($locationId) {
+            $query->whereHas('locationRoles', fn($q) => $q->where('locations.id', $locationId));
+        }
 
         if (!empty($permission)) {
-            $query->whereHas('role.permissions', fn($q) => $q->where('name', $permission));
+            $query->where(function ($q) use ($permission, $locationId) {
+                $q->whereHas('roles.permissions', fn($roleQuery) => $roleQuery->where('name', $permission))
+                    ->orWhereExists(function ($subquery) use ($permission, $locationId) {
+                        $subquery->selectRaw('1')
+                            ->from('user_location_roles')
+                            ->join('rol_permission', 'user_location_roles.role_id', '=', 'rol_permission.role_id')
+                            ->join('permissions', 'rol_permission.permission_id', '=', 'permissions.id')
+                            ->whereColumn('user_location_roles.user_id', 'users.id')
+                            ->where('permissions.name', $permission);
+
+                        if ($locationId) {
+                            $subquery->where('user_location_roles.location_id', $locationId);
+                        }
+                    });
+            });
         }
 
         $users = $query->get()
-            ->pluck('user')
-            ->filter()
             ->map(fn($user) => [
                 'id'    => $user->id,
                 'name'  => $user->name,

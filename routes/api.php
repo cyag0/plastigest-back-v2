@@ -336,6 +336,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Rutas de tareas
             Route::prefix('tasks')->group(function () {
+                Route::get('eligible-users', [TaskController::class, 'eligibleUsers']);
                 Route::get('statistics', [TaskController::class, 'statistics']);
                 Route::post('{task}/change-status', [TaskController::class, 'changeStatus']);
                 Route::post('{task}/comments', [TaskController::class, 'addComment']);

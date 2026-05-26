@@ -4,7 +4,6 @@ namespace App\Notifications\Services;
 
 use App\Models\NotificationPreference;
 use App\Models\User;
-use App\Models\Admin\Worker;
 use Illuminate\Support\Collection;
 
 class RecipientResolver
@@ -22,7 +21,8 @@ class RecipientResolver
         int $companyId,
         string $eventType,
         string $defaultPermission,
-        ?int $specificUserId = null
+        ?int $specificUserId = null,
+        ?int $locationId = null,
     ): Collection {
         if ($specificUserId !== null) {
             $user = User::find($specificUserId);
@@ -44,16 +44,28 @@ class RecipientResolver
             return collect();
         }
 
-        $users = Worker::where('company_id', $companyId)
-            ->where('is_active', true)
-            ->whereHas('role.permissions', fn($q) => $q->where('name', $permissionName))
-            ->with('user')
-            ->get()
-            ->pluck('user')
-            ->filter();
+        $users = User::where('is_active', true)
+            ->whereHas('companies', fn($q) => $q->where('companies.id', $companyId))
+            ->when($locationId, fn($q) => $q->whereHas('locationRoles', fn($locationQuery) => $locationQuery->where('locations.id', $locationId)))
+            ->where(function ($q) use ($permissionName, $locationId) {
+                $q->whereHas('roles.permissions', fn($roleQuery) => $roleQuery->where('name', $permissionName))
+                    ->orWhereExists(function ($subquery) use ($permissionName, $locationId) {
+                        $subquery->selectRaw('1')
+                            ->from('user_location_roles')
+                            ->join('rol_permission', 'user_location_roles.role_id', '=', 'rol_permission.role_id')
+                            ->join('permissions', 'rol_permission.permission_id', '=', 'permissions.id')
+                            ->whereColumn('user_location_roles.user_id', 'users.id')
+                            ->where('permissions.name', $permissionName);
+
+                        if ($locationId) {
+                            $subquery->where('user_location_roles.location_id', $locationId);
+                        }
+                    });
+            })
+            ->get();
 
         // If the company configured a specific user list, restrict to those users only.
-        if ($pref && is_array($pref->allowed_user_ids) && count($pref->allowed_user_ids) > 0) {
+        if ($pref && is_array($pref->allowed_user_ids)) {
             $allowed = $pref->allowed_user_ids;
             $users = $users->filter(fn($user) => in_array($user->id, $allowed));
         }

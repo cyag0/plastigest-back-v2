@@ -6,6 +6,7 @@ use App\Models\PurchaseV2;
 use App\Models\PurchaseDetailV2;
 use App\Services\CashMovementService;
 use App\Services\MovementService;
+use App\Services\TaskService;
 use App\Notifications\NotificationEngine;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -20,6 +21,10 @@ use Illuminate\Support\Facades\Log;
 
 class PurchaseV2Controller extends Controller
 {
+    public function __construct(
+        private TaskService $taskService
+    ) {}
+
     /**
      * Crear o actualizar una compra en estado draft
      * Se llama cada vez que se agrega/modifica/elimina un producto
@@ -321,6 +326,15 @@ class PurchaseV2Controller extends Controller
                 'status' => PurchaseV2::STATUS_IN_TRANSIT,
             ]);
 
+            try {
+                $this->taskService->createFromPurchaseV2($purchase);
+            } catch (Exception $taskException) {
+                Log::warning('Could not create receive_purchase task for PurchaseV2 in transit', [
+                    'purchase_id' => $purchase->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Compra marcada como en tránsito',
@@ -385,6 +399,41 @@ class PurchaseV2Controller extends Controller
 
             // Notificar recepción de compra
             $purchase->load(['supplier', 'details.product']);
+
+            $discrepancies = $purchase->details
+                ->filter(function ($detail) {
+                    return (float) $detail->quantity_received < (float) $detail->quantity;
+                })
+                ->map(function ($detail) {
+                    return [
+                        'detail_id' => $detail->id,
+                        'product_id' => $detail->product_id,
+                        'product_name' => $detail->product?->name ?? 'Producto',
+                        'ordered_quantity' => (float) $detail->quantity,
+                        'received_quantity' => (float) $detail->quantity_received,
+                    ];
+                })
+                ->values()
+                ->toArray();
+
+            try {
+                $this->taskService->completeRelatedTask(
+                    PurchaseV2::class,
+                    (int) $purchase->id,
+                    'receive_purchase',
+                    Auth::id() ? (int) Auth::id() : null
+                );
+
+                if ($discrepancies !== []) {
+                    $this->taskService->createPurchaseDiscrepancyTask($purchase, $discrepancies);
+                }
+            } catch (Exception $taskException) {
+                Log::warning('Could not sync tasks after PurchaseV2 receive', [
+                    'purchase_id' => $purchase->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
+
             $products = $purchase->details->map(function ($detail) {
                 return [
                     'name'     => $detail->product?->name ?? '',
@@ -634,6 +683,19 @@ class PurchaseV2Controller extends Controller
             $purchase->update([
                 'status' => PurchaseV2::STATUS_CANCELLED,
             ]);
+
+            try {
+                $this->taskService->cancelRelatedTasks(
+                    PurchaseV2::class,
+                    (int) $purchase->id,
+                    ['receive_purchase']
+                );
+            } catch (Exception $taskException) {
+                Log::warning('Could not cancel related tasks for cancelled PurchaseV2', [
+                    'purchase_id' => $purchase->id,
+                    'error' => $taskException->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'success' => true,

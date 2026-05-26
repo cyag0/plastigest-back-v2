@@ -33,7 +33,7 @@ class GenericNotificationMail extends Mailable
             with: array_merge($this->template->getEmailData(), [
                 'recipient' => $this->recipient,
                 'title'     => $this->template->getTitle(),
-                'message'   => $this->template->getMessage(),
+                'notificationMessage' => $this->template->getMessage(),
                 'severity'  => $this->template->getSeverity(),
                 'eventType' => $this->template->getEventType(),
             ]),

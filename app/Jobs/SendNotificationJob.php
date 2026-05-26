@@ -39,6 +39,7 @@ class SendNotificationJob implements ShouldQueue
                 $this->eventType,
                 $template->getDefaultPermission(),
                 $this->specificUserId,
+                $this->resolveLocationId(),
             );
 
             foreach ($recipients as $user) {
@@ -55,5 +56,22 @@ class SendNotificationJob implements ShouldQueue
 
             throw $e; // Let the queue retry
         }
+    }
+
+    private function resolveLocationId(): ?int
+    {
+        if (isset($this->contextData['location_id']) && is_numeric($this->contextData['location_id'])) {
+            return (int) $this->contextData['location_id'];
+        }
+
+        foreach (['location' => 'id', 'task' => 'location_id', 'purchase' => 'location_id', 'inventory_count' => 'location_id', 'adjustment' => 'location_id'] as $key => $property) {
+            $model = $this->contextData[$key] ?? null;
+
+            if ($model && isset($model->{$property}) && is_numeric($model->{$property})) {
+                return (int) $model->{$property};
+            }
+        }
+
+        return null;
     }
 }

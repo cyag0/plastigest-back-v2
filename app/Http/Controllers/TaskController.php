@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Task;
 use App\Models\TaskComment;
+use App\Models\User;
 use App\Services\TaskService;
 use App\Notifications\NotificationEngine;
 use App\Support\CurrentCompany;
@@ -16,6 +17,56 @@ class TaskController extends Controller
     public function __construct(
         private TaskService $taskService
     ) {}
+
+    /**
+     * List users from the current location who can receive task assignments.
+     */
+    public function eligibleUsers(Request $request)
+    {
+        if (!CurrentWorker::hasPermission('tasks_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $validated = $request->validate([
+            'location_id' => 'required|integer|exists:locations,id',
+            'type' => 'nullable|in:inventory_count,receive_purchase,approve_transfer,send_transfer,receive_transfer,sales_report,stock_check,adjustment_review,custom',
+        ]);
+
+        $company = CurrentCompany::get();
+        $locationId = (int) $validated['location_id'];
+
+        $users = User::where('is_active', true)
+            ->whereHas('companies', fn($q) => $q->where('companies.id', $company->id))
+            ->whereHas('locationRoles', fn($q) => $q->where('locations.id', $locationId))
+            ->get(['id', 'name', 'email']);
+
+        $userIds = $users->pluck('id');
+
+        $taskCountsQuery = Task::where('company_id', $company->id)
+            ->where('location_id', $locationId)
+            ->whereIn('assigned_to', $userIds)
+            ->whereNotIn('status', ['completed', 'cancelled']);
+
+        if (!empty($validated['type'])) {
+            $taskCountsQuery->where('type', $validated['type']);
+        }
+
+        $taskCounts = $taskCountsQuery
+            ->select('assigned_to', DB::raw('count(*) as open_tasks_count'))
+            ->groupBy('assigned_to')
+            ->pluck('open_tasks_count', 'assigned_to');
+
+        $users = $users
+            ->map(fn($user) => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'open_tasks_count' => (int) ($taskCounts[$user->id] ?? 0),
+            ])
+            ->values();
+
+        return response()->json(['success' => true, 'data' => $users]);
+    }
 
     /**
      * List tasks with filters

@@ -1,7 +1,7 @@
 @extends('emails.notifications.layouts.notification')
 
 @section('body')
-    <p>{{ $message }}</p>
+    <p>{{ $notificationMessage }}</p>
 
     <div class="details">
         <table>

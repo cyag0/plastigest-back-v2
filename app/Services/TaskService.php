@@ -5,12 +5,15 @@ namespace App\Services;
 use App\Models\Task;
 use App\Models\User;
 use App\Models\Purchase;
+use App\Models\PurchaseV2;
 use App\Models\InventoryCount;
 use App\Models\Adjustment;
 use App\Models\Transfer;
+use App\Models\InventoryTransfer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Notifications\NotificationEngine;
+use InvalidArgumentException;
 
 class TaskService
 {
@@ -162,6 +165,268 @@ class TaskService
         return $task;
     }
 
+    /**
+     * Create task when a modern purchase (PurchaseV2) enters in_transit.
+     */
+    public function createFromPurchaseV2(PurchaseV2 $purchase): Task
+    {
+        $purchase->loadMissing(['supplier', 'details.product']);
+
+        $existingTask = $this->findOpenRelatedTask(
+            PurchaseV2::class,
+            (int) $purchase->id,
+            'receive_purchase'
+        );
+
+        if ($existingTask) {
+            return $existingTask;
+        }
+
+        $supplierName = $purchase->supplier?->name ?? 'Proveedor';
+
+        $task = Task::create([
+            'company_id' => $purchase->company_id,
+            'location_id' => $purchase->location_id,
+            'title' => "Recibir compra {$purchase->purchase_number}",
+            'description' => "Recibir y verificar productos de la compra a {$supplierName}",
+            'type' => 'receive_purchase',
+            'priority' => 'high',
+            'assigned_by' => $purchase->user_id,
+            'due_date' => $purchase->expected_delivery_date ?? now()->addDays(3),
+            'related_type' => PurchaseV2::class,
+            'related_id' => $purchase->id,
+            'metadata' => [
+                'purchase_id' => $purchase->id,
+                'purchase_number' => $purchase->purchase_number,
+                'supplier_name' => $supplierName,
+                'total' => $purchase->total,
+                'items_count' => $purchase->details->count(),
+            ],
+        ]);
+
+        $this->autoAssignTask($task);
+
+        return $task;
+    }
+
+    /**
+     * Create stock check task for receiving discrepancies on PurchaseV2.
+     */
+    public function createPurchaseDiscrepancyTask(PurchaseV2 $purchase, array $discrepancies): ?Task
+    {
+        if ($discrepancies === []) {
+            return null;
+        }
+
+        $supplierName = $purchase->supplier?->name ?? 'Proveedor';
+        $discrepanciesCount = count($discrepancies);
+
+        $lines = collect($discrepancies)
+            ->take(10)
+            ->map(function (array $item): string {
+                $name = $item['product_name'] ?? 'Producto';
+                $ordered = (float) ($item['ordered_quantity'] ?? 0);
+                $received = (float) ($item['received_quantity'] ?? 0);
+                $difference = max(0, $ordered - $received);
+
+                return "- {$name}: faltante {$difference} (pedido {$ordered}, recibido {$received})";
+            })
+            ->implode("\n");
+
+        $task = Task::create([
+            'company_id' => $purchase->company_id,
+            'location_id' => $purchase->location_id,
+            'title' => "Revisar diferencias de recepcion compra {$purchase->purchase_number}",
+            'description' => "Se detectaron {$discrepanciesCount} diferencia(s) al recibir la compra de {$supplierName}.\n\n{$lines}",
+            'type' => 'stock_check',
+            'priority' => $discrepanciesCount > 5 ? 'urgent' : 'high',
+            'assigned_by' => $purchase->received_by ?? $purchase->user_id,
+            'due_date' => now()->addDay(),
+            'related_type' => PurchaseV2::class,
+            'related_id' => $purchase->id,
+            'metadata' => [
+                'source' => 'purchase_receive_discrepancy',
+                'purchase_id' => $purchase->id,
+                'purchase_number' => $purchase->purchase_number,
+                'supplier_name' => $supplierName,
+                'discrepancies_count' => $discrepanciesCount,
+                'discrepancies' => $discrepancies,
+            ],
+        ]);
+
+        $this->autoAssignTask($task);
+
+        return $task;
+    }
+
+    /**
+     * Create transfer workflow task for modern InventoryTransfer flow.
+     */
+    public function createFromInventoryTransfer(InventoryTransfer $transfer, string $action = 'approve'): Task
+    {
+        $types = [
+            'approve' => 'approve_transfer',
+            'send' => 'send_transfer',
+            'receive' => 'receive_transfer',
+        ];
+
+        if (!isset($types[$action])) {
+            throw new InvalidArgumentException("Unsupported transfer task action: {$action}");
+        }
+
+        $transfer->loadMissing(['fromLocation', 'toLocation', 'details']);
+
+        $taskType = $types[$action];
+
+        $existingTask = $this->findOpenRelatedTask(
+            InventoryTransfer::class,
+            (int) $transfer->id,
+            $taskType
+        );
+
+        if ($existingTask) {
+            return $existingTask;
+        }
+
+        $originName = $transfer->fromLocation?->name ?? 'Origen';
+        $destinationName = $transfer->toLocation?->name ?? 'Destino';
+
+        $titles = [
+            'approve' => "Aprobar transferencia {$transfer->transfer_number}",
+            'send' => "Enviar transferencia {$transfer->transfer_number}",
+            'receive' => "Recibir transferencia {$transfer->transfer_number}",
+        ];
+
+        $descriptions = [
+            'approve' => "Revisar y aprobar transferencia de {$originName} hacia {$destinationName}",
+            'send' => "Preparar y enviar productos de {$originName} hacia {$destinationName}",
+            'receive' => "Recibir y verificar productos enviados desde {$originName}",
+        ];
+
+        $task = Task::create([
+            'company_id' => $transfer->company_id,
+            'location_id' => $action === 'receive' ? $transfer->to_location_id : $transfer->from_location_id,
+            'title' => $titles[$action],
+            'description' => $descriptions[$action],
+            'type' => $taskType,
+            'priority' => 'high',
+            'assigned_by' => $transfer->requested_by,
+            'due_date' => now()->addDays($action === 'approve' ? 1 : 2),
+            'related_type' => InventoryTransfer::class,
+            'related_id' => $transfer->id,
+            'metadata' => [
+                'transfer_id' => $transfer->id,
+                'transfer_number' => $transfer->transfer_number,
+                'origin' => $originName,
+                'destination' => $destinationName,
+                'items_count' => $transfer->details->count(),
+                'action' => $action,
+            ],
+        ]);
+
+        $this->autoAssignTask($task);
+
+        return $task;
+    }
+
+    /**
+     * Create stock check task when a transfer is received with differences.
+     */
+    public function createTransferDiscrepancyTask(InventoryTransfer $transfer, array $differences): ?Task
+    {
+        if ($differences === []) {
+            return null;
+        }
+
+        $transfer->loadMissing(['fromLocation', 'toLocation']);
+
+        $originName = $transfer->fromLocation?->name ?? 'Origen';
+        $destinationName = $transfer->toLocation?->name ?? 'Destino';
+
+        $lines = collect($differences)
+            ->take(10)
+            ->map(function (array $item): string {
+                $detailId = $item['detail_id'] ?? null;
+                $shipped = (float) ($item['quantity_shipped'] ?? 0);
+                $received = (float) ($item['quantity_received'] ?? 0);
+                $difference = (float) ($item['difference'] ?? 0);
+
+                return "- Detalle #{$detailId}: faltante {$difference} (enviado {$shipped}, recibido {$received})";
+            })
+            ->implode("\n");
+
+        $task = Task::create([
+            'company_id' => $transfer->company_id,
+            'location_id' => $transfer->to_location_id,
+            'title' => "Revisar diferencias de transferencia {$transfer->transfer_number}",
+            'description' => "La transferencia de {$originName} hacia {$destinationName} se recibio con diferencias.\n\n{$lines}",
+            'type' => 'stock_check',
+            'priority' => 'urgent',
+            'assigned_by' => $transfer->requested_by,
+            'due_date' => now()->addDay(),
+            'related_type' => InventoryTransfer::class,
+            'related_id' => $transfer->id,
+            'metadata' => [
+                'source' => 'transfer_receive_discrepancy',
+                'transfer_id' => $transfer->id,
+                'transfer_number' => $transfer->transfer_number,
+                'differences_count' => count($differences),
+                'differences' => $differences,
+            ],
+        ]);
+
+        $this->autoAssignTask($task);
+
+        return $task;
+    }
+
+    /**
+     * Complete the latest open task of a specific type related to a model.
+     */
+    public function completeRelatedTask(string $relatedType, int $relatedId, string $taskType, ?int $completedBy = null): ?Task
+    {
+        $task = $this->findOpenRelatedTask($relatedType, $relatedId, $taskType);
+
+        if (!$task) {
+            return null;
+        }
+
+        $payload = [
+            'status' => 'completed',
+            'completed_at' => now(),
+        ];
+
+        if ($completedBy) {
+            $payload['completed_by'] = $completedBy;
+        }
+
+        if ($task->status === 'pending' && !$task->started_at) {
+            $payload['started_at'] = now();
+        }
+
+        $task->update($payload);
+
+        return $task;
+    }
+
+    /**
+     * Cancel open tasks for a related model.
+     */
+    public function cancelRelatedTasks(string $relatedType, int $relatedId, array $taskTypes = []): int
+    {
+        $query = Task::where('related_type', $relatedType)
+            ->where('related_id', $relatedId)
+            ->whereNotIn('status', ['completed', 'cancelled']);
+
+        if ($taskTypes !== []) {
+            $query->whereIn('type', $taskTypes);
+        }
+
+        return $query->update([
+            'status' => 'cancelled',
+        ]);
+    }
+
 
     /**
      * Create recurring task (inventory count, reports, etc.)
@@ -214,10 +479,9 @@ class TaskService
      */
     private function autoAssignTask(Task $task): void
     {
-        // Get users from the task's location
-        $users = User::where('company_id', $task->company_id)
-            ->where('location_id', $task->location_id)
-            ->where('is_active', true)
+        $users = User::where('is_active', true)
+            ->whereHas('companies', fn($q) => $q->where('companies.id', $task->company_id))
+            ->when($task->location_id, fn($q) => $q->whereHas('locationRoles', fn($locationQuery) => $locationQuery->where('locations.id', $task->location_id)))
             ->get();
 
         // Assign to user with fewest pending tasks
@@ -238,14 +502,40 @@ class TaskService
     }
 
     /**
+     * Find latest open task by related model and type.
+     */
+    private function findOpenRelatedTask(string $relatedType, int $relatedId, string $taskType): ?Task
+    {
+        return Task::where('related_type', $relatedType)
+            ->where('related_id', $relatedId)
+            ->where('type', $taskType)
+            ->whereNotIn('status', ['completed', 'cancelled'])
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    /**
      * Auto-assign to location manager
      */
     private function autoAssignToManager(Task $task): void
     {
-        $manager = User::where('company_id', $task->company_id)
-            ->where('location_id', $task->location_id)
-            ->where('role', 'manager')
-            ->where('is_active', true)
+        $manager = User::where('is_active', true)
+            ->whereHas('companies', fn($q) => $q->where('companies.id', $task->company_id))
+            ->when($task->location_id, fn($q) => $q->whereHas('locationRoles', fn($locationQuery) => $locationQuery->where('locations.id', $task->location_id)))
+            ->where(function ($q) use ($task) {
+                $q->whereHas('roles', fn($roleQuery) => $roleQuery->where('name', 'manager'))
+                    ->orWhereExists(function ($subquery) use ($task) {
+                        $subquery->selectRaw('1')
+                            ->from('user_location_roles')
+                            ->join('roles', 'user_location_roles.role_id', '=', 'roles.id')
+                            ->whereColumn('user_location_roles.user_id', 'users.id')
+                            ->where('roles.name', 'manager');
+
+                        if ($task->location_id) {
+                            $subquery->where('user_location_roles.location_id', $task->location_id);
+                        }
+                    });
+            })
             ->first();
 
         if ($manager) {

@@ -14,22 +14,24 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
+            background: #F4F1EA;
             color: #333;
         }
 
         .wrapper {
             max-width: 600px;
             margin: 32px auto;
-            background: #fff;
+            background: #E6DAC8;
             border-radius: 8px;
             overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+            border: 1px solid #E5E0D8;
+            box-shadow: 0 8px 24px rgba(114, 92, 58, .12);
         }
 
         .header {
             padding: 24px 32px;
-            background: #1e293b;
+            background: #809671;
+            border-bottom: 4px solid #D2AB80;
         }
 
         .header h1 {
@@ -39,7 +41,7 @@
         }
 
         .header .brand {
-            color: #94a3b8;
+            color: #F4F1EA;
             font-size: 12px;
             margin-top: 4px;
         }
@@ -55,32 +57,33 @@
         }
 
         .badge-info {
-            background: #dbeafe;
-            color: #1d4ed8;
+            background: #E5D2B8;
+            color: #725C3A;
         }
 
         .badge-success {
-            background: #dcfce7;
-            color: #15803d;
+            background: #B3B792;
+            color: #333;
         }
 
         .badge-warning {
-            background: #fef9c3;
-            color: #a16207;
+            background: #D2AB80;
+            color: #333;
         }
 
         .badge-error {
-            background: #fee2e2;
-            color: #dc2626;
+            background: #725C3A;
+            color: #fff;
         }
 
         .badge-alert {
-            background: #fce7f3;
-            color: #be185d;
+            background: #A65A4D;
+            color: #fff;
         }
 
         .content {
             padding: 32px;
+            background: #F4F1EA;
         }
 
         .content p {
@@ -89,8 +92,8 @@
         }
 
         .details {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
+            background: #E5E0D8;
+            border: 1px solid #D2AB80;
             border-radius: 6px;
             padding: 16px;
             margin: 16px 0;
@@ -108,7 +111,7 @@
         }
 
         .details td:first-child {
-            color: #64748b;
+            color: #725C3A;
             width: 40%;
         }
 
@@ -118,10 +121,10 @@
 
         .footer {
             padding: 16px 32px;
-            background: #f8fafc;
-            border-top: 1px solid #e2e8f0;
+            background: #E6DAC8;
+            border-top: 1px solid #D2AB80;
             font-size: 12px;
-            color: #94a3b8;
+            color: #725C3A;
             text-align: center;
         }
     </style>
