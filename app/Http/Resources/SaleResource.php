@@ -27,6 +27,7 @@ class SaleResource extends Resources
             'status' => $resource->status->value,
             'status_label' => $resource->status->label(),
             'status_color' => $resource->status->color(),
+            'can_cancel' => $resource->status === \App\Enums\SaleStatus::CLOSED,
             'total' => $resource->total,
             'subtotal' => $resource->subtotal,
             'tax' => $resource->tax,

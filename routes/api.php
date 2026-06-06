@@ -82,6 +82,14 @@ Route::get('sales-reports/{id}/pdf', [SalesReportController::class, 'generatePdf
     ->name('sales-reports.pdf')
     ->middleware('signed');
 
+Route::get('purchases-v2/{purchases_v2}/pdf', [PurchaseV2Controller::class, 'generatePdf'])
+    ->name('purchases-v2.pdf')
+    ->middleware('signed');
+
+Route::get('sales/{sale}/pdf', [SaleController::class, 'generatePdf'])
+    ->name('sales.pdf')
+    ->middleware('signed');
+
 Route::get('products/{product}/labels/pdf', [ProductController::class, 'printLabels'])
     ->name('products.labels.pdf')
     ->middleware('signed');
@@ -180,6 +188,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('{id}/mark-in-transit', [PurchaseV2Controller::class, 'markInTransit']);
                 Route::post('{id}/receive', [PurchaseV2Controller::class, 'receive']);
                 Route::post('{id}/cancel', [PurchaseV2Controller::class, 'cancel']);
+                Route::post('{id}/resolve-discrepancy', [PurchaseV2Controller::class, 'resolveDiscrepancy']);
+                Route::get('{id}/pdf-url', [PurchaseV2Controller::class, 'generatePdfUrl']);
             });
             Route::apiResource('purchases-v2', PurchaseV2Controller::class)->except(['store', 'update']);
 
@@ -194,9 +204,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('stats', [SaleController::class, 'salesStats']);
                 Route::get('cash-register', [SaleController::class, 'cashRegister']);
                 Route::post('{id}/add-payment', [SaleController::class, 'addPayment']);
-                Route::post('{id}/advance-status', [SaleController::class, 'advanceStatus']);
-                Route::post('{id}/revert-status', [SaleController::class, 'revertStatus']);
                 Route::post('{id}/cancel', [SaleController::class, 'cancel']);
+                Route::get('{id}/pdf-url', [SaleController::class, 'generatePdfUrl']);
             });
 
             Route::apiResource('sales', SaleController::class);

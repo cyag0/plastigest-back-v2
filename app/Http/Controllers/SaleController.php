@@ -12,6 +12,7 @@ use App\Enums\SaleStatus;
 use App\Services\CashMovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use App\Notifications\NotificationEngine;
 use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
@@ -20,6 +21,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class SaleController extends CrudController
 {
@@ -205,7 +208,7 @@ class SaleController extends CrudController
             // Preparar datos de la venta
             $saleData = [
                 'location_id' => $location->id,
-                'sale_date' => $data['movement_date'] ?? now()->toDateString(),
+                'sale_date' => $data['sale_date'] ?? now()->toDateString(),
                 'content' => $content,
                 'company_id' => $company->id,
                 'user_id' => $user->id,
@@ -281,8 +284,8 @@ class SaleController extends CrudController
 
             // Marcar como cerrada y afectar stock automáticamente
             if ($method === 'create') {
-                // Usar transitionTo que maneja validación y actualización de stock
-                $sale->transitionTo(SaleStatus::CLOSED);
+                // La venta ya nace closed (por el booted del modelo), solo validar y actualizar stock
+                $sale->validateAndUpdateStock();
 
                 // Verificar stock bajo después de la venta
                 $this->checkLowStockAndNotify($sale);
@@ -305,62 +308,6 @@ class SaleController extends CrudController
         } catch (\Exception $e) {
             DB::rollBack();
             throw $e;
-        }
-    }
-
-    /**
-     * Avanzar al siguiente estado
-     */
-    public function advanceStatus(Request $request, int $id)
-    {
-        try {
-            $sale = Sale::with($this->getShowRelations())->findOrFail($id);
-
-            if ($sale->advanceStatus()) {
-                return response()->json([
-                    'success' => true,
-                    'message' => "Venta avanzada a estado: {$sale->status->label()}",
-                    'data' => new $this->resource($sale),
-                ]);
-            }
-
-            return response()->json([
-                'success' => false,
-                'message' => 'No se puede avanzar más el estado',
-            ], 400);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 400);
-        }
-    }
-
-    /**
-     * Retroceder al estado anterior
-     */
-    public function revertStatus(Request $request, int $id)
-    {
-        try {
-            $sale = Sale::with($this->getShowRelations())->findOrFail($id);
-
-            if ($sale->revertStatus()) {
-                return response()->json([
-                    'success' => true,
-                    'message' => "Venta revertida a estado: {$sale->status->label()}",
-                    'data' => new $this->resource($sale),
-                ]);
-            }
-
-            return response()->json([
-                'success' => false,
-                'message' => 'No se puede retroceder más el estado',
-            ], 400);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 400);
         }
     }
 
@@ -397,18 +344,13 @@ class SaleController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // Solo se pueden eliminar ventas en borrador
-        if ($model->status !== SaleStatus::DRAFT) {
+        if ($model->status !== SaleStatus::CANCELLED) {
             return [
                 'can_delete' => false,
-                'message' => 'Solo se pueden eliminar ventas en estado borrador'
+                'message' => 'Solo se pueden eliminar ventas canceladas'
             ];
         }
-
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        return ['can_delete' => true, 'message' => ''];
     }
 
     /**
@@ -454,8 +396,6 @@ class SaleController extends CrudController
                     $statusValue = $item->status instanceof \BackedEnum ? $item->status->value : $item->status;
 
                     $statusLabel = match ($statusValue) {
-                        'draft' => 'Borrador',
-                        'processed' => 'Procesada',
                         'closed' => 'Cerrada',
                         'cancelled' => 'Cancelada',
                         default => $statusValue
@@ -477,9 +417,10 @@ class SaleController extends CrudController
                 ->get()
                 ->mapWithKeys(function ($item) {
                     $methodLabel = match ($item->payment_method) {
-                        'efectivo' => 'Efectivo',
-                        'tarjeta' => 'Tarjeta',
-                        'transferencia' => 'Transferencia',
+                        'cash' => 'Efectivo',
+                        'card' => 'Tarjeta',
+                        'transfer' => 'Transferencia',
+                        'credit' => 'Crédito',
                         default => $item->payment_method ?? 'Sin especificar'
                     };
 
@@ -589,7 +530,7 @@ class SaleController extends CrudController
     protected function checkLowStockAndNotify(Sale $sale): void
     {
         try {
-            $locationId = $sale->location_origin_id;
+            $locationId = $sale->location_id;
             $companyId = $sale->company_id;
 
             foreach ($sale->details as $detail) {
@@ -650,18 +591,19 @@ class SaleController extends CrudController
             // Obtener todas las ventas del día (closed y processed)
             $sales = Sale::where('company_id', $companyId)
                 ->when($locationId, function ($q) use ($locationId) {
-                    $q->where('location_origin_id', $locationId);
+                    $q->where('location_id', $locationId);
                 })
-                ->whereDate('movement_date', $date)
+                ->whereDate('sale_date', $date)
                 ->whereIn('status', ['closed', 'processed'])
                 ->with(['details.product'])
                 ->get();
 
             // Calcular totales por método de pago
             $paymentMethods = [
-                'efectivo' => 0,
-                'tarjeta' => 0,
-                'transferencia' => 0,
+                'cash' => 0,
+                'card' => 0,
+                'transfer' => 0,
+                'credit' => 0,
             ];
 
             $totalSales = 0;
@@ -674,7 +616,7 @@ class SaleController extends CrudController
                 $totalSales += $saleTotal;
                 $totalProducts += $sale->details->sum('quantity');
 
-                $paymentMethod = $sale->payment_method ?? 'efectivo';
+                $paymentMethod = $sale->payment_method ?? 'cash';
                 if (isset($paymentMethods[$paymentMethod])) {
                     $paymentMethods[$paymentMethod] += $saleTotal;
                 }
@@ -740,9 +682,10 @@ class SaleController extends CrudController
 
             // Calcular totales de gastos por método de pago
             $expensesByPaymentMethod = [
-                'efectivo' => 0,
-                'tarjeta' => 0,
-                'transferencia' => 0,
+                'cash' => 0,
+                'card' => 0,
+                'transfer' => 0,
+                'credit' => 0,
             ];
 
             $totalExpenses = 0;
@@ -769,7 +712,7 @@ class SaleController extends CrudController
             }
 
             // Calcular efectivo neto (ventas - gastos)
-            $netCash = $paymentMethods['efectivo'] - $expensesByPaymentMethod['efectivo'];
+            $netCash = $paymentMethods['cash'] - $expensesByPaymentMethod['cash'];
 
             return response()->json([
                 'success' => true,
@@ -787,24 +730,31 @@ class SaleController extends CrudController
                     'payment_methods' => [
                         [
                             'method' => 'Efectivo',
-                            'total' => round($paymentMethods['efectivo'], 2),
-                            'percentage' => $totalSales > 0 ? round(($paymentMethods['efectivo'] / $totalSales) * 100, 1) : 0,
-                            'expenses' => round($expensesByPaymentMethod['efectivo'], 2),
+                            'total' => round($paymentMethods['cash'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['cash'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['cash'], 2),
                             'net' => round($netCash, 2),
                         ],
                         [
                             'method' => 'Tarjeta',
-                            'total' => round($paymentMethods['tarjeta'], 2),
-                            'percentage' => $totalSales > 0 ? round(($paymentMethods['tarjeta'] / $totalSales) * 100, 1) : 0,
-                            'expenses' => round($expensesByPaymentMethod['tarjeta'], 2),
-                            'net' => round($paymentMethods['tarjeta'] - $expensesByPaymentMethod['tarjeta'], 2),
+                            'total' => round($paymentMethods['card'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['card'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['card'], 2),
+                            'net' => round($paymentMethods['card'] - $expensesByPaymentMethod['card'], 2),
                         ],
                         [
                             'method' => 'Transferencia',
-                            'total' => round($paymentMethods['transferencia'], 2),
-                            'percentage' => $totalSales > 0 ? round(($paymentMethods['transferencia'] / $totalSales) * 100, 1) : 0,
-                            'expenses' => round($expensesByPaymentMethod['transferencia'], 2),
-                            'net' => round($paymentMethods['transferencia'] - $expensesByPaymentMethod['transferencia'], 2),
+                            'total' => round($paymentMethods['transfer'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['transfer'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['transfer'], 2),
+                            'net' => round($paymentMethods['transfer'] - $expensesByPaymentMethod['transfer'], 2),
+                        ],
+                        [
+                            'method' => 'Crédito',
+                            'total' => round($paymentMethods['credit'], 2),
+                            'percentage' => $totalSales > 0 ? round(($paymentMethods['credit'] / $totalSales) * 100, 1) : 0,
+                            'expenses' => round($expensesByPaymentMethod['credit'], 2),
+                            'net' => round($paymentMethods['credit'] - $expensesByPaymentMethod['credit'], 2),
                         ],
                     ],
                     'expenses' => [
@@ -968,11 +918,11 @@ class SaleController extends CrudController
             $totalAfterPayment = $totalPaid + $newAmount;
 
             // Verificar que no exceda el total
-            if ($totalAfterPayment > $sale->total_cost) {
+            if ($totalAfterPayment > $sale->total) {
                 return response()->json([
                     'success' => false,
                     'message' => 'El monto ingresado excede el saldo pendiente',
-                    'pending_amount' => $sale->total_cost - $totalPaid,
+                    'pending_amount' => $sale->total - $totalPaid,
                 ], 400);
             }
 
@@ -989,7 +939,7 @@ class SaleController extends CrudController
             $sale->payment_history = $paymentHistory;
 
             // Actualizar payment_status
-            if ($totalAfterPayment >= $sale->total_cost) {
+            if ($totalAfterPayment >= $sale->total) {
                 $sale->payment_status = 'paid';
             } elseif ($totalAfterPayment > 0) {
                 $sale->payment_status = 'partial';
@@ -1020,6 +970,95 @@ class SaleController extends CrudController
                 'success' => false,
                 'message' => 'Error al registrar pago',
                 'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Generar URL firmada para el PDF de la venta (válida 1 hora).
+     */
+    public function generatePdfUrl($id)
+    {
+        if (!CurrentWorker::hasPermission('sales_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        try {
+            $companyId = CurrentCompany::id();
+            $locationId = CurrentLocation::get()?->id;
+
+            $sale = Sale::where('company_id', $companyId)
+                ->where('location_id', $locationId)
+                ->findOrFail($id);
+
+            $signedUrl = URL::temporarySignedRoute(
+                'sales.pdf',
+                now()->addHour(),
+                [
+                    'sale' => $sale->id,
+                    'company_id' => $companyId,
+                ]
+            );
+
+            return response()->json([
+                'url' => $signedUrl,
+                'expires_at' => now()->addHour()->toISOString(),
+            ]);
+        } catch (\Exception $e) {
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
+            Log::error('Error al generar URL de PDF de venta: ' . $e->getMessage());
+
+            return response()->json([
+                'message' => 'Error al generar URL del PDF'
+            ], 500);
+        }
+    }
+
+    /**
+     * Generar PDF de la venta. Ruta pública-firmada (no requiere auth:sanctum).
+     */
+    public function generatePdf(Request $request, $id)
+    {
+        try {
+            $companyId = $request->query('company_id');
+            abort_if(
+                $companyId === null || !Sale::where('id', $id)->where('company_id', $companyId)->exists(),
+                404
+            );
+
+            $sale = Sale::with([
+                'customer',
+                'user',
+                'location',
+                'details.product',
+                'details.unit',
+            ])->findOrFail($id);
+
+            $pdf = Pdf::loadView('pdf.sale', [
+                'sale' => $sale,
+            ]);
+
+            $pdf->setPaper('letter', 'portrait');
+
+            return response($pdf->output(), 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="venta-' . ($sale->sale_number ?? $sale->id) . '-' . now()->format('Y-m-d') . '.pdf"',
+            ]);
+        } catch (\Exception $e) {
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
+            Log::error('Error al generar PDF de venta: ' . $e->getMessage());
+            Log::error($e->getTraceAsString());
+
+            return response()->json([
+                'message' => 'Error al generar el PDF'
             ], 500);
         }
     }

@@ -24,7 +24,7 @@ class SaleFactory extends Factory
             'location_id'    => Location::factory(),
             'user_id'        => User::factory(),
             'sale_date'      => fake()->dateTimeBetween('-6 months', 'now')->format('Y-m-d'),
-            'status'         => SaleStatus::DRAFT,
+            'status'         => SaleStatus::CLOSED,
             'subtotal'       => $subtotal,
             'tax'            => $tax,
             'discount'       => 0,
@@ -40,13 +40,13 @@ class SaleFactory extends Factory
         ];
     }
 
-    public function processed(): static
-    {
-        return $this->state(['status' => SaleStatus::PROCESSED]);
-    }
-
     public function closed(): static
     {
         return $this->state(['status' => SaleStatus::CLOSED]);
+    }
+
+    public function cancelled(): static
+    {
+        return $this->state(['status' => SaleStatus::CANCELLED]);
     }
 }

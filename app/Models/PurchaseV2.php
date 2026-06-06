@@ -26,6 +26,7 @@ class PurchaseV2 extends Model
         'total',
         'payment_method',
         'notes',
+        'metadata',
         'document_number',
         'user_id',
         'received_by',
@@ -36,6 +37,7 @@ class PurchaseV2 extends Model
         'expected_delivery_date' => 'date',
         'delivery_date' => 'date',
         'total' => 'decimal:2',
+        'metadata' => 'array',
     ];
 
     // Estados posibles
@@ -132,5 +134,35 @@ class PurchaseV2 extends Model
     {
         $this->total = $this->calculateTotal();
         $this->save();
+    }
+
+    /**
+     * Agregar una entrada al historial de cambios de estado (append-only).
+     *
+     * Captura el status actual como `from` y el destino que se pasa como `to`.
+     * Llamar ANTES de aplicar el nuevo status al modelo para que `from` refleje
+     * el estado previo real.
+     */
+    public function appendStatusLog(string $toStatus, ?int $userId, ?string $reason = null): void
+    {
+        $history = $this->metadata ?? [];
+
+        $user = $userId ? \App\Models\User::find($userId) : null;
+
+        $history[] = [
+            'from' => $this->status,
+            'to' => $toStatus,
+            'by_user_id' => $userId,
+            'by_user_name' => $user?->name,
+            'at' => now()->toIso8601String(),
+            'reason' => $reason,
+        ];
+
+        $this->metadata = $history;
+
+        // saveQuietly: persistir sin disparar eventos ni refrescar updated_at.
+        // La transición de status propiamente dicha se hace en el controller
+        // con un update() posterior.
+        $this->saveQuietly();
     }
 }

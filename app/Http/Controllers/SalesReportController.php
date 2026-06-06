@@ -9,6 +9,7 @@ use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Models\Sale;
@@ -154,14 +155,15 @@ class SalesReportController extends CrudController
     public function generatePdfUrl($id)
     {
         try {
-            // Verificar que el reporte existe
-            $salesReport = SalesReport::findOrFail($id);
+            // Verificar que el reporte existe y pertenece a la compañía actual (evita IDOR cross-tenant)
+            $salesReport = SalesReport::where('company_id', CurrentCompany::id())
+                ->findOrFail($id);
 
-            // Generar URL firmada que expira en 1 hora
+            // Generar URL firmada que expira en 1 hora, codificando el company_id para validación en el render
             $signedUrl = URL::temporarySignedRoute(
                 'sales-reports.pdf',
                 now()->addHour(),
-                ['id' => $id]
+                ['id' => $id, 'company_id' => CurrentCompany::id()]
             );
 
             return response()->json([
@@ -169,8 +171,14 @@ class SalesReportController extends CrudController
                 'expires_at' => now()->addHour()->toISOString(),
             ]);
         } catch (\Exception $e) {
+            // Re-emitir excepciones HTTP y ModelNotFound para que Laravel las maneje con su status code original
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
             return response()->json([
-                'message' => 'Error al generar URL del PDF: ' . $e->getMessage()
+                'message' => 'Error al generar URL del PDF'
             ], 500);
         }
     }
@@ -178,9 +186,16 @@ class SalesReportController extends CrudController
     /**
      * Generar PDF del reporte de ventas
      */
-    public function generatePdf($id)
+    public function generatePdf(Request $request, $id)
     {
         try {
+            // Defensa en profundidad: validar que el company_id de la URL firmada coincide con el del registro
+            $companyId = $request->query('company_id');
+            abort_if(
+                $companyId === null || !SalesReport::where('id', $id)->where('company_id', $companyId)->exists(),
+                404
+            );
+
             // Obtener el reporte con relaciones
             $salesReport = SalesReport::with([
                 'location',
@@ -253,12 +268,17 @@ class SalesReportController extends CrudController
                 'Content-Disposition' => 'inline; filename="reporte-ventas-' . $salesReport->id . '-' . now()->format('Y-m-d') . '.pdf"',
             ]);
         } catch (\Exception $e) {
-            \Log::error('Error al generar PDF de reporte de ventas: ' . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            // Re-emitir excepciones HTTP y ModelNotFound para que Laravel las maneje con su status code original
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
 
-            // Retornar respuesta JSON con error para debugging
+            Log::error('Error al generar PDF de reporte de ventas: ' . $e->getMessage());
+            Log::error($e->getTraceAsString());
+
             return response()->json([
-                'message' => 'Error al generar el PDF: ' . $e->getMessage()
+                'message' => 'Error al generar el PDF'
             ], 500);
         }
     }

@@ -10,6 +10,8 @@ class CategoriesSeeder extends Seeder
 {
     /**
      * Run the database seeds.
+     *
+     * Categorías alineadas con los productos del archivo "Productos para DiDi.xlsx".
      */
     public function run(): void
     {
@@ -25,31 +27,67 @@ class CategoriesSeeder extends Seeder
         $cocosCategories = [
             [
                 'name' => 'Bebidas',
-                'description' => 'Bebidas naturales a base de coco',
+                'description' => 'Aguas, horchatas, tuba y demás bebidas a base de coco (botellas, vasos, galones)',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Promociones',
+                'description' => 'Paquetes y promociones especiales (ej. 2 rompopes, 2 bolsas de coco, 3 horchatas)',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Coco natural',
+                'description' => 'Coco en sus distintas presentaciones: entero, partido, seco, destopado, cacheteado, mayorista',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Derivados de coco',
+                'description' => 'Aceite, harina, pulpa, copra, flor de coco, mariscoco',
                 'company_id' => $cocosfrancisco->id,
                 'is_active' => true,
             ],
             [
                 'name' => 'Postres y más',
-                'description' => 'Postres, dulces y productos especiales de coco',
+                'description' => 'Rompope, dulce de leche, cuala, polvorín, manzanitas, tostadas',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Cocadas',
+                'description' => 'Cocadas por pieza y por caja: nuez, limón, greñuda, mixta, horneada, bola, velita',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Barras',
+                'description' => 'Barras y barritas: natural, fresa, pasas, arándano, nuez, leche, mixta, rompope, banderita',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Duraznitos y limoncitos',
+                'description' => 'Duraznitos y limoncitos de coco por pieza y por caja',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Pellizcadas y pelizcadas',
+                'description' => 'Pellizcadas de coco tradicionales por pieza y por caja',
                 'company_id' => $cocosfrancisco->id,
                 'is_active' => true,
             ],
             [
                 'name' => 'Dulces tradicionales de coco',
-                'description' => 'Barritas y dulces tradicionales elaborados con coco',
-                'company_id' => $cocosfrancisco->id,
-                'is_active' => true,
-            ],
-            [
-                'name' => 'Cocadas y más',
-                'description' => 'Cocadas y derivados tradicionales',
+                'description' => 'Galletas, cuala, cocada dominguera y dulces tradicionales de coco',
                 'company_id' => $cocosfrancisco->id,
                 'is_active' => true,
             ],
             [
                 'name' => 'Coco rallado y derivados',
-                'description' => 'Coco rallado, tostado y productos derivados',
+                'description' => 'Coco rallado natural, tostado, sin azúcar y azúcar de coco',
                 'company_id' => $cocosfrancisco->id,
                 'is_active' => true,
             ],

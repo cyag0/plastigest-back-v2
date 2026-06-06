@@ -354,14 +354,15 @@ class InventoryCountController extends CrudController
     public function generatePdfUrl($id)
     {
         try {
-            // Verificar que el inventario existe
-            $inventoryCount = InventoryCount::findOrFail($id);
+            // Verificar que el inventario existe y pertenece a la compañía actual (evita IDOR cross-tenant)
+            $inventoryCount = InventoryCount::where('company_id', CurrentCompany::id())
+                ->findOrFail($id);
 
-            // Generar URL firmada que expira en 1 hora
+            // Generar URL firmada que expira en 1 hora, codificando el company_id para validación en el render
             $signedUrl = URL::temporarySignedRoute(
                 'inventory-counts.pdf',
                 now()->addHour(),
-                ['id' => $id]
+                ['id' => $id, 'company_id' => CurrentCompany::id()]
             );
 
             return response()->json([
@@ -369,8 +370,14 @@ class InventoryCountController extends CrudController
                 'expires_at' => now()->addHour()->toISOString(),
             ]);
         } catch (\Exception $e) {
+            // Re-emitir excepciones HTTP y ModelNotFound para que Laravel las maneje con su status code original
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
             return response()->json([
-                'message' => 'Error al generar URL del PDF: ' . $e->getMessage()
+                'message' => 'Error al generar URL del PDF'
             ], 500);
         }
     }
@@ -378,9 +385,16 @@ class InventoryCountController extends CrudController
     /**
      * Generar PDF del conteo de inventario
      */
-    public function generatePdf($id)
+    public function generatePdf(Request $request, $id)
     {
         try {
+            // Defensa en profundidad: validar que el company_id de la URL firmada coincide con el del registro
+            $companyId = $request->query('company_id');
+            abort_if(
+                $companyId === null || !InventoryCount::where('id', $id)->where('company_id', $companyId)->exists(),
+                404
+            );
+
             // Obtener el inventario con todas sus relaciones
             $inventoryCount = InventoryCount::with([
                 'location',
@@ -404,8 +418,13 @@ class InventoryCountController extends CrudController
             // Esto permite que el frontend maneje la descarga correctamente
             return $pdf->stream('inventario-' . $inventoryCount->id . '-' . now()->format('Y-m-d') . '.pdf');
         } catch (\Exception $e) {
+            // Re-emitir excepciones HTTP (abort, ModelNotFound, etc.) para que Laravel las maneje con su status code original
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface) {
+                throw $e;
+            }
+
             return response()->json([
-                'message' => 'Error al generar el PDF: ' . $e->getMessage()
+                'message' => 'Error al generar el PDF'
             ], 500);
         }
     }

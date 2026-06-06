@@ -74,12 +74,29 @@ class Sale extends Model
     {
         static::creating(function ($model) {
             if (!$model->status) {
-                $model->status = SaleStatus::DRAFT;
+                $model->status = SaleStatus::CLOSED;
             }
             if (!$model->sale_date) {
                 $model->sale_date = now()->toDateString();
             }
+            if (!$model->sale_number) {
+                $model->sale_number = self::generateSaleNumber();
+            }
         });
+    }
+
+    /**
+     * Genera un número de venta único para el día actual con formato SAL-YYYYMMDD-####
+     */
+    public static function generateSaleNumber(): string
+    {
+        $datePrefix = now()->format('Ymd');
+        $lastSale = self::whereDate('created_at', today())->orderByDesc('id')->first();
+        $sequence = 1;
+        if ($lastSale && preg_match('/(\d{4})$/', $lastSale->sale_number ?? '', $matches)) {
+            $sequence = ((int) $matches[1]) + 1;
+        }
+        return sprintf('SAL-%s-%04d', $datePrefix, $sequence);
     }
 
     /**
@@ -210,61 +227,24 @@ class Sale extends Model
     }
 
     /**
-     * Transicionar al siguiente estado
-     */
-    public function advanceStatus(): bool
-    {
-        $nextStatus = $this->status->next();
-
-        if (!$nextStatus) {
-            return false; // Ya está en el estado final
-        }
-
-        return $this->transitionTo($nextStatus);
-    }
-
-    /**
-     * Retroceder al estado anterior
-     */
-    public function revertStatus(): bool
-    {
-        $previousStatus = $this->status->previous();
-
-        if (!$previousStatus) {
-            return false; // Ya está en el estado inicial
-        }
-
-        return $this->transitionTo($previousStatus);
-    }
-
-    /**
-     * Transicionar a un estado específico
+     * Transicionar a un estado específico. Solo se permite transicionar a CANCELLED.
      */
     public function transitionTo(SaleStatus $newStatus): bool
     {
-        /*  if (!$this->status->canTransitionTo($newStatus)) {
-            throw new Exception(
-                "No se puede transicionar de '{$this->status->label()}' a '{$newStatus->label()}'"
-            );
-        } */
-
-        $oldStatus = $this->status;
-
+        if ($newStatus !== SaleStatus::CANCELLED) {
+            throw new Exception("Solo se permite transicionar a CANCELLED");
+        }
+        if ($this->status === SaleStatus::CANCELLED) {
+            return false;
+        }
         DB::beginTransaction();
         try {
-            // Si se está moviendo a "completado", validar y actualizar el stock
-            if ($newStatus === SaleStatus::CLOSED && $oldStatus !== SaleStatus::CLOSED) {
-                $this->validateAndUpdateStock();
-            }
-
-            // Si se está moviendo desde "completado", revertir el stock
-            if ($oldStatus === SaleStatus::CLOSED && $newStatus !== SaleStatus::CLOSED) {
+            // Solo revertir stock si la venta estaba CLOSED (la única forma de existir)
+            if ($this->status === SaleStatus::CLOSED) {
                 $this->revertStock();
             }
-
             $this->status = $newStatus;
             $this->save();
-
             DB::commit();
             return true;
         } catch (Exception $e) {
@@ -276,7 +256,7 @@ class Sale extends Model
     /**
      * Validar stock y actualizar cuando la venta es completada
      */
-    protected function validateAndUpdateStock(): void
+    public function validateAndUpdateStock(): void
     {
         $movementService = new MovementService();
         $locationId = $this->location_id;
@@ -335,30 +315,6 @@ class Sale extends Model
                 $detail->package_id // Package si se vendió como paquete
             );
         }
-    }
-
-    /**
-     * Scope para ventas en borrador
-     */
-    public function scopeDraft(Builder $query): Builder
-    {
-        return $query->where('status', SaleStatus::DRAFT);
-    }
-
-    /**
-     * Scope para ventas procesadas
-     */
-    public function scopeProcessed(Builder $query): Builder
-    {
-        return $query->where('status', SaleStatus::PROCESSED);
-    }
-
-    /**
-     * Scope para ventas completadas
-     */
-    public function scopeCLOSEDSales(Builder $query): Builder
-    {
-        return $query->where('status', SaleStatus::CLOSED);
     }
 
     /**

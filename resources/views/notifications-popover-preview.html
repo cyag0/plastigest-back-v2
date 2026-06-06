@@ -1,0 +1,1113 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Popover de Notificaciones — Plastigest ERP</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    />
+    <script>
+      tailwind.config = {
+        theme: {
+          fontFamily: {
+            sans: [
+              "Inter",
+              "ui-sans-serif",
+              "system-ui",
+              "-apple-system",
+              "Segoe UI",
+              "Roboto",
+              "sans-serif",
+            ],
+          },
+          extend: {
+            colors: {
+              // Tipos
+              "purchase-50": "#ECFDF5",
+              "purchase-100": "#D1FAE5",
+              "purchase-500": "#10B981",
+              "purchase-700": "#047857",
+              "task-50": "#EFF6FF",
+              "task-100": "#DBEAFE",
+              "task-500": "#3B82F6",
+              "task-700": "#1D4ED8",
+              "inv-50": "#FFF7ED",
+              "inv-100": "#FFEDD5",
+              "inv-500": "#F97316",
+              "inv-700": "#C2410C",
+              "alert-50": "#FEF2F2",
+              "alert-100": "#FEE2E2",
+              "alert-500": "#EF4444",
+              "alert-700": "#B91C1C",
+              "sys-50": "#FAF5FF",
+              "sys-100": "#F3E8FF",
+              "sys-500": "#A855F7",
+              "sys-700": "#7E22CE",
+              // Estados
+              "status-new-50": "#EEF2FF",
+              "status-new-600": "#4F46E5",
+              "status-read-100": "#F3F4F6",
+              "status-read-500": "#6B7280",
+              "status-pending-100": "#FEF3C7",
+              "status-pending-700": "#B45309",
+              "status-overdue-100": "#FEE2E2",
+              "status-overdue-700": "#B91C1C",
+              // Neutrales
+              "ink-900": "#111827",
+              "ink-500": "#6B7280",
+              "ink-400": "#9CA3AF",
+              "ink-200": "#E5E7EB",
+              "ink-100": "#F3F4F6",
+              "ink-50": "#F9FAFB",
+              "slate-25": "#F8FAFC",
+              "primary": "#809671",
+            },
+            boxShadow: {
+              popover:
+                "0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.08), 0 24px 48px -12px rgba(15, 23, 42, 0.12)",
+            },
+            borderRadius: {
+              popover: "16px",
+              card: "12px",
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      html,
+      body {
+        background: #f3f4f6;
+        font-family: "Inter", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      /* Demuestra el "hover" como un estado visible (no solo en :hover) */
+      .is-hovered .hover-actions {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      .is-hovered {
+        background-color: #f3f4f6 !important;
+      }
+      /* Scrollbar estilo macOS */
+      .popover-scroll::-webkit-scrollbar {
+        width: 6px;
+      }
+      .popover-scroll::-webkit-scrollbar-thumb {
+        background: #e5e7eb;
+        border-radius: 3px;
+      }
+      .popover-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen px-6 py-12">
+    <div class="mx-auto max-w-6xl">
+      <!-- Encabezado del documento -->
+      <header class="mb-10">
+        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink-500">
+          <span>Plastigest ERP</span>
+          <span class="text-ink-200">/</span>
+          <span>Design System</span>
+          <span class="text-ink-200">/</span>
+          <span class="text-ink-900">Popover de Notificaciones</span>
+        </div>
+        <h1 class="mt-3 text-3xl font-bold tracking-tight text-ink-900">
+          Popover de Notificaciones
+        </h1>
+        <p class="mt-2 max-w-2xl text-sm leading-6 text-ink-500">
+          Referencia visual para el popover anclado a la campana del
+          AppBar. Inspirado en Linear, Notion, GitHub y Stripe Dashboard.
+          Cada tarjeta se renderiza en 72px maximo, fondo blanco puro,
+          jerarquia por color y peso, agrupado por fecha y con feedback
+          de hover.
+        </p>
+        <div class="mt-5 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-wider">
+          <span class="rounded-full bg-ink-100 px-2.5 py-1 text-ink-500">400px</span>
+          <span class="rounded-full bg-ink-100 px-2.5 py-1 text-ink-500">Radius 16</span>
+          <span class="rounded-full bg-ink-100 px-2.5 py-1 text-ink-500">8 cards max</span>
+          <span class="rounded-full bg-ink-100 px-2.5 py-1 text-ink-500">Spacing 8</span>
+          <span class="rounded-full bg-ink-100 px-2.5 py-1 text-ink-500">Padding 16</span>
+        </div>
+      </header>
+
+      <!-- ─────────────────────────────────────────────────────────────────
+           SECCIÓN 1: Popover por defecto
+           ───────────────────────────────────────────────────────────────── -->
+      <section class="mb-14">
+        <h2 class="mb-1 text-sm font-semibold text-ink-900">
+          1 · Estado por defecto
+        </h2>
+        <p class="mb-6 text-xs text-ink-500">
+          Lista mixta con notificaciones no leidas y leidas, agrupadas por
+          fecha. El hover en la tarjeta 2 se muestra forzado para review.
+        </p>
+
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-2">
+          <!-- Popover principal -->
+          <div
+            class="w-full max-w-[400px] overflow-hidden rounded-popover border border-ink-100 bg-white shadow-popover"
+          >
+            <!-- HEADER -->
+            <header
+              class="flex items-center justify-between border-b border-ink-100 px-4 py-3"
+            >
+              <div class="flex items-center gap-2.5">
+                <div class="relative flex h-8 w-8 items-center justify-center rounded-[10px] bg-ink-100">
+                  <svg
+                    class="h-4 w-4 text-primary"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                    <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                  </svg>
+                  <span
+                    class="absolute -right-1 -top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-red-500 px-[3px] text-[9px] font-extrabold leading-[11px] text-white"
+                    >3</span
+                  >
+                </div>
+                <div>
+                  <h3 class="text-[15px] font-bold leading-5 text-ink-900">
+                    Notificaciones
+                  </h3>
+                  <p class="mt-0.5 text-[12px] font-medium leading-4 text-ink-500">
+                    3 sin leer
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-1">
+                <button
+                  class="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-semibold text-primary transition hover:bg-ink-100"
+                >
+                  <svg
+                    class="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                    <polyline points="22 4 12 14.01 9 11.01" />
+                  </svg>
+                  Marcar todas
+                </button>
+                <button
+                  class="flex h-7 w-7 items-center justify-center rounded-lg text-ink-500 transition hover:bg-ink-100"
+                >
+                  <svg
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </header>
+
+            <!-- BODY -->
+            <div class="popover-scroll max-h-[480px] overflow-y-auto px-2 py-1">
+              <!-- HOY -->
+              <div class="px-1.5 pb-1 pt-2.5">
+                <div class="mb-1.5 flex items-center justify-between">
+                  <h4
+                    class="text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-400"
+                  >
+                    Hoy
+                  </h4>
+                  <span
+                    class="flex h-4 min-w-[18px] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-bold text-ink-400"
+                    >3</span
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <!-- Card 1: No leida · Compra -->
+                  <article
+                    class="relative flex flex-col gap-1.5 overflow-hidden rounded-card border border-ink-100 bg-slate-25 px-3.5 py-2.5"
+                  >
+                    <span
+                      class="absolute left-0 top-2 h-[calc(100%-1rem)] w-[3px] rounded-r bg-purchase-500"
+                    ></span>
+                    <div class="flex items-start gap-2.5">
+                      <div
+                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-purchase-100"
+                      >
+                        <svg
+                          class="h-[18px] w-[18px] text-purchase-700"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <rect x="1" y="3" width="15" height="13" />
+                          <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+                          <circle cx="5.5" cy="18.5" r="2.5" />
+                          <circle cx="18.5" cy="18.5" r="2.5" />
+                        </svg>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13.5px] font-bold leading-[18px] text-ink-900">
+                          Compra recibida · #PO-4821
+                        </p>
+                        <p class="truncate text-[12.5px] leading-4 text-ink-500">
+                          Comercializadora XYZ registro una compra por $12,480.
+                        </p>
+                      </div>
+                    </div>
+                    <div class="ml-[46px] flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-1 text-ink-400">
+                        <svg
+                          class="h-[11px] w-[11px]"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span class="text-[11px] font-medium">hace 15 min</span>
+                      </div>
+                      <span
+                        class="inline-flex items-center gap-1 self-start rounded-full bg-status-new-50 px-2 py-[3px] text-[10px] font-bold uppercase tracking-wide text-status-new-600"
+                      >
+                        <span class="h-1.5 w-1.5 rounded-full bg-status-new-600"></span>
+                        Nueva
+                      </span>
+                    </div>
+                  </article>
+
+                  <!-- Card 2: HOVER (Tarea) -->
+                  <article
+                    class="is-hovered relative flex flex-col gap-1.5 overflow-hidden rounded-card border border-ink-100 bg-ink-100 px-3.5 py-2.5 transition"
+                  >
+                    <span
+                      class="absolute left-0 top-2 h-[calc(100%-1rem)] w-[3px] rounded-r bg-task-500"
+                    ></span>
+                    <div class="flex items-start gap-2.5">
+                      <div
+                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-task-100"
+                      >
+                        <svg
+                          class="h-[18px] w-[18px] text-task-700"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <polyline points="9 11 12 14 22 4" />
+                          <path
+                            d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"
+                          />
+                        </svg>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13.5px] font-bold leading-[18px] text-ink-900">
+                          Nueva tarea asignada
+                        </p>
+                        <p class="truncate text-[12.5px] leading-4 text-ink-500">
+                          Revisar diferencias de inventario en almacen Norte.
+                        </p>
+                      </div>
+                      <div
+                        class="hover-actions flex translate-x-1 items-center gap-0.5 opacity-0 transition"
+                      >
+                        <button
+                          class="flex h-[22px] w-[22px] items-center justify-center rounded-md text-ink-500 transition hover:bg-white"
+                          title="Marcar como leida"
+                        >
+                          <svg
+                            class="h-3.5 w-3.5"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path
+                              d="M22 11.08V12a10 10 0 1 1-5.93-9.14"
+                            />
+                            <polyline points="22 4 12 14.01 9 11.01" />
+                          </svg>
+                        </button>
+                        <button
+                          class="flex h-[22px] w-[22px] items-center justify-center rounded-md text-ink-400 transition hover:bg-white"
+                          title="Eliminar"
+                        >
+                          <svg
+                            class="h-3.5 w-3.5"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <polyline points="3 6 5 6 21 6" />
+                            <path
+                              d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="ml-[46px] flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-1 text-ink-400">
+                        <svg
+                          class="h-[11px] w-[11px]"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span class="text-[11px] font-medium">hace 40 min</span>
+                      </div>
+                      <span
+                        class="inline-flex items-center gap-1 self-start rounded-full bg-status-pending-100 px-2 py-[3px] text-[10px] font-bold uppercase tracking-wide text-status-pending-700"
+                      >
+                        <span class="h-1.5 w-1.5 rounded-full bg-status-pending-700"></span>
+                        Pendiente
+                      </span>
+                    </div>
+                  </article>
+
+                  <!-- Card 3: No leida · Alerta -->
+                  <article
+                    class="relative flex flex-col gap-1.5 overflow-hidden rounded-card border border-ink-100 bg-slate-25 px-3.5 py-2.5"
+                  >
+                    <span
+                      class="absolute left-0 top-2 h-[calc(100%-1rem)] w-[3px] rounded-r bg-alert-500"
+                    ></span>
+                    <div class="flex items-start gap-2.5">
+                      <div
+                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-alert-100"
+                      >
+                        <svg
+                          class="h-[18px] w-[18px] text-alert-700"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="12" y1="8" x2="12" y2="12" />
+                          <line x1="12" y1="16" x2="12.01" y2="16" />
+                        </svg>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13.5px] font-bold leading-[18px] text-ink-900">
+                          Stock critico · Botella 1L
+                        </p>
+                        <p class="truncate text-[12.5px] leading-4 text-ink-500">
+                          El producto bajo del minimo de seguridad (8 und).
+                        </p>
+                      </div>
+                    </div>
+                    <div class="ml-[46px] flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-1 text-ink-400">
+                        <svg
+                          class="h-[11px] w-[11px]"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span class="text-[11px] font-medium">hace 2 h</span>
+                      </div>
+                      <span
+                        class="inline-flex items-center gap-1 self-start rounded-full bg-status-new-50 px-2 py-[3px] text-[10px] font-bold uppercase tracking-wide text-status-new-600"
+                      >
+                        <span class="h-1.5 w-1.5 rounded-full bg-status-new-600"></span>
+                        Nueva
+                      </span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+
+              <!-- AYER -->
+              <div class="px-1.5 pb-1 pt-2.5">
+                <div class="mb-1.5 flex items-center justify-between">
+                  <h4
+                    class="text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-400"
+                  >
+                    Ayer
+                  </h4>
+                  <span
+                    class="flex h-4 min-w-[18px] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-bold text-ink-400"
+                    >2</span
+                  >
+                </div>
+                <div class="space-y-2">
+                  <!-- Card 4: Leida · Sistema -->
+                  <article
+                    class="flex flex-col gap-1.5 overflow-hidden rounded-card border border-ink-100 bg-white px-3.5 py-2.5"
+                  >
+                    <div class="flex items-start gap-2.5">
+                      <div
+                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-sys-100"
+                      >
+                        <svg
+                          class="h-[18px] w-[18px] text-sys-700"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="3" />
+                          <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                          />
+                        </svg>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13.5px] font-semibold leading-[18px] text-ink-900">
+                          Actualizacion de sistema v4.2
+                        </p>
+                        <p class="truncate text-[12.5px] leading-4 text-ink-500">
+                          Nuevas opciones de exportacion PDF disponibles.
+                        </p>
+                      </div>
+                    </div>
+                    <div class="ml-[46px] flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-1 text-ink-400">
+                        <svg
+                          class="h-[11px] w-[11px]"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span class="text-[11px] font-medium">ayer</span>
+                      </div>
+                      <span
+                        class="inline-flex items-center gap-1 self-start rounded-full bg-status-read-100 px-2 py-[3px] text-[10px] font-bold uppercase tracking-wide text-status-read-500"
+                      >
+                        <span class="h-1.5 w-1.5 rounded-full bg-status-read-500"></span>
+                        Leida
+                      </span>
+                    </div>
+                  </article>
+
+                  <!-- Card 5: Vencida · Inventario -->
+                  <article
+                    class="relative flex flex-col gap-1.5 overflow-hidden rounded-card border border-ink-100 bg-white px-3.5 py-2.5"
+                  >
+                    <div class="flex items-start gap-2.5">
+                      <div
+                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-inv-100"
+                      >
+                        <svg
+                          class="h-[18px] w-[18px] text-inv-700"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path
+                            d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
+                          />
+                          <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                          <line x1="12" y1="22.08" x2="12" y2="12" />
+                        </svg>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13.5px] font-semibold leading-[18px] text-ink-900">
+                          Conteo fisico pendiente
+                        </p>
+                        <p class="truncate text-[12.5px] leading-4 text-ink-500">
+                          Sucursal Centro lleva 3 dias sin cerrar conteo.
+                        </p>
+                      </div>
+                    </div>
+                    <div class="ml-[46px] flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-1 text-ink-400">
+                        <svg
+                          class="h-[11px] w-[11px]"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span class="text-[11px] font-medium">ayer</span>
+                      </div>
+                      <span
+                        class="inline-flex items-center gap-1 self-start rounded-full bg-status-overdue-100 px-2 py-[3px] text-[10px] font-bold uppercase tracking-wide text-status-overdue-700"
+                      >
+                        <span class="h-1.5 w-1.5 rounded-full bg-status-overdue-700"></span>
+                        Vencida
+                      </span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+
+              <!-- ESTA SEMANA -->
+              <div class="px-1.5 pb-2 pt-2.5">
+                <div class="mb-1.5 flex items-center justify-between">
+                  <h4
+                    class="text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-400"
+                  >
+                    Esta semana
+                  </h4>
+                  <span
+                    class="flex h-4 min-w-[18px] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-bold text-ink-400"
+                    >1</span
+                  >
+                </div>
+                <div class="space-y-2">
+                  <!-- Card 6: Leida · Compra -->
+                  <article
+                    class="flex flex-col gap-1.5 overflow-hidden rounded-card border border-ink-100 bg-white px-3.5 py-2.5"
+                  >
+                    <div class="flex items-start gap-2.5">
+                      <div
+                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-purchase-100"
+                      >
+                        <svg
+                          class="h-[18px] w-[18px] text-purchase-700"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <rect x="1" y="3" width="15" height="13" />
+                          <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+                          <circle cx="5.5" cy="18.5" r="2.5" />
+                          <circle cx="18.5" cy="18.5" r="2.5" />
+                        </svg>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13.5px] font-semibold leading-[18px] text-ink-900">
+                          Compra confirmada · #PO-4790
+                        </p>
+                        <p class="truncate text-[12.5px] leading-4 text-ink-500">
+                          Plasticos del Norte confirmo el pedido por $4,200.
+                        </p>
+                      </div>
+                    </div>
+                    <div class="ml-[46px] flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-1 text-ink-400">
+                        <svg
+                          class="h-[11px] w-[11px]"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span class="text-[11px] font-medium">hace 3 d</span>
+                      </div>
+                      <span
+                        class="inline-flex items-center gap-1 self-start rounded-full bg-status-read-100 px-2 py-[3px] text-[10px] font-bold uppercase tracking-wide text-status-read-500"
+                      >
+                        <span class="h-1.5 w-1.5 rounded-full bg-status-read-500"></span>
+                        Leida
+                      </span>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+
+            <!-- FOOTER -->
+            <footer
+              class="flex items-center justify-center gap-1.5 border-t border-ink-100 py-3"
+            >
+              <span class="text-[13px] font-semibold text-primary">
+                Ver todas las notificaciones
+              </span>
+              <svg
+                class="h-3.5 w-3.5 text-primary"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </footer>
+          </div>
+
+          <!-- Anotaciones -->
+          <aside class="space-y-5 text-sm leading-6 text-ink-500">
+            <div>
+              <p class="text-[11px] font-bold uppercase tracking-wider text-ink-900">
+                Anatomia
+              </p>
+              <ul class="mt-2 space-y-1.5 text-[13px]">
+                <li>
+                  <span class="font-semibold text-ink-900">400 × 560 px</span>
+                  contenedor. Radio 16, fondo blanco puro.
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Header sticky</span>
+                  con campana, contador y dos acciones (marcar todas,
+                  configuracion).
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Cards 72px</span>
+                  con 16px padding interno, 8px gap entre cards.
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Barra vertical 3px</span>
+                  a la izquierda en no-leidas, color del tipo.
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Footer sticky</span>
+                  centrado, estilo link con flecha.
+                </li>
+              </ul>
+            </div>
+            <div>
+              <p class="text-[11px] font-bold uppercase tracking-wider text-ink-900">
+                Estados visuales
+              </p>
+              <ul class="mt-2 space-y-1.5 text-[13px]">
+                <li>
+                  <span class="font-semibold text-ink-900">No leida:</span>
+                  fondo slate-25 + barra vertical + titulo bold 700.
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Leida:</span>
+                  fondo blanco + titulo semibold 600.
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Hover:</span>
+                  fondo ink-100 + acciones rapidas (check, trash).
+                </li>
+                <li>
+                  <span class="font-semibold text-ink-900">Press:</span>
+                  fondo ink-200 + animacion 80ms.
+                </li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ─────────────────────────────────────────────────────────────────
+           SECCIÓN 2: Catálogo de tipos
+           ───────────────────────────────────────────────────────────────── -->
+      <section class="mb-14">
+        <h2 class="mb-1 text-sm font-semibold text-ink-900">
+          2 · Tipos de notificación
+        </h2>
+        <p class="mb-6 text-xs text-ink-500">
+          Cinco familias. Cada una tiene fondo suave (50), fondo medio
+          (100) para el badge de icono, texto (700) para el icono y acento
+          (500) para la barra vertical.
+        </p>
+
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <!-- Compras -->
+          <div class="rounded-card border border-ink-100 bg-white p-4">
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-[10px] bg-purchase-100"
+              >
+                <svg
+                  class="h-[18px] w-[18px] text-purchase-700"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="1" y="3" width="15" height="13" />
+                  <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+                  <circle cx="5.5" cy="18.5" r="2.5" />
+                  <circle cx="18.5" cy="18.5" r="2.5" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-[13px] font-bold text-ink-900">Compras</p>
+                <p class="text-[11px] text-ink-500">Emerald · 50/100/500/700</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="h-4 w-4 rounded bg-purchase-50 ring-1 ring-purchase-100"></span>
+              <span class="h-4 w-4 rounded bg-purchase-100"></span>
+              <span class="h-4 w-4 rounded bg-purchase-500"></span>
+              <span class="h-4 w-4 rounded bg-purchase-700"></span>
+              <span class="ml-auto text-ink-400">truck-delivery-outline</span>
+            </div>
+          </div>
+
+          <!-- Tareas -->
+          <div class="rounded-card border border-ink-100 bg-white p-4">
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-[10px] bg-task-100"
+              >
+                <svg
+                  class="h-[18px] w-[18px] text-task-700"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="9 11 12 14 22 4" />
+                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-[13px] font-bold text-ink-900">Tareas</p>
+                <p class="text-[11px] text-ink-500">Blue · 50/100/500/700</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="h-4 w-4 rounded bg-task-50 ring-1 ring-task-100"></span>
+              <span class="h-4 w-4 rounded bg-task-100"></span>
+              <span class="h-4 w-4 rounded bg-task-500"></span>
+              <span class="h-4 w-4 rounded bg-task-700"></span>
+              <span class="ml-auto text-ink-400">check-circle-outline</span>
+            </div>
+          </div>
+
+          <!-- Inventario -->
+          <div class="rounded-card border border-ink-100 bg-white p-4">
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-[10px] bg-inv-100"
+              >
+                <svg
+                  class="h-[18px] w-[18px] text-inv-700"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
+                  />
+                  <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                  <line x1="12" y1="22.08" x2="12" y2="12" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-[13px] font-bold text-ink-900">Inventario</p>
+                <p class="text-[11px] text-ink-500">Orange · 50/100/500/700</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="h-4 w-4 rounded bg-inv-50 ring-1 ring-inv-100"></span>
+              <span class="h-4 w-4 rounded bg-inv-100"></span>
+              <span class="h-4 w-4 rounded bg-inv-500"></span>
+              <span class="h-4 w-4 rounded bg-inv-700"></span>
+              <span class="ml-auto text-ink-400">package-variant</span>
+            </div>
+          </div>
+
+          <!-- Alertas -->
+          <div class="rounded-card border border-ink-100 bg-white p-4">
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-[10px] bg-alert-100"
+              >
+                <svg
+                  class="h-[18px] w-[18px] text-alert-700"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+              <div>
+                <p class="text-[13px] font-bold text-ink-900">Alertas</p>
+                <p class="text-[11px] text-ink-500">Red · 50/100/500/700</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="h-4 w-4 rounded bg-alert-50 ring-1 ring-alert-100"></span>
+              <span class="h-4 w-4 rounded bg-alert-100"></span>
+              <span class="h-4 w-4 rounded bg-alert-500"></span>
+              <span class="h-4 w-4 rounded bg-alert-700"></span>
+              <span class="ml-auto text-ink-400">alert-circle-outline</span>
+            </div>
+          </div>
+
+          <!-- Sistema -->
+          <div class="rounded-card border border-ink-100 bg-white p-4">
+            <div class="mb-3 flex items-center gap-2">
+              <div
+                class="flex h-9 w-9 items-center justify-center rounded-[10px] bg-sys-100"
+              >
+                <svg
+                  class="h-[18px] w-[18px] text-sys-700"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path
+                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                  />
+                </svg>
+              </div>
+              <div>
+                <p class="text-[13px] font-bold text-ink-900">Sistema</p>
+                <p class="text-[11px] text-ink-500">Purple · 50/100/500/700</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="h-4 w-4 rounded bg-sys-50 ring-1 ring-sys-100"></span>
+              <span class="h-4 w-4 rounded bg-sys-100"></span>
+              <span class="h-4 w-4 rounded bg-sys-500"></span>
+              <span class="h-4 w-4 rounded bg-sys-700"></span>
+              <span class="ml-auto text-ink-400">cog-outline</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────────────────────────────────────────────────────
+           SECCIÓN 3: Catálogo de estados (badges)
+           ───────────────────────────────────────────────────────────────── -->
+      <section class="mb-14">
+        <h2 class="mb-1 text-sm font-semibold text-ink-900">
+          3 · Estados (badges)
+        </h2>
+        <p class="mb-6 text-xs text-ink-500">
+          Pills compactos con dot de color. Tracking ancho y bold para que
+          se escaneen rapido.
+        </p>
+
+        <div class="flex flex-wrap gap-3">
+          <span
+            class="inline-flex items-center gap-1.5 rounded-full bg-status-new-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-status-new-600"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-status-new-600"></span>
+            Nueva
+          </span>
+          <span
+            class="inline-flex items-center gap-1.5 rounded-full bg-status-read-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-status-read-500"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-status-read-500"></span>
+            Leida
+          </span>
+          <span
+            class="inline-flex items-center gap-1.5 rounded-full bg-status-pending-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-status-pending-700"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-status-pending-700"></span>
+            Pendiente
+          </span>
+          <span
+            class="inline-flex items-center gap-1.5 rounded-full bg-status-overdue-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-status-overdue-700"
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-status-overdue-700"></span>
+            Vencida
+          </span>
+        </div>
+      </section>
+
+      <!-- ─────────────────────────────────────────────────────────────────
+           SECCIÓN 4: Estado vacio
+           ───────────────────────────────────────────────────────────────── -->
+      <section class="mb-14">
+        <h2 class="mb-1 text-sm font-semibold text-ink-900">
+          4 · Estado vacio
+        </h2>
+        <p class="mb-6 text-xs text-ink-500">
+          Cuando no hay notificaciones. Copy corto, ilustracion minimal.
+        </p>
+
+        <div
+          class="w-full max-w-[400px] overflow-hidden rounded-popover border border-ink-100 bg-white shadow-popover"
+        >
+          <header
+            class="flex items-center justify-between border-b border-ink-100 px-4 py-3"
+          >
+            <div class="flex items-center gap-2.5">
+              <div
+                class="flex h-8 w-8 items-center justify-center rounded-[10px] bg-ink-100"
+              >
+                <svg
+                  class="h-4 w-4 text-primary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                  <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                </svg>
+              </div>
+              <h3 class="text-[15px] font-bold leading-5 text-ink-900">
+                Notificaciones
+              </h3>
+            </div>
+          </header>
+
+          <div class="flex flex-col items-center justify-center px-6 py-9">
+            <div
+              class="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-100"
+            >
+              <svg
+                class="h-8 w-8 text-ink-400"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
+            </div>
+            <p class="text-[14px] font-bold text-ink-900">Estas al dia</p>
+            <p
+              class="mt-1 max-w-[260px] text-center text-[12.5px] leading-4 text-ink-500"
+            >
+              No tienes notificaciones nuevas. Te avisaremos cuando ocurra
+              algo importante.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────────────────────────────────────────────────────
+           SECCIÓN 5: Anatomia tecnica
+           ───────────────────────────────────────────────────────────────── -->
+      <section class="mb-14">
+        <h2 class="mb-1 text-sm font-semibold text-ink-900">
+          5 · Tokens de diseño
+        </h2>
+        <p class="mb-6 text-xs text-ink-500">
+          Variables que se exponen desde <code>notificationTheme.ts</code> y
+          se mapean a clases Tailwind en la version web.
+        </p>
+
+        <div class="overflow-hidden rounded-card border border-ink-100 bg-white">
+          <table class="w-full text-left text-[13px]">
+            <thead class="bg-ink-50 text-[11px] font-bold uppercase tracking-wider text-ink-500">
+              <tr>
+                <th class="px-4 py-2.5">Token</th>
+                <th class="px-4 py-2.5">Valor</th>
+                <th class="px-4 py-2.5">Uso</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100 text-ink-900">
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">containerWidth</td>
+                <td class="px-4 py-2 font-mono text-[12px]">400</td>
+                <td class="px-4 py-2 text-ink-500">Ancho del popover (380-420 spec).</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">containerRadius</td>
+                <td class="px-4 py-2 font-mono text-[12px]">16</td>
+                <td class="px-4 py-2 text-ink-500">Radio del contenedor principal.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">cardMaxHeight</td>
+                <td class="px-4 py-2 font-mono text-[12px]">72</td>
+                <td class="px-4 py-2 text-ink-500">Altura maxima por tarjeta.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">cardGap</td>
+                <td class="px-4 py-2 font-mono text-[12px]">8</td>
+                <td class="px-4 py-2 text-ink-500">Separacion entre tarjetas.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">cardPadding</td>
+                <td class="px-4 py-2 font-mono text-[12px]">14</td>
+                <td class="px-4 py-2 text-ink-500">Padding interno de cada card.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">unreadBarWidth</td>
+                <td class="px-4 py-2 font-mono text-[12px]">3</td>
+                <td class="px-4 py-2 text-ink-500">Barra vertical lateral para no-leidas.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-2 font-mono text-[12px]">shadow</td>
+                <td class="px-4 py-2 font-mono text-[12px]">multi-capa slate-900</td>
+                <td class="px-4 py-2 text-ink-500">0 1 2, 0 8 24, 0 24 48 -12.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

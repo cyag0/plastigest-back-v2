@@ -260,6 +260,58 @@ class TaskService
     }
 
     /**
+     * Encuentra la tarea de discrepancia de recepción abierta para una compra.
+     * Filtra por metadata->>source porque el type 'stock_check' se reutiliza
+     * para otros módulos (conteos, etc.).
+     */
+    public function findOpenPurchaseDiscrepancyTask(PurchaseV2 $purchase): ?Task
+    {
+        return Task::where('related_type', PurchaseV2::class)
+            ->where('related_id', $purchase->id)
+            ->where('type', 'stock_check')
+            ->where('metadata->source', 'purchase_receive_discrepancy')
+            ->whereNotIn('status', ['completed', 'cancelled'])
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    /**
+     * Devuelve los datos de la última resolución de discrepancia para una compra,
+     * o null si nunca se resolvió una. La fuente de verdad es la tarea: si fue
+     * completada, leemos su metadata.resolution.
+     */
+    public function getLatestPurchaseDiscrepancyResolution(PurchaseV2 $purchase): ?array
+    {
+        $task = Task::withTrashed()
+            ->where('related_type', PurchaseV2::class)
+            ->where('related_id', $purchase->id)
+            ->where('type', 'stock_check')
+            ->where('metadata->source', 'purchase_receive_discrepancy')
+            ->where('status', 'completed')
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$task) {
+            return null;
+        }
+
+        $metadata = $task->metadata ?? [];
+        $resolution = $metadata['resolution'] ?? null;
+
+        if (!$resolution) {
+            return null;
+        }
+
+        return [
+            'task_id' => $task->id,
+            'resolution' => $resolution,
+            'resolved_by_user_id' => $task->completed_by,
+            'resolved_at' => optional($task->completed_at)->toIso8601String(),
+            'discrepancies_count' => $metadata['discrepancies_count'] ?? null,
+        ];
+    }
+
+    /**
      * Create transfer workflow task for modern InventoryTransfer flow.
      */
     public function createFromInventoryTransfer(InventoryTransfer $transfer, string $action = 'approve'): Task

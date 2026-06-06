@@ -256,7 +256,7 @@ class SalesOrderStockService
                 'user_id' => Auth::id() ?? $order->updated_by ?? $order->created_by,
                 'customer_id' => $order->customer_id,
                 'sale_date' => now()->toDateString(),
-                'status' => SaleStatus::DRAFT,
+                'status' => SaleStatus::CLOSED,
                 'subtotal' => $subtotal,
                 'tax' => 0,
                 'discount' => 0,
@@ -301,9 +301,9 @@ class SalesOrderStockService
                 ]);
             }
 
-            // 3. Close the sale so real stock is decremented via MovementService.
+            // 3. Decrement real stock via MovementService.
             $sale->load('details');
-            $sale->transitionTo(SaleStatus::CLOSED);
+            $sale->validateAndUpdateStock();
 
             // 4. Link the sale and mark the order as delivered.
             $order->forceFill([

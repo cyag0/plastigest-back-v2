@@ -815,14 +815,15 @@ class ProductController extends CrudController
                 'quantity' => 'required|integer|min:1|max:100'
             ])->validate();
 
-            // Verificar que el producto existe
-            $product = Product::findOrFail($productId);
+            // Verificar que el producto existe y pertenece a la compañía actual (evita IDOR cross-tenant)
+            $product = Product::where('company_id', CurrentCompany::id())
+                ->findOrFail($productId);
 
-            // Generar URL firmada que expira en 1 hora
+            // Generar URL firmada que expira en 1 hora, codificando el company_id para validación en el render
             $signedUrl = \Illuminate\Support\Facades\URL::temporarySignedRoute(
                 'products.labels.pdf',
                 now()->addHour(),
-                ['product' => $productId, 'quantity' => $quantity]
+                ['product' => $productId, 'quantity' => $quantity, 'company_id' => CurrentCompany::id()]
             );
 
             return response()->json([
@@ -830,8 +831,14 @@ class ProductController extends CrudController
                 'expires_at' => now()->addHour()->toISOString(),
             ]);
         } catch (\Exception $e) {
+            // Re-emitir excepciones HTTP y ModelNotFound para que Laravel las maneje con su status code original
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
             return response()->json([
-                'message' => 'Error al generar URL del PDF: ' . $e->getMessage()
+                'message' => 'Error al generar URL del PDF'
             ], 500);
         }
     }
@@ -848,6 +855,13 @@ class ProductController extends CrudController
             $validated = validator(['quantity' => $quantity], [
                 'quantity' => 'required|integer|min:1|max:100'
             ])->validate();
+
+            // Defensa en profundidad: validar que el company_id de la URL firmada coincide con el del producto
+            $companyId = $request->query('company_id');
+            abort_if(
+                $companyId === null || !Product::where('id', $productId)->where('company_id', $companyId)->exists(),
+                404
+            );
 
             $product = Product::findOrFail($productId);
             $quantity = $validated['quantity'];
@@ -949,8 +963,14 @@ class ProductController extends CrudController
 
             return $pdf->stream('etiquetas-' . $product->code . '.pdf');
         } catch (\Exception $e) {
+            // Re-emitir excepciones HTTP y ModelNotFound para que Laravel las maneje con su status code original
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
             return response()->json([
-                'message' => 'Error al generar el PDF: ' . $e->getMessage()
+                'message' => 'Error al generar el PDF'
             ], 500);
         }
     }

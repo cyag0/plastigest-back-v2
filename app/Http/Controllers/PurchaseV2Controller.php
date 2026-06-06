@@ -16,8 +16,10 @@ use App\Constants\Files;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
-use Exception;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Exception;
 
 class PurchaseV2Controller extends Controller
 {
@@ -252,6 +254,8 @@ class PurchaseV2Controller extends Controller
                         }),
                         'payment_method' => $purchase->payment_method,
                         'details_count' => $purchase->details->count(),
+                        'status_history' => $purchase->metadata ?? [],
+                        'discrepancy_resolution' => $this->taskService->getLatestPurchaseDiscrepancyResolution($purchase),
                     ],
                 ]
             ]);
@@ -289,6 +293,8 @@ class PurchaseV2Controller extends Controller
                 ], 422);
             }
 
+            $purchase->appendStatusLog(PurchaseV2::STATUS_ORDERED, Auth::id());
+
             $purchase->update([
                 'status' => PurchaseV2::STATUS_ORDERED,
                 'expected_delivery_date' => $validated['expected_delivery_date'] ?? null,
@@ -321,6 +327,8 @@ class PurchaseV2Controller extends Controller
 
         try {
             $purchase = PurchaseV2::ordered()->findOrFail($id);
+
+            $purchase->appendStatusLog(PurchaseV2::STATUS_IN_TRANSIT, Auth::id());
 
             $purchase->update([
                 'status' => PurchaseV2::STATUS_IN_TRANSIT,
@@ -387,6 +395,8 @@ class PurchaseV2Controller extends Controller
                     $detail->package_id
                 );
             }
+
+            $purchase->appendStatusLog(PurchaseV2::STATUS_RECEIVED, Auth::id());
 
             $purchase->update([
                 'status' => PurchaseV2::STATUS_RECEIVED,
@@ -674,11 +684,21 @@ class PurchaseV2Controller extends Controller
         }
 
         try {
+            $validated = $request->validate([
+                'reason' => 'nullable|string|max:500',
+            ]);
+
             $purchase = PurchaseV2::whereIn('status', [
                 PurchaseV2::STATUS_DRAFT,
                 PurchaseV2::STATUS_ORDERED,
                 PurchaseV2::STATUS_IN_TRANSIT
             ])->findOrFail($id);
+
+            $purchase->appendStatusLog(
+                PurchaseV2::STATUS_CANCELLED,
+                Auth::id(),
+                $validated['reason'] ?? null
+            );
 
             $purchase->update([
                 'status' => PurchaseV2::STATUS_CANCELLED,
@@ -706,6 +726,121 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al cancelar la compra',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Resolver la discrepancia de recepción de una compra.
+     *
+     * Cierra la tarea de discrepancia que se creó al recibir la compra
+     * con faltantes. La fuente de verdad de la resolución es la tarea:
+     * se guarda en su metadata (resolution) y se marca como completed.
+     *
+     * resolution:
+     *   - credit_note: el proveedor emitió nota de crédito
+     *   - adjustment:  se creó un ajuste de inventario (referenciar con adjustment_id)
+     *   - no_action:   se acepta el faltante sin acción
+     *   - other:       cualquier otra razón
+     */
+    public function resolveDiscrepancy(Request $request, $id)
+    {
+        if (!CurrentWorker::hasPermission('purchases_update')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        try {
+            $validated = $request->validate([
+                'resolution' => 'required|in:credit_note,adjustment,no_action,other',
+                'notes' => 'nullable|string|max:1000',
+                'adjustment_id' => 'nullable|integer|exists:movements,id',
+            ]);
+
+            $companyId = CurrentCompany::get()->id;
+            $locationId = CurrentLocation::get()->id;
+
+            $purchase = PurchaseV2::where('id', $id)
+                ->where('company_id', $companyId)
+                ->where('location_id', $locationId)
+                ->firstOrFail();
+
+            // Solo tiene sentido resolver la discrepancia de una compra recibida.
+            if ($purchase->status !== PurchaseV2::STATUS_RECEIVED) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Solo se puede resolver la discrepancia de una compra recibida',
+                ], 422);
+            }
+
+            $task = $this->taskService->findOpenPurchaseDiscrepancyTask($purchase);
+
+            if (!$task) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No hay una discrepancia pendiente para esta compra',
+                ], 422);
+            }
+
+            if ($validated['resolution'] === 'adjustment' && empty($validated['adjustment_id'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Si la resolución es "adjustment" debes proporcionar adjustment_id',
+                ], 422);
+            }
+
+            DB::beginTransaction();
+
+            // Persistir la resolución en la metadata de la tarea.
+            $taskMetadata = $task->metadata ?? [];
+            $taskMetadata['resolution'] = [
+                'type' => $validated['resolution'],
+                'notes' => $validated['notes'] ?? null,
+                'adjustment_id' => $validated['adjustment_id'] ?? null,
+                'resolved_by_user_id' => Auth::id(),
+                'resolved_at' => now()->toIso8601String(),
+            ];
+            $task->metadata = $taskMetadata;
+            $task->save();
+
+            // Cerrar la tarea (setea status, completed_at, completed_by).
+            $closed = $task->complete(Auth::user());
+
+            if (!$closed) {
+                throw new Exception('No se pudo cerrar la tarea de discrepancia');
+            }
+
+            // Notificar a quien asignó la tarea.
+            if ($task->assigned_by && $task->assigned_by !== Auth::id()) {
+                try {
+                    NotificationEngine::dispatch('task_event', $task->company_id, [
+                        'task'       => $task,
+                        'sub_type'   => 'completed',
+                        'actor_name' => Auth::user()->name,
+                    ], userId: $task->assigned_by);
+                } catch (Exception $e) {
+                    Log::warning('No se pudo notificar resolución de discrepancia', [
+                        'task_id' => $task->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Discrepancia resuelta',
+                'data' => [
+                    'task_id' => $task->id,
+                    'resolution' => $taskMetadata['resolution'],
+                ],
+            ]);
+        } catch (Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al resolver la discrepancia',
                 'error' => $e->getMessage()
             ], 500);
         }
@@ -755,4 +890,100 @@ class PurchaseV2Controller extends Controller
 
         return response()->json($purchase);
     } */
+
+    /**
+     * Generar URL firmada para el PDF de la compra (válida 1 hora).
+     */
+    public function generatePdfUrl($id)
+    {
+        if (!CurrentWorker::hasPermission('purchases_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        try {
+            $companyId = CurrentCompany::id();
+            $locationId = CurrentLocation::get()?->id;
+
+            // Validar que la compra pertenece a la compañía actual (anti-IDOR cross-tenant).
+            $purchase = PurchaseV2::where('company_id', $companyId)
+                ->where('location_id', $locationId)
+                ->findOrFail($id);
+
+            $signedUrl = URL::temporarySignedRoute(
+                'purchases-v2.pdf',
+                now()->addHour(),
+                [
+                    'purchases_v2' => $purchase->id,
+                    'company_id' => $companyId,
+                ]
+            );
+
+            return response()->json([
+                'url' => $signedUrl,
+                'expires_at' => now()->addHour()->toISOString(),
+            ]);
+        } catch (Exception $e) {
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
+            Log::error('Error al generar URL de PDF de compra: ' . $e->getMessage());
+
+            return response()->json([
+                'message' => 'Error al generar URL del PDF'
+            ], 500);
+        }
+    }
+
+    /**
+     * Generar PDF de la compra. Ruta pública-firmada (no requiere auth:sanctum).
+     */
+    public function generatePdf(Request $request, $id)
+    {
+        try {
+            // Defensa en profundidad: validar que el company_id firmado coincide.
+            $companyId = $request->query('company_id');
+            abort_if(
+                $companyId === null || !PurchaseV2::where('id', $id)->where('company_id', $companyId)->exists(),
+                404
+            );
+
+            $purchase = PurchaseV2::with([
+                'supplier',
+                'user',
+                'receivedBy',
+                'location',
+                'details.product',
+                'details.package',
+                'details.unit',
+            ])->findOrFail($id);
+
+            $discrepancyResolution = $this->taskService->getLatestPurchaseDiscrepancyResolution($purchase);
+
+            $pdf = Pdf::loadView('pdf.purchase', [
+                'purchase' => $purchase,
+                'discrepancyResolution' => $discrepancyResolution,
+            ]);
+
+            $pdf->setPaper('letter', 'portrait');
+
+            return response($pdf->output(), 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="compra-' . ($purchase->purchase_number ?? $purchase->id) . '-' . now()->format('Y-m-d') . '.pdf"',
+            ]);
+        } catch (Exception $e) {
+            if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                || $e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                throw $e;
+            }
+
+            Log::error('Error al generar PDF de compra: ' . $e->getMessage());
+            Log::error($e->getTraceAsString());
+
+            return response()->json([
+                'message' => 'Error al generar el PDF'
+            ], 500);
+        }
+    }
 }
