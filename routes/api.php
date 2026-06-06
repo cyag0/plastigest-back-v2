@@ -63,8 +63,14 @@ Route::prefix('auth')->group(function () {
 
         return response()->file($fullPath);
     })->where('path', '.*');
-    Route::post('register', [AuthController::class, 'register']);
-    Route::post('login', [AuthController::class, 'login']);
+    // Rate limit: 5 intentos de login por minuto por IP, 3 registros por minuto por IP.
+    // Laravel inyecta automaticamente los headers X-RateLimit-Limit / -Remaining
+    // en TODAS las respuestas (exitosas o no) y devuelve 429 con Retry-After
+    // cuando se excede. Ver bootstrap/app.php para personalizar la respuesta 429.
+    Route::post('register', [AuthController::class, 'register'])
+        ->middleware('throttle:3,1');
+    Route::post('login', [AuthController::class, 'login'])
+        ->middleware('throttle:5,1');
 });
 
 // Ruta pública para descargar PDFs con URL firmada

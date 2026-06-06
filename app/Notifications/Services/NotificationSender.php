@@ -94,6 +94,35 @@ class NotificationSender
         ]);
 
         try {
+            // TODO(perf): este `Mail::send` es sincrono y corre dentro del
+            // SendNotificationJob. Si el SMTP tarda en responder (timeout,
+            // DNS, TLS handshake, etc.) bloquea al worker y retrasa la
+            // generacion del push y la atencion de otros recipients.
+            //
+            // Hay dos opciones a evaluar cuando el volumen crezca:
+            //
+            // 1. Rapido y sin config adicional: cambiar a
+            //    `Mail::to(...)->queue(new GenericNotificationMail(...))`.
+            //    Laravel detecta que el Mailable usa el trait Queueable y
+            //    lo encola en la misma conexion (`QUEUE_CONNECTION=database`,
+            //    queue `notifications` por default). El worker existente
+            //    lo procesa. La unica diferencia: el delivery_status se
+            //    actualizaria a 'sent' por el sub-job, no por este metodo.
+            //
+            // 2. Mejor pero mas cambio: extraer el envio a un sub-job
+            //    dedicado (p.ej. `SendNotificationEmailJob`) con su propio
+            //    `tries`/`backoff` independiente del push. Asi un SMTP
+            //    caido no bloquea la entrega de push a otros recipients
+            //    del mismo evento, y se puede escalar el pool de workers
+            //    de email por separado. Habria que:
+            //    - Crear `App\Jobs\SendNotificationEmailJob`
+            //    - Mover toda la logica de este try/catch ahi
+            //    - Reemplazar este `Mail::send` por
+            //      `SendNotificationEmailJob::dispatch($record->id)`
+            //    - Agregar el nuevo queue al supervisor: `--queue=notifications,emails,default`
+            //
+            // Mientras tanto, dejaremos `send()` para no cambiar
+            // delivery_status contract; en dev con Mailhog es instantaneo.
             Mail::to($user->email)->send(new GenericNotificationMail($template, $user));
             $record->update(['delivery_status' => 'sent']);
         } catch (\Throwable $e) {
