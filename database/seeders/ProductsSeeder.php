@@ -66,28 +66,100 @@ class ProductsSeeder extends Seeder
          * - Precios de venta: archivo "Productos para DiDi.xlsx".
          * - Precios de compra: estimados al 65% del precio de venta (margen bruto ~35%).
          * - Unidades: 'Litro', 'Kilogramo', 'Pieza', 'Caja', 'Paquete', 'Galón' (si existe).
+         *
+         * =====================================================================
+         * ANÁLISIS DE UNIDADES, PAQUETES Y BUNDLES
+         * =====================================================================
+         *
+         * CONCEPTOS:
+         *  • PAQUETE: N unidades del MISMO producto (ej. "Caja de 12 cocadas",
+         *    "Paquete de 4 galletas"). Se modela con unit="Caja"/"Paquete" y
+         *    quantity_per_package en la tabla product_packages.
+         *  • BUNDLE: combinación de productos DIFERENTES (ej. "1 rompope + 1
+         *    cocada + 1 barra"). Se modela con product_ingredients apuntando a
+         *    varios ingredient_id con su cantidad.
+         *  • UNIDAD: representa cómo se comercializa/almacena el producto
+         *    (Pieza, Caja, Kilogramo, Litro, etc.).
+         *
+         * CAMBIOS APLICADOS EN ESTE SEEDER:
+         *
+         * ✅ MIGRACIÓN DE UNIDADES "Litro" → "Pieza":
+         *    - Todas las "Botella/Vaso/Galón" de BEBIDAS (14 productos)
+         *    - "Aceite de coco" (DER-AC-001)
+         *    - "Rompope" (POS-RP-001)
+         *    Las bebidas y líquidos embotellados ahora se manejan por pieza/envase.
+         *    El volumen queda en la descripción del producto.
+         *
+         * 1) UNIDADES CUESTIONABLES RESTANTES (kilos donde podría ser pieza):
+         *    - "Coco rallado 1/2 KG" (RAL-CR-500): unit="Kilogramo" es OK
+         *      si se vende a granel, pero si la bolsa es la unidad de venta,
+         *      debería ser "Pieza". Dejamos como Kilogramo por ahora.
+         *
+         * 2) PRODUCTOS QUE SON PAQUETES (mismo producto x N):
+         *    ✅ Ya están bien catalogados (unit="Caja" o "Paquete"):
+         *    - "Paquete/Botella 1 LTR" (POS-PB-1L) — paquete de botellas
+         *    - "Paquete/Botella 500 ML" (POS-PB-500) — paquete de botellas
+         *    - "Paquete/Galones" (POS-PG-001) — paquete de galones
+         *    - "Galletas 4 pzs" (DUL-GLL-4P) — paquete de 4 galletas
+         *    - "Caja de coco rallado 10 KG" (RAL-CCR-10K) — caja con 10 kg
+         *    - "Promo 2 rompopes" (PROM-2RP) — paquete de 2 botellas
+         *    - "Promo 2 bolsas de coco" (PROM-2BC) — paquete de 2 bolsas
+         *    - "Promo horchata 3 x" (PROM-HX3) — paquete de 3 botellas
+         *    - Todas las "Caja de cocadas/duraznitos/limoncitos/pellizcadas/etc."
+         *      son paquetes de N piezas del mismo sabor.
+         *    ❌ UNIDAD INCORRECTA PENDIENTE:
+         *    - "Coco mayoreo (100 pzs)" (NAT-CM-100): unit="Pieza" es
+         *      INCORRECTO. Es un bulto/paquete de 100 cocos. Debería ser
+         *      unit="Paquete" y quantity_per_package=100 en product_packages.
+         *    Las quantity_per_package se registran en PackageSeeder (refactorizado).
+         *
+         * 3) BUNDLES (combinación de productos diferentes):
+         *    ⚠️ En el catálogo actual NO hay bundles con productos diferentes.
+         *    Todos los productos de la categoría "Promociones" son paquetes
+         *    de N unidades del MISMO producto (2 rompopes, 3 horchatas, etc.).
+         *    Si en el futuro se crean promos mezcladas (ej. "1 rompope +
+         *    1 cocada + 1 barra"), esas SÍ serán bundles y deberán
+         *    modelarse en product_ingredients.
+         *
+         * RECOMENDACIONES:
+         *  - Crear un BundleSeeder.php que registre los bundles (combinaciones)
+         *    en product_ingredients cuando se requiera.
+         *  - Considerar agregar campo is_bundle (bool) o un product_type
+         *    adicional ('bundle') para distinguir paquetes/bundles
+         *    explícitamente en la tabla products.
+         * =====================================================================
          */
         $products = [
             // ============ BEBIDAS ============
-            ['name' => 'Botella de agua de coco 1/2 LT', 'code' => 'BEB-BC-500', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Botella de agua de coco natural 500 ml'],
-            ['name' => 'Botella de agua de coco 1 LT', 'code' => 'BEB-BC-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Botella de agua de coco natural 1 L'],
-            ['name' => 'Botella de horchata sin azúcar 1 LT', 'code' => 'BEB-HSA-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Horchata de coco sin azúcar 1 L'],
-            ['name' => 'Botella de horchata 1 LT', 'code' => 'BEB-HC-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Horchata de coco 1 L'],
-            ['name' => 'Botella de horchata 1/2 LT', 'code' => 'BEB-HC-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Horchata de coco 500 ml'],
-            ['name' => 'Galón de horchata', 'code' => 'BEB-HC-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Galón de horchata de coco'],
-            ['name' => 'Galón de agua de coco 4 LT', 'code' => 'BEB-AC-GAL', 'sale_price' => 210, 'purchase_price' => 136.50, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Galón de agua de coco natural 4 L'],
-            ['name' => 'Vaso de agua de coco mediano', 'code' => 'BEB-VM-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Vaso mediano de agua de coco'],
-            ['name' => 'Vaso de agua de coco grande', 'code' => 'BEB-VG-001', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Vaso grande de agua de coco'],
-            ['name' => 'Tuba 1/2 LT', 'code' => 'BEB-TB-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Tuba natural 500 ml'],
-            ['name' => 'Tuba 1 LT', 'code' => 'BEB-TB-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Tuba natural 1 L'],
-            ['name' => 'Galón de tuba', 'code' => 'BEB-TB-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Galón de tuba natural'],
-            ['name' => 'Mariscoco sin agua', 'code' => 'BEB-MR-S/A', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Mariscoco preparado sin agua'],
-            ['name' => 'Mariscoco con agua', 'code' => 'BEB-MR-C/A', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'description' => 'Mariscoco preparado con agua'],
+            // ✅ MIGRADO: unidad "Litro" → "Pieza".
+            // Las botellas/vasos/galones se venden por envase completo.
+            // El volumen queda en la descripción.
+            ['name' => 'Botella de agua de coco 1/2 LT', 'code' => 'BEB-BC-500', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Botella de agua de coco natural 500 ml'],
+            ['name' => 'Botella de agua de coco 1 LT', 'code' => 'BEB-BC-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Botella de agua de coco natural 1 L'],
+            ['name' => 'Botella de horchata sin azúcar 1 LT', 'code' => 'BEB-HSA-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Horchata de coco sin azúcar 1 L'],
+            ['name' => 'Botella de horchata 1 LT', 'code' => 'BEB-HC-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Horchata de coco 1 L'],
+            ['name' => 'Botella de horchata 1/2 LT', 'code' => 'BEB-HC-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Horchata de coco 500 ml'],
+            ['name' => 'Galón de horchata', 'code' => 'BEB-HC-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Galón de horchata de coco'],
+            ['name' => 'Galón de agua de coco 4 LT', 'code' => 'BEB-AC-GAL', 'sale_price' => 210, 'purchase_price' => 136.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Galón de agua de coco natural 4 L'],
+            ['name' => 'Vaso de agua de coco mediano', 'code' => 'BEB-VM-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Vaso mediano de agua de coco'],
+            ['name' => 'Vaso de agua de coco grande', 'code' => 'BEB-VG-001', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Vaso grande de agua de coco'],
+            ['name' => 'Tuba 1/2 LT', 'code' => 'BEB-TB-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Tuba natural 500 ml'],
+            ['name' => 'Tuba 1 LT', 'code' => 'BEB-TB-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Tuba natural 1 L'],
+            ['name' => 'Galón de tuba', 'code' => 'BEB-TB-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Galón de tuba natural'],
+            ['name' => 'Mariscoco sin agua', 'code' => 'BEB-MR-S/A', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Mariscoco preparado sin agua'],
+            ['name' => 'Mariscoco con agua', 'code' => 'BEB-MR-C/A', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Mariscoco preparado con agua'],
 
             // ============ COCO NATURAL ============
             ['name' => 'Coco partido en bolsa', 'code' => 'NAT-CPB-001', 'sale_price' => 20, 'purchase_price' => 13.00, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Bolsa de coco partido'],
             ['name' => 'Coco tomado en el local', 'code' => 'NAT-CT-001', 'sale_price' => 70, 'purchase_price' => 45.50, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco fresco para tomar en el local'],
             ['name' => 'Coco socato pieza', 'code' => 'NAT-CSC-001', 'sale_price' => 23, 'purchase_price' => 14.95, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco socato por pieza'],
+            // 📦 PAQUETE (definido de 100 piezas del MISMO producto):
+            // La unidad "Pieza" es INCORRECTA. Este producto es un paquete/costal
+            // de 100 cocos. Debería ser:
+            //   - unit = "Paquete"
+            //   - quantity_per_package = 100 en product_packages
+            //   - o manejar el stock por bulto y no por pieza individual
+            // El precio $38 también parece ser el precio POR PIEZA, no por el bulto.
             ['name' => 'Coco mayoreo (100 pzs)', 'code' => 'NAT-CM-100', 'sale_price' => 38, 'purchase_price' => 24.70, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco por mayoreo, paquete de 100 piezas'],
             ['name' => 'Coco destopado 3/4', 'code' => 'NAT-CD-3/4', 'sale_price' => 48, 'purchase_price' => 31.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco destopado al 3/4'],
             ['name' => 'Coco seco', 'code' => 'NAT-CS-001', 'sale_price' => 28, 'purchase_price' => 18.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco seco entero'],
@@ -97,20 +169,27 @@ class ProductsSeeder extends Seeder
             ['name' => 'Cazuela de coco', 'code' => 'NAT-CZ-001', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Cazuela preparada con coco'],
 
             // ============ DERIVADOS DE COCO ============
-            ['name' => 'Aceite de coco', 'code' => 'DER-AC-001', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Litro', 'description' => 'Aceite de coco virgen'],
+            // ✅ MIGRADO: "Aceite de coco" → "Pieza" (se vende por botella/envase).
+            ['name' => 'Aceite de coco', 'code' => 'DER-AC-001', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Pieza', 'description' => 'Aceite de coco virgen'],
             ['name' => 'Copra 1 kilo', 'code' => 'DER-COP-1K', 'sale_price' => 50, 'purchase_price' => 32.50, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'description' => 'Copra de coco 1 kg'],
             ['name' => 'Pulpa de coco por kilo', 'code' => 'DER-PC-1K', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'description' => 'Pulpa de coco fresca 1 kg'],
             ['name' => 'Flor de coco', 'code' => 'DER-FC-001', 'sale_price' => 350, 'purchase_price' => 227.50, 'category_name' => 'Derivados de coco', 'unit' => 'Pieza', 'description' => 'Flor de coco fresca'],
             ['name' => 'Harina de coco', 'code' => 'DER-HC-001', 'sale_price' => 85, 'purchase_price' => 55.25, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'description' => 'Harina de coco'],
 
             // ============ POSTRES Y MÁS ============
-            ['name' => 'Rompope', 'code' => 'POS-RP-001', 'sale_price' => 180, 'purchase_price' => 117.00, 'category_name' => 'Postres y más', 'unit' => 'Litro', 'description' => 'Rompope artesanal'],
+            // ✅ MIGRADO: "Rompope" → "Pieza" (se vende por botella/envase).
+            ['name' => 'Rompope', 'code' => 'POS-RP-001', 'sale_price' => 180, 'purchase_price' => 117.00, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Rompope artesanal'],
             ['name' => 'Dulce de leche', 'code' => 'POS-DL-001', 'sale_price' => 15, 'purchase_price' => 9.75, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Dulce de leche artesanal'],
             ['name' => 'Cuala', 'code' => 'POS-CUA-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Cuala de coco chica'],
             ['name' => 'Cuala grande', 'code' => 'POS-CUAG-001', 'sale_price' => 85, 'purchase_price' => 55.25, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Cuala de coco grande'],
             ['name' => 'Polvorín', 'code' => 'POS-POL-001', 'sale_price' => 30, 'purchase_price' => 19.50, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Polvorín de coco'],
             ['name' => 'Tostadas', 'code' => 'POS-TOS-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Tostadas de coco'],
             ['name' => 'Manzanitas', 'code' => 'POS-MAN-001', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Manzanitas de coco (precio variable: $40, $60 u $80)'],
+            // 📦 PAQUETES (N botellas del mismo producto):
+            // "Paquete/Botella 1 LTR", "Paquete/Botella 500 ML" y "Paquete/Galones"
+            // son paquetes. Ya están bien catalogados con unit="Paquete" pero
+            // falta registrar la quantity_per_package en product_packages
+            // (ej. paquete de 12 botellas, o paquete de 4 galones).
             ['name' => 'Paquete/Botella 1 LTR', 'code' => 'POS-PB-1L', 'sale_price' => 320, 'purchase_price' => 208.00, 'category_name' => 'Postres y más', 'unit' => 'Paquete', 'description' => 'Paquete de botellas 1 L'],
             ['name' => 'Paquete/Botella 500 ML', 'code' => 'POS-PB-500', 'sale_price' => 490, 'purchase_price' => 318.50, 'category_name' => 'Postres y más', 'unit' => 'Paquete', 'description' => 'Paquete de botellas 500 ml'],
             ['name' => 'Paquete/Galones', 'code' => 'POS-PG-001', 'sale_price' => 320, 'purchase_price' => 208.00, 'category_name' => 'Postres y más', 'unit' => 'Paquete', 'description' => 'Paquete de galones'],
@@ -118,20 +197,31 @@ class ProductsSeeder extends Seeder
             ['name' => 'Botella de 1/2 LT individual', 'code' => 'POS-BI-500', 'sale_price' => 5, 'purchase_price' => 3.25, 'category_name' => 'Postres y más', 'unit' => 'Pieza', 'description' => 'Botella individual 1/2 L'],
 
             // ============ COCADAS ============
+            // 📦 Las versiones "caja" son PAQUETES del mismo producto.
+            // Cada "caja" agrupa N piezas del mismo sabor (ya están bien con unit="Caja").
+            // Falta registrar quantity_per_package en product_packages para que
+            // el sistema sepa cuántas piezas trae cada caja (parece ser ~20 piezas).
             ['name' => 'Cocada de nuez 1 pza', 'code' => 'COC-CN-1P', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Cocadas', 'unit' => 'Pieza', 'description' => 'Cocada de nuez por pieza'],
+            // 📦 PAQUETE (caja de cocadas del mismo sabor):
             ['name' => 'Cocada de nuez caja', 'code' => 'COC-CN-CJ', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Cocadas', 'unit' => 'Caja', 'description' => 'Cocada de nuez por caja'],
             ['name' => 'Cocada de limón 1 pza', 'code' => 'COC-CL-1P', 'sale_price' => 18, 'purchase_price' => 11.70, 'category_name' => 'Cocadas', 'unit' => 'Pieza', 'description' => 'Cocada de limón por pieza'],
+            // 📦 PAQUETE (caja de cocadas del mismo sabor):
             ['name' => 'Cocada de limón caja', 'code' => 'COC-CL-CJ', 'sale_price' => 85, 'purchase_price' => 55.25, 'category_name' => 'Cocadas', 'unit' => 'Caja', 'description' => 'Cocada de limón por caja'],
             ['name' => 'Cocada greñuda 1 pza', 'code' => 'COC-CG-1P', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Cocadas', 'unit' => 'Pieza', 'description' => 'Cocada greñuda por pieza'],
+            // 📦 PAQUETE (caja de cocadas del mismo sabor):
             ['name' => 'Cocada greñuda caja', 'code' => 'COC-CG-CJ', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Cocadas', 'unit' => 'Caja', 'description' => 'Cocada greñuda por caja'],
             ['name' => 'Cocada mixta grande 1 pza', 'code' => 'COC-CMG-1P', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Cocadas', 'unit' => 'Pieza', 'description' => 'Cocada mixta grande por pieza'],
+            // 📦 PAQUETE (caja de cocadas del mismo sabor):
             ['name' => 'Cocada mixta grande caja', 'code' => 'COC-CMG-CJ', 'sale_price' => 120, 'purchase_price' => 78.00, 'category_name' => 'Cocadas', 'unit' => 'Caja', 'description' => 'Cocada mixta grande por caja'],
             ['name' => 'Cocada mixta chica 1 pza', 'code' => 'COC-CMC-1P', 'sale_price' => 18, 'purchase_price' => 11.70, 'category_name' => 'Cocadas', 'unit' => 'Pieza', 'description' => 'Cocada mixta chica por pieza'],
+            // 📦 PAQUETE (caja de cocadas del mismo sabor):
             ['name' => 'Cocada mixta chica caja', 'code' => 'COC-CMC-CJ', 'sale_price' => 130, 'purchase_price' => 84.50, 'category_name' => 'Cocadas', 'unit' => 'Caja', 'description' => 'Cocada mixta chica por caja'],
+            // 📦 PAQUETE (caja de cocadas del mismo sabor):
             ['name' => 'Cocada horneada caja', 'code' => 'COC-CH-CJ', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Cocadas', 'unit' => 'Caja', 'description' => 'Cocada horneada por caja'],
             ['name' => 'Cocada de bola 1 pza', 'code' => 'COC-CB-1P', 'sale_price' => 30, 'purchase_price' => 19.50, 'category_name' => 'Cocadas', 'unit' => 'Pieza', 'description' => 'Cocada de bola por pieza'],
 
             // ============ BARRAS ============
+            // 📦 PAQUETE (caja con N barras surtidas):
             ['name' => 'Barra mixta caja', 'code' => 'BAR-BM-CJ', 'sale_price' => 185, 'purchase_price' => 120.25, 'category_name' => 'Barras', 'unit' => 'Caja', 'description' => 'Caja de barras mixtas'],
             ['name' => 'Barra mixta chica 1 pza', 'code' => 'BAR-BMC-1P', 'sale_price' => 10, 'purchase_price' => 6.50, 'category_name' => 'Barras', 'unit' => 'Pieza', 'description' => 'Barra mixta chica por pieza'],
             ['name' => 'Barra de nuez grande', 'code' => 'BAR-BNG-001', 'sale_price' => 45, 'purchase_price' => 29.25, 'category_name' => 'Barras', 'unit' => 'Pieza', 'description' => 'Barra de nuez grande'],
@@ -147,27 +237,50 @@ class ProductsSeeder extends Seeder
 
             // ============ DURAZNITOS Y LIMONCITOS ============
             ['name' => 'Duraznitos 1 pza', 'code' => 'DUR-1P', 'sale_price' => 18, 'purchase_price' => 11.70, 'category_name' => 'Duraznitos y limoncitos', 'unit' => 'Pieza', 'description' => 'Duraznito de coco por pieza'],
+            // 📦 PAQUETE (caja de duraznitos):
             ['name' => 'Duraznitos caja', 'code' => 'DUR-CJ', 'sale_price' => 75, 'purchase_price' => 48.75, 'category_name' => 'Duraznitos y limoncitos', 'unit' => 'Caja', 'description' => 'Caja de duraznitos de coco'],
             ['name' => 'Limoncitos 1 pza', 'code' => 'LIM-1P', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Duraznitos y limoncitos', 'unit' => 'Pieza', 'description' => 'Limoncito de coco por pieza'],
+            // 📦 PAQUETE (caja de limoncitos):
             ['name' => 'Limoncitos caja', 'code' => 'LIM-CJ', 'sale_price' => 95, 'purchase_price' => 61.75, 'category_name' => 'Duraznitos y limoncitos', 'unit' => 'Caja', 'description' => 'Caja de limoncitos de coco'],
 
             // ============ PELLIZCADAS Y PELIZCADAS ============
             ['name' => 'Pellizcada 1 pza', 'code' => 'PEL-1P', 'sale_price' => 18, 'purchase_price' => 11.70, 'category_name' => 'Pellizcadas y pelizcadas', 'unit' => 'Pieza', 'description' => 'Pellizcada de coco por pieza'],
+            // 📦 PAQUETE (caja de pellizcadas):
             ['name' => 'Pellizcada caja', 'code' => 'PEL-CJ', 'sale_price' => 120, 'purchase_price' => 78.00, 'category_name' => 'Pellizcadas y pelizcadas', 'unit' => 'Caja', 'description' => 'Caja de pellizcadas de coco'],
 
             // ============ DULCES TRADICIONALES DE COCO ============
+            // 📦 PAQUETE (caja de galletas):
             ['name' => 'Galletas caja', 'code' => 'DUL-GLL-CJ', 'sale_price' => 75, 'purchase_price' => 48.75, 'category_name' => 'Dulces tradicionales de coco', 'unit' => 'Caja', 'description' => 'Caja de galletas de coco'],
+            // 📦 PAQUETE (paquete de 4 galletas - ya tiene unit="Paquete", OK):
             ['name' => 'Galletas 4 pzs', 'code' => 'DUL-GLL-4P', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Dulces tradicionales de coco', 'unit' => 'Paquete', 'description' => 'Paquete de 4 galletas de coco'],
 
             // ============ COCO RALLADO Y DERIVADOS ============
+            // ✅ "Coco rallado 1 KG" vendido por KILOGRAMO. Es correcto.
             ['name' => 'Coco rallado 1 KG', 'code' => 'RAL-CR-1K', 'sale_price' => 120, 'purchase_price' => 78.00, 'category_name' => 'Coco rallado y derivados', 'unit' => 'Kilogramo', 'description' => 'Coco rallado natural 1 kg'],
+            // ⚠️ "Coco rallado 1/2 KG" usa "Kilogramo" como unidad.
+            // Si se vende por BOLSA de medio kilo y la bolsa es la unidad de venta,
+            // considerar "Pieza" (una bolsa). Si se vende a granel por peso, está OK.
             ['name' => 'Coco rallado 1/2 KG', 'code' => 'RAL-CR-500', 'sale_price' => 75, 'purchase_price' => 48.75, 'category_name' => 'Coco rallado y derivados', 'unit' => 'Kilogramo', 'description' => 'Coco rallado natural 1/2 kg'],
             ['name' => 'Bolsa de coco rallado 1 KG', 'code' => 'RAL-BCR-1K', 'sale_price' => 120, 'purchase_price' => 78.00, 'category_name' => 'Coco rallado y derivados', 'unit' => 'Kilogramo', 'description' => 'Bolsa de coco rallado 1 kg'],
+            // 📦 PAQUETE (caja con 10 kg de coco rallado):
+            // Unit="Caja" está correcto. Falta registrar quantity_per_package=10
+            // en product_packages para que el sistema sepa que la caja equivale
+            // a 10 kg al calcular conversiones o stock.
             ['name' => 'Caja de coco rallado 10 KG', 'code' => 'RAL-CCR-10K', 'sale_price' => 1000, 'purchase_price' => 650.00, 'category_name' => 'Coco rallado y derivados', 'unit' => 'Caja', 'description' => 'Caja de coco rallado 10 kg (mayoreo)'],
 
             // ============ PROMOCIONES ============
+            // 🎁 BUNDLES / PAQUETES PROMOCIONALES:
+            // Estas son promos de N unidades del MISMO producto. Estrictamente son
+            // PAQUETES (quantity_per_package = 2, 3, etc. en product_packages)
+            // y NO bundles (un bundle implica combinación de productos DIFERENTES).
+            // Sin embargo, si en el futuro se crean promos mezclando productos
+            // (ej. "1 rompope + 1 cocada + 1 barra"), esas SÍ serían bundles
+            // y deberían modelarse en product_ingredients.
+            // 📦 PAQUETE (2 botellas del mismo producto - rompope):
             ['name' => 'Promo 2 rompopes', 'code' => 'PROM-2RP', 'sale_price' => 300, 'purchase_price' => 195.00, 'category_name' => 'Promociones', 'unit' => 'Paquete', 'description' => 'Promoción 2 botellas de rompope'],
+            // 📦 PAQUETE (2 bolsas del mismo producto - coco partido):
             ['name' => 'Promo 2 bolsas de coco', 'code' => 'PROM-2BC', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Promociones', 'unit' => 'Paquete', 'description' => 'Promoción 2 bolsas de coco partido'],
+            // 📦 PAQUETE (3 botellas del mismo producto - horchata):
             ['name' => 'Promo horchata 3 x', 'code' => 'PROM-HX3', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Promociones', 'unit' => 'Paquete', 'description' => 'Promoción 3 horchatas'],
         ];
 
