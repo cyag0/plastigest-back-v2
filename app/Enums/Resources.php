@@ -28,6 +28,8 @@ enum Resources: string
     case TASKS = 'tasks';
     case REMINDERS = 'reminders';
     case PRODUCTION = 'production';
+    case PRODUCTION_ORDERS = 'production_orders';
+    case FORMULAS = 'formulas';
     case CASH_MOVEMENTS = 'cash_movements';
 
     /**
@@ -60,6 +62,8 @@ enum Resources: string
             self::TASKS => 'Tareas',
             self::REMINDERS => 'Recordatorios',
             self::PRODUCTION => 'Producción',
+            self::PRODUCTION_ORDERS => 'Órdenes de Producción',
+            self::FORMULAS => 'Fórmulas',
             self::CASH_MOVEMENTS => 'Movimientos de Caja',
         };
     }
@@ -94,6 +98,8 @@ enum Resources: string
             self::TASKS => 'Gestión de tareas internas',
             self::REMINDERS => 'Recordatorios y alertas programadas',
             self::PRODUCTION => 'Control de producción y órdenes',
+            self::PRODUCTION_ORDERS => 'Captura de órdenes de producción con rendimientos reales',
+            self::FORMULAS => 'Plantillas de fórmulas y recetas reutilizables',
             self::CASH_MOVEMENTS => 'Movimientos de caja y tesorería',
         };
     }
@@ -128,6 +134,8 @@ enum Resources: string
             self::TASKS => 'checkbox-marked-outline',
             self::REMINDERS => 'alarm',
             self::PRODUCTION => 'factory',
+            self::PRODUCTION_ORDERS => 'clipboard-text',
+            self::FORMULAS => 'flask',
             self::CASH_MOVEMENTS => 'cash-multiple',
         };
     }

@@ -180,8 +180,9 @@ abstract class CrudController extends Controller
         }
 
         // Filtro por estado activo/inactivo
+        // Acepta booleanos reales, "true"/"false" como string, 1/0, etc.
         if (isset($params['is_active'])) {
-            $query->where('is_active', $params['is_active']);
+            $query->where('is_active', filter_var($params['is_active'], FILTER_VALIDATE_BOOLEAN));
         }
 
         // Filtro por company_id si existe

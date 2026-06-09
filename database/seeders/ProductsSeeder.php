@@ -53,19 +53,24 @@ class ProductsSeeder extends Seeder
             return;
         }
 
-        // Obtener el proveedor principal de la compañía (TESTUS PET SOLUTIONS)
-        $supplier = DB::table('suppliers')->where('company_id', $company->id)->first();
-        $supplierId = $supplier?->id;
+        // Cargar todos los proveedores de la compañía indexados por nombre
+        $suppliers = DB::table('suppliers')
+            ->where('company_id', $company->id)
+            ->pluck('id', 'name');
 
         // Cargar unidades disponibles
         $units = DB::table('units')->pluck('id', 'name');
 
         /**
          * Catálogo de productos reales.
-         * Estructura: [name, code, sale_price, purchase_price, category_name, unit, description?]
+         * Estructura: [name, code, sale_price, purchase_price, category_name, unit, product_type, description?]
          * - Precios de venta: archivo "Productos para DiDi.xlsx".
          * - Precios de compra: estimados al 65% del precio de venta (margen bruto ~35%).
          * - Unidades: 'Litro', 'Kilogramo', 'Pieza', 'Caja', 'Paquete', 'Galón' (si existe).
+         * - product_type:
+         *     'raw_material' = materia prima (cocos crudos)
+         *     'processed'    = producto intermedio (agua, pulpa, bases)
+         *     'commercial'   = producto final para venta al público
          *
          * =====================================================================
          * ANÁLISIS DE UNIDADES, PAQUETES Y BUNDLES
@@ -130,51 +135,58 @@ class ProductsSeeder extends Seeder
          * =====================================================================
          */
         $products = [
-            // ============ BEBIDAS ============
+            // ============ MATERIAS PRIMAS (raw_material) ============
+            // Lo que se procesa en la planta: coco entero fresco para abrir
+            // y coco partido como variante. supplier_name indica el proveedor real.
+            ['name' => 'Coco Entero', 'code' => 'MP-COCO-001', 'sale_price' => 0, 'purchase_price' => 18, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'raw_material', 'supplier_name' => 'PROVEEDOR DE COCOS', 'description' => 'Coco entero fresco sin procesar. Materia prima principal de la planta.'],
+            ['name' => 'Coco partido en bolsa', 'code' => 'NAT-CPB-001', 'sale_price' => 20, 'purchase_price' => 13.00, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'raw_material', 'supplier_name' => 'PROVEEDOR DE COCOS', 'description' => 'Bolsa de coco partido listo para extraer agua y pulpa'],
+
+            // ============ PRODUCTOS INTERMEDIOS (processed) ============
+            // Salen de Nivel 1 (coco) y son insumos para Nivel 2 y 3.
+            // Se miden a granel (litros / kilogramos) sin envasar.
+            // NO tienen proveedor: se producen en planta.
+            ['name' => 'Agua de Coco (a granel)', 'code' => 'INT-AGUA-001', 'sale_price' => 0, 'purchase_price' => 0, 'category_name' => 'Derivados de coco', 'unit' => 'Litro', 'product_type' => 'processed', 'description' => 'Agua de coco natural a granel. Insumo para bebidas embotelladas.'],
+            ['name' => 'Pulpa de Coco (a granel)', 'code' => 'INT-PULPA-001', 'sale_price' => 0, 'purchase_price' => 0, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'product_type' => 'processed', 'description' => 'Pulpa de coco fresca a granel. Insumo para cocadas, barras y rallado.'],
+            ['name' => 'Horchata base', 'code' => 'INT-HORCH-001', 'sale_price' => 0, 'purchase_price' => 0, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'product_type' => 'processed', 'description' => 'Horchata de coco concentrada a granel. Se envasa en botellas/galones.'],
+            ['name' => 'Tuba base', 'code' => 'INT-TUBA-001', 'sale_price' => 0, 'purchase_price' => 0, 'category_name' => 'Bebidas', 'unit' => 'Litro', 'product_type' => 'processed', 'description' => 'Tuba natural a granel. Se envasa en botellas/galones.'],
+
+            // ============ BEBIDAS (commercial) ============
             // ✅ MIGRADO: unidad "Litro" → "Pieza".
             // Las botellas/vasos/galones se venden por envase completo.
             // El volumen queda en la descripción.
-            ['name' => 'Botella de agua de coco 1/2 LT', 'code' => 'BEB-BC-500', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Botella de agua de coco natural 500 ml'],
-            ['name' => 'Botella de agua de coco 1 LT', 'code' => 'BEB-BC-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Botella de agua de coco natural 1 L'],
-            ['name' => 'Botella de horchata sin azúcar 1 LT', 'code' => 'BEB-HSA-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Horchata de coco sin azúcar 1 L'],
-            ['name' => 'Botella de horchata 1 LT', 'code' => 'BEB-HC-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Horchata de coco 1 L'],
-            ['name' => 'Botella de horchata 1/2 LT', 'code' => 'BEB-HC-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Horchata de coco 500 ml'],
-            ['name' => 'Galón de horchata', 'code' => 'BEB-HC-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Galón de horchata de coco'],
-            ['name' => 'Galón de agua de coco 4 LT', 'code' => 'BEB-AC-GAL', 'sale_price' => 210, 'purchase_price' => 136.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Galón de agua de coco natural 4 L'],
-            ['name' => 'Vaso de agua de coco mediano', 'code' => 'BEB-VM-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Vaso mediano de agua de coco'],
-            ['name' => 'Vaso de agua de coco grande', 'code' => 'BEB-VG-001', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Vaso grande de agua de coco'],
-            ['name' => 'Tuba 1/2 LT', 'code' => 'BEB-TB-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Tuba natural 500 ml'],
-            ['name' => 'Tuba 1 LT', 'code' => 'BEB-TB-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Tuba natural 1 L'],
-            ['name' => 'Galón de tuba', 'code' => 'BEB-TB-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Galón de tuba natural'],
-            ['name' => 'Mariscoco sin agua', 'code' => 'BEB-MR-S/A', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Mariscoco preparado sin agua'],
-            ['name' => 'Mariscoco con agua', 'code' => 'BEB-MR-C/A', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'description' => 'Mariscoco preparado con agua'],
+            ['name' => 'Botella de agua de coco 1/2 LT', 'code' => 'BEB-BC-500', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Botella de agua de coco natural 500 ml'],
+            ['name' => 'Botella de agua de coco 1 LT', 'code' => 'BEB-BC-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Botella de agua de coco natural 1 L'],
+            ['name' => 'Botella de horchata sin azúcar 1 LT', 'code' => 'BEB-HSA-1L', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Horchata de coco sin azúcar 1 L'],
+            ['name' => 'Botella de horchata 1 LT', 'code' => 'BEB-HC-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Horchata de coco 1 L'],
+            ['name' => 'Botella de horchata 1/2 LT', 'code' => 'BEB-HC-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Horchata de coco 500 ml'],
+            ['name' => 'Galón de horchata', 'code' => 'BEB-HC-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Galón de horchata de coco'],
+            ['name' => 'Galón de agua de coco 4 LT', 'code' => 'BEB-AC-GAL', 'sale_price' => 210, 'purchase_price' => 136.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Galón de agua de coco natural 4 L'],
+            ['name' => 'Vaso de agua de coco mediano', 'code' => 'BEB-VM-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Vaso mediano de agua de coco'],
+            ['name' => 'Vaso de agua de coco grande', 'code' => 'BEB-VG-001', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Vaso grande de agua de coco'],
+            ['name' => 'Tuba 1/2 LT', 'code' => 'BEB-TB-500', 'sale_price' => 25, 'purchase_price' => 16.25, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Tuba natural 500 ml'],
+            ['name' => 'Tuba 1 LT', 'code' => 'BEB-TB-1L', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Tuba natural 1 L'],
+            ['name' => 'Galón de tuba', 'code' => 'BEB-TB-GAL', 'sale_price' => 150, 'purchase_price' => 97.50, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Galón de tuba natural'],
+            ['name' => 'Mariscoco sin agua', 'code' => 'BEB-MR-S/A', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Mariscoco preparado sin agua'],
+            ['name' => 'Mariscoco con agua', 'code' => 'BEB-MR-C/A', 'sale_price' => 60, 'purchase_price' => 39.00, 'category_name' => 'Bebidas', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Mariscoco preparado con agua'],
 
-            // ============ COCO NATURAL ============
-            ['name' => 'Coco partido en bolsa', 'code' => 'NAT-CPB-001', 'sale_price' => 20, 'purchase_price' => 13.00, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Bolsa de coco partido'],
-            ['name' => 'Coco tomado en el local', 'code' => 'NAT-CT-001', 'sale_price' => 70, 'purchase_price' => 45.50, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco fresco para tomar en el local'],
-            ['name' => 'Coco socato pieza', 'code' => 'NAT-CSC-001', 'sale_price' => 23, 'purchase_price' => 14.95, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco socato por pieza'],
-            // 📦 PAQUETE (definido de 100 piezas del MISMO producto):
-            // La unidad "Pieza" es INCORRECTA. Este producto es un paquete/costal
-            // de 100 cocos. Debería ser:
-            //   - unit = "Paquete"
-            //   - quantity_per_package = 100 en product_packages
-            //   - o manejar el stock por bulto y no por pieza individual
-            // El precio $38 también parece ser el precio POR PIEZA, no por el bulto.
-            ['name' => 'Coco mayoreo (100 pzs)', 'code' => 'NAT-CM-100', 'sale_price' => 38, 'purchase_price' => 24.70, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco por mayoreo, paquete de 100 piezas'],
-            ['name' => 'Coco destopado 3/4', 'code' => 'NAT-CD-3/4', 'sale_price' => 48, 'purchase_price' => 31.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco destopado al 3/4'],
-            ['name' => 'Coco seco', 'code' => 'NAT-CS-001', 'sale_price' => 28, 'purchase_price' => 18.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco seco entero'],
-            ['name' => 'Coco destopado seco', 'code' => 'NAT-CDS-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco seco destopado'],
-            ['name' => 'Coco cacheteado', 'code' => 'NAT-CC-001', 'sale_price' => 48, 'purchase_price' => 31.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Coco cacheteado fresco'],
-            ['name' => 'Racimo de coco', 'code' => 'NAT-RC-001', 'sale_price' => 0, 'purchase_price' => 0, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Racimo de coco (precio variable según tamaño)'],
-            ['name' => 'Cazuela de coco', 'code' => 'NAT-CZ-001', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'description' => 'Cazuela preparada con coco'],
+            // ============ COCO NATURAL (commercial) ============
+            // Productos finales de coco que no requieren producción intermedia.
+            ['name' => 'Coco tomado en el local', 'code' => 'NAT-CT-001', 'sale_price' => 70, 'purchase_price' => 45.50, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco fresco para tomar en el local'],
+            ['name' => 'Coco socato pieza', 'code' => 'NAT-CSC-001', 'sale_price' => 23, 'purchase_price' => 14.95, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco socato por pieza'],
+            ['name' => 'Coco mayoreo (100 pzs)', 'code' => 'NAT-CM-100', 'sale_price' => 38, 'purchase_price' => 24.70, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco por mayoreo, paquete de 100 piezas'],
+            ['name' => 'Coco destopado 3/4', 'code' => 'NAT-CD-3/4', 'sale_price' => 48, 'purchase_price' => 31.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco destopado al 3/4'],
+            ['name' => 'Coco seco', 'code' => 'NAT-CS-001', 'sale_price' => 28, 'purchase_price' => 18.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco seco entero'],
+            ['name' => 'Coco destopado seco', 'code' => 'NAT-CDS-001', 'sale_price' => 35, 'purchase_price' => 22.75, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco seco destopado'],
+            ['name' => 'Coco cacheteado', 'code' => 'NAT-CC-001', 'sale_price' => 48, 'purchase_price' => 31.20, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Coco cacheteado fresco'],
+            ['name' => 'Racimo de coco', 'code' => 'NAT-RC-001', 'sale_price' => 0, 'purchase_price' => 0, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Racimo de coco (precio variable según tamaño)'],
+            ['name' => 'Cazuela de coco', 'code' => 'NAT-CZ-001', 'sale_price' => 40, 'purchase_price' => 26.00, 'category_name' => 'Coco natural', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Cazuela preparada con coco'],
 
-            // ============ DERIVADOS DE COCO ============
-            // ✅ MIGRADO: "Aceite de coco" → "Pieza" (se vende por botella/envase).
-            ['name' => 'Aceite de coco', 'code' => 'DER-AC-001', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Pieza', 'description' => 'Aceite de coco virgen'],
-            ['name' => 'Copra 1 kilo', 'code' => 'DER-COP-1K', 'sale_price' => 50, 'purchase_price' => 32.50, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'description' => 'Copra de coco 1 kg'],
-            ['name' => 'Pulpa de coco por kilo', 'code' => 'DER-PC-1K', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'description' => 'Pulpa de coco fresca 1 kg'],
-            ['name' => 'Flor de coco', 'code' => 'DER-FC-001', 'sale_price' => 350, 'purchase_price' => 227.50, 'category_name' => 'Derivados de coco', 'unit' => 'Pieza', 'description' => 'Flor de coco fresca'],
-            ['name' => 'Harina de coco', 'code' => 'DER-HC-001', 'sale_price' => 85, 'purchase_price' => 55.25, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'description' => 'Harina de coco'],
+            // ============ DERIVADOS DE COCO (commercial) ============
+            ['name' => 'Aceite de coco', 'code' => 'DER-AC-001', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Aceite de coco virgen'],
+            ['name' => 'Copra 1 kilo', 'code' => 'DER-COP-1K', 'sale_price' => 50, 'purchase_price' => 32.50, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'product_type' => 'commercial', 'description' => 'Copra de coco 1 kg'],
+            ['name' => 'Pulpa de coco por kilo', 'code' => 'DER-PC-1K', 'sale_price' => 100, 'purchase_price' => 65.00, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'product_type' => 'commercial', 'description' => 'Pulpa de coco fresca 1 kg'],
+            ['name' => 'Flor de coco', 'code' => 'DER-FC-001', 'sale_price' => 350, 'purchase_price' => 227.50, 'category_name' => 'Derivados de coco', 'unit' => 'Pieza', 'product_type' => 'commercial', 'description' => 'Flor de coco fresca'],
+            ['name' => 'Harina de coco', 'code' => 'DER-HC-001', 'sale_price' => 85, 'purchase_price' => 55.25, 'category_name' => 'Derivados de coco', 'unit' => 'Kilogramo', 'product_type' => 'commercial', 'description' => 'Harina de coco'],
 
             // ============ POSTRES Y MÁS ============
             // ✅ MIGRADO: "Rompope" → "Pieza" (se vende por botella/envase).
@@ -295,8 +307,9 @@ class ProductsSeeder extends Seeder
                 'description' => $productData['description'] ?? null,
                 'company_id' => $company->id,
                 'category_id' => $category ? $category->id : null,
-                'supplier_id' => $supplierId,
+                'supplier_id' => isset($productData['supplier_name']) ? ($suppliers[$productData['supplier_name']] ?? null) : null,
                 'unit_id' => $units[$productData['unit']] ?? null,
+                'product_type' => $productData['product_type'] ?? 'commercial',
             ]);
 
             // Asignar el producto a todas las ubicaciones de la compañía como activo

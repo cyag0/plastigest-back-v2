@@ -9,7 +9,8 @@ use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ProductController;
-use App\Http\Controllers\ProductionController;
+use App\Http\Controllers\ProductionOrderController;
+use App\Http\Controllers\FormulaController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseV2Controller;
@@ -194,8 +195,21 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('purchases-v2', PurchaseV2Controller::class)->except(['store', 'update']);
 
 
-            // Production Management Routes
-            Route::apiResource('productions', ProductionController::class);
+            // Production Management Routes (Órdenes de Producción)
+            Route::prefix('production-orders')->group(function () {
+                Route::get('initial-data', [ProductionOrderController::class, 'getInitialData']);
+                Route::get('today-stats', [ProductionOrderController::class, 'todayStats']);
+                Route::post('{id}/complete', [ProductionOrderController::class, 'complete']);
+                Route::post('{id}/cancel', [ProductionOrderController::class, 'cancel']);
+                Route::get('{id}/variance', [ProductionOrderController::class, 'variance']);
+            });
+            Route::apiResource('production-orders', ProductionOrderController::class);
+
+            // Formulas Management Routes
+            Route::prefix('formulas')->group(function () {
+                Route::post('{id}/clone', [FormulaController::class, 'clone']);
+            });
+            Route::apiResource('formulas', FormulaController::class);
 
             // Sales Management Routes
             // Sale Status Management Routes and Stats (must be before apiResource)

@@ -11,6 +11,7 @@ enum AdjustmentReasonCode: string
     case THEFT = 'theft';
     case FOUND = 'found';
     case OTHER = 'other';
+    case PRODUCTION_WASTE = 'production_waste';
 
     /**
      * Obtener la etiqueta legible de la razón
@@ -25,6 +26,7 @@ enum AdjustmentReasonCode: string
             self::THEFT => 'Robo',
             self::FOUND => 'Encontrado',
             self::OTHER => 'Otro',
+            self::PRODUCTION_WASTE => 'Merma de Producción',
         };
     }
 
@@ -41,6 +43,7 @@ enum AdjustmentReasonCode: string
             self::THEFT => 'lock-alert',
             self::FOUND => 'check-circle',
             self::OTHER => 'help-circle',
+            self::PRODUCTION_WASTE => 'recycle',
         };
     }
 }

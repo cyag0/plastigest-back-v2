@@ -23,6 +23,16 @@ class SupplierSeeder extends Seeder
         // Estructura: nombre, contacto (responsable), teléfono, categoría de producto,
         // email (cuando se conoce) y dirección (cuando aplica).
         $suppliersData = [
+            // MATERIAS PRIMAS (cocos)
+            [
+                'name' => 'PROVEEDOR DE COCOS',
+                'contact_name' => 'Encargado de compras',
+                'phone' => null,
+                'email' => null,
+                'address' => 'Productores locales de coco',
+                'category' => 'Materias Primas (Cocos)',
+            ],
+
             // PET, DESECHABLES
             [
                 'name' => 'LIDERPLAST',

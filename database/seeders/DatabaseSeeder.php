@@ -28,6 +28,7 @@ class DatabaseSeeder extends Seeder
             CategoriesSeeder::class,
             ProductsSeeder::class,
             PackageSeeder::class,
+            FormulasSeeder::class,
         ]);
 
         $this->command->info('✅ Seeders completados exitosamente');

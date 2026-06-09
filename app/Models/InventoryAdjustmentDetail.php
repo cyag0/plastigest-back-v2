@@ -32,6 +32,8 @@ class InventoryAdjustmentDetail extends Model
         'notes',
         'content',
         'applied_at',
+        'reference_id',
+        'reference_type',
     ];
 
     protected $casts = [
