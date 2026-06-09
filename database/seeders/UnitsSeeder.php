@@ -40,6 +40,16 @@ class UnitsSeeder extends Seeder
             'abbreviation' => 'pq',
         ]);
 
+        $bulto = Unit::create([
+            'name' => 'Bulto',
+            'abbreviation' => 'bl',
+        ]);
+
+        $promo = Unit::create([
+            'name' => 'Promo',
+            'abbreviation' => 'pr',
+        ]);
+
         // Unidades de peso
         $kilogramo = Unit::create([
             'name' => 'Kilogramo',

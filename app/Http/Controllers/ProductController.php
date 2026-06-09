@@ -337,10 +337,10 @@ class ProductController extends CrudController
         $this->handleProductImages($model, $request);
 
         // Manejar ingredientes para productos procesados
-        $this->handleProductIngredients($model, $request);
+        $this->handleProductIngredients($model, $request, false);
 
-        // Manejar activación en sucursales
-        $this->handleLocationActivation($model, $request);
+        // Manejar activación en sucursales (en creación, current_stock parte en 0)
+        $this->handleLocationActivation($model, $request, false);
     }
 
     /**
@@ -353,10 +353,10 @@ class ProductController extends CrudController
         $this->handleProductImages($model, $request, true);
 
         // Manejar ingredientes para productos procesados
-        $this->handleProductIngredients($model, $request);
+        $this->handleProductIngredients($model, $request, true);
 
-        // Manejar activación en sucursales
-        $this->handleLocationActivation($model, $request);
+        // Manejar activación en sucursales (en actualización NUNCA se toca current_stock)
+        $this->handleLocationActivation($model, $request, true);
     }
 
     /**
@@ -561,9 +561,14 @@ class ProductController extends CrudController
     }
 
     /**
-     * Maneja la activación del producto en las sucursales según las opciones seleccionadas
+     * Maneja la activación del producto en las sucursales según las opciones seleccionadas.
+     *
+     * IMPORTANTE: en actualización ($isUpdate = true) NUNCA se sobrescribe current_stock
+     * ni campos económicos del pivot, ya que esto destruiría el stock real del producto
+     * y registros de kardex al editarlo. Solo se actualizan: active, minimum_stock y
+     * maximum_stock (y solo si vienen en el request).
      */
-    private function handleLocationActivation(Model $product, Request $request): void
+    private function handleLocationActivation(Model $product, Request $request, bool $isUpdate = false): void
     {
         /** @var Product $product */
         $product = $product;
@@ -587,36 +592,58 @@ class ProductController extends CrudController
         // Obtener todas las locaciones de la compañía
         $allLocations = \App\Models\Admin\Location::where('company_id', $companyId)->get();
 
-        // Preparar datos para sincronización
-        $syncData = [];
-
         foreach ($allLocations as $location) {
-            if ($location->id == $currentLocationId) {
-                // Para la ubicación actual, usar los datos del request
-                $syncData[$location->id] = [
-                    'active' => $isActive,
-                    'minimum_stock' => $request->input('minimum_stock', 0),
-                    'maximum_stock' => $request->input('maximum_stock', 0),
-                    'current_stock' => 0,
-                ];
-            } else {
-                // Para las demás ubicaciones, establecer como inactivo con valores en 0
-                // Solo crear si no existe previamente
-                $exists = $product->locations()->where('location_id', $location->id)->exists();
+            $pivotExists = $product->locations()->where('location_id', $location->id)->exists();
 
-                if (!$exists) {
-                    $syncData[$location->id] = [
-                        'active' => false,
-                        'minimum_stock' => 0,
-                        'maximum_stock' => 0,
-                        'current_stock' => 0,
-                    ];
+            if ($location->id == $currentLocationId) {
+                if ($isUpdate && $pivotExists) {
+                    // En actualización, el stock es intocable: solo refrescar
+                    // active/minimum_stock/maximum_stock si fueron enviados.
+                    $updateData = [];
+                    $updateData['active'] = $isActive;
+
+                    if ($request->has('minimum_stock')) {
+                        $updateData['minimum_stock'] = $request->input('minimum_stock', 0);
+                    }
+                    if ($request->has('maximum_stock')) {
+                        $updateData['maximum_stock'] = $request->input('maximum_stock', 0);
+                    }
+                    $updateData['updated_at'] = now();
+
+                    DB::table('product_location')
+                        ->where('product_id', $product->id)
+                        ->where('location_id', $location->id)
+                        ->update($updateData);
+                } else {
+                    // Creación o registro nuevo: insertar/actualizar con current_stock = 0
+                    $product->locations()->syncWithoutDetaching([
+                        $location->id => [
+                            'active' => $isActive,
+                            'minimum_stock' => $request->input('minimum_stock', 0),
+                            'maximum_stock' => $request->input('maximum_stock', 0),
+                            'current_stock' => 0,
+                            'updated_at' => now(),
+                            'created_at' => now(),
+                        ]
+                    ]);
+                }
+            } else {
+                // Para las demás ubicaciones, solo crear la entrada inactiva si no existe.
+                // Nunca modificar registros existentes para preservar su estado real.
+                if (!$pivotExists) {
+                    $product->locations()->syncWithoutDetaching([
+                        $location->id => [
+                            'active' => false,
+                            'minimum_stock' => 0,
+                            'maximum_stock' => 0,
+                            'current_stock' => 0,
+                            'updated_at' => now(),
+                            'created_at' => now(),
+                        ]
+                    ]);
                 }
             }
         }
-
-        // Sincronizar sin eliminar relaciones existentes
-        $product->locations()->syncWithoutDetaching($syncData);
     }
 
     /**
@@ -772,16 +799,26 @@ class ProductController extends CrudController
     }
 
     /**
-     * Maneja la sincronización de ingredientes para productos procesados
+     * Maneja la sincronización de ingredientes para productos procesados.
+     *
+     * En actualización ($isUpdate = true), solo reemplaza los ingredientes si el campo
+     * 'ingredients' viene explícitamente en el request. Si no viene, conserva los
+     * ingredientes existentes para evitar pérdidas de datos al editar el producto.
      */
-    private function handleProductIngredients(Model $product, Request $request): void
+    private function handleProductIngredients(Model $product, Request $request, bool $isUpdate = false): void
     {
-        $ingredients = $request->input('ingredients', []);
-
         // Solo procesar ingredientes para productos procesados
         if ($product->product_type !== 'processed') {
             return;
         }
+
+        // En actualización, si el campo no se envió, no tocar la relación para no
+        // perder ingredientes existentes.
+        if ($isUpdate && !$request->has('ingredients')) {
+            return;
+        }
+
+        $ingredients = $request->input('ingredients', []);
 
         // Eliminar ingredientes existentes
         $product->productIngredients()->delete();

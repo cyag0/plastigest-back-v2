@@ -14,7 +14,7 @@ class ProductPackageController extends Controller
      */
     public function index(Request $request)
     {
-        $query = ProductPackage::with('product');
+        $query = ProductPackage::with(['product', 'unit']);
 
         // Filtrar por producto
         if ($request->has('product_id')) {
@@ -45,6 +45,7 @@ class ProductPackageController extends Controller
         $validated = $request->validate([
             'product_id' => 'required|exists:products,id',
             'company_id' => 'required|exists:companies,id',
+            'unit_id' => 'nullable|exists:units,id',
             'package_name' => 'required|string|max:100',
             'barcode' => 'required|string|max:100|unique:product_packages,barcode',
             'quantity_per_package' => 'required|numeric|min:0.01',
@@ -67,7 +68,7 @@ class ProductPackageController extends Controller
             $package = ProductPackage::create($validated);
 
             DB::commit();
-            return response()->json($package->load('product'), 201);
+            return response()->json($package->load(['product', 'unit']), 201);
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
@@ -82,7 +83,7 @@ class ProductPackageController extends Controller
      */
     public function show(string $id)
     {
-        $package = ProductPackage::with('product')->findOrFail($id);
+        $package = ProductPackage::with(['product', 'unit'])->findOrFail($id);
         return response()->json([
             'data' => $package
         ]);
@@ -96,6 +97,7 @@ class ProductPackageController extends Controller
         $package = ProductPackage::findOrFail($id);
 
         $validated = $request->validate([
+            'unit_id' => 'nullable|exists:units,id',
             'package_name' => 'sometimes|string|max:100',
             'barcode' => [
                 'sometimes',
@@ -124,7 +126,7 @@ class ProductPackageController extends Controller
             $package->update($validated);
 
             DB::commit();
-            return response()->json($package->load('product'));
+            return response()->json($package->load(['product', 'unit']));
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
@@ -156,7 +158,7 @@ class ProductPackageController extends Controller
             'barcode' => 'required|string'
         ]);
 
-        $package = ProductPackage::with('product')
+        $package = ProductPackage::with(['product', 'unit'])
             ->byBarcode($request->barcode)
             ->active()
             ->first();

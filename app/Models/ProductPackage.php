@@ -10,6 +10,7 @@ class ProductPackage extends Model
     protected $fillable = [
         'product_id',
         'company_id',
+        'unit_id',
         'package_name',
         'barcode',
         'quantity_per_package',
@@ -49,6 +50,16 @@ class ProductPackage extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(\App\Models\Admin\Company::class);
+    }
+
+    /**
+     * Unidad de empaque del paquete (Caja, Bulto, Paquete, Promo, etc.).
+     * Es distinta de la unidad base del producto: el producto se mide en
+     * "Pieza" o "kg", y el empaque se mide en "Caja", "Bulto", etc.
+     */
+    public function unit(): BelongsTo
+    {
+        return $this->belongsTo(Unit::class);
     }
 
     /**

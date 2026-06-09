@@ -22,7 +22,7 @@ class FormulaController extends CrudController
 
     protected function indexRelations(): array
     {
-        return ['product', 'items.product', 'items.unit'];
+        return ['product.mainImage', 'items.product', 'items.unit'];
     }
 
     protected function getShowRelations(): array

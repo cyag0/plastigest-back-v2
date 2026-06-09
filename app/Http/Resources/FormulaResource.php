@@ -2,7 +2,9 @@
 
 namespace App\Http\Resources;
 
+use App\Constants\Files;
 use App\Models\Operations\Formula;
+use App\Utils\AppUploadUtil;
 use Illuminate\Database\Eloquent\Model;
 
 class FormulaResource extends Resources
@@ -26,6 +28,28 @@ class FormulaResource extends Resources
             'created_at' => optional($resource->created_at)->toISOString(),
             'updated_at' => optional($resource->updated_at)->toISOString(),
         ];
+
+        // Cuando la relación 'product' está cargada, devolvemos el objeto
+        // completo (incluyendo main_image) para que el front pueda mostrar la
+        // imagen del producto objetivo en selectores de fórmula.
+        if ($resource->relationLoaded('product') && $resource->product) {
+            $product = $resource->product;
+            $mainImage = null;
+            if ($product->relationLoaded('mainImage') && $product->mainImage) {
+                $mainImage = AppUploadUtil::formatFile(
+                    Files::PRODUCT_IMAGES_PATH,
+                    $product->mainImage->image_path,
+                );
+            }
+            $item['product'] = [
+                'id' => $product->id,
+                'name' => $product->name,
+                'code' => $product->code,
+                'product_type' => $product->product_type,
+                'unit_id' => $product->unit_id,
+                'main_image' => $mainImage,
+            ];
+        }
 
         if ($resource->relationLoaded('items')) {
             $item['items'] = $resource->items->map(function ($i) {
