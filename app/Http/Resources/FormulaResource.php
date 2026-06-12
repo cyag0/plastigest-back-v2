@@ -25,6 +25,7 @@ class FormulaResource extends Resources
             'version' => $resource->version,
             'is_active' => (bool) $resource->is_active,
             'notes' => $resource->notes,
+            'expected_output_quantity' => $resource->expected_output_quantity !== null ? (float) $resource->expected_output_quantity : null,
             'created_at' => optional($resource->created_at)->toISOString(),
             'updated_at' => optional($resource->updated_at)->toISOString(),
         ];
@@ -61,7 +62,6 @@ class FormulaResource extends Resources
                     'unit_id' => $i->unit_id,
                     'unit_name' => $i->relationLoaded('unit') ? ($i->unit?->name) : null,
                     'expected_quantity' => (float) $i->expected_quantity,
-                    'expected_output_quantity' => $i->expected_output_quantity !== null ? (float) $i->expected_output_quantity : null,
                     'sort_order' => $i->sort_order,
                     'notes' => $i->notes,
                 ];

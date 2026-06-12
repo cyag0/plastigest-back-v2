@@ -26,6 +26,11 @@ use Illuminate\Support\Facades\DB;
  *    - Agua de Coco → Horchata 1 LT, Horchata 1/2 LT, Galón de horchata
  *    - Tuba base → Tuba 1/2 LT, Tuba 1 LT, Galón de tuba
  *    - Pulpa de Coco → Cocada de nuez, Barra de coco, Barra mixta
+ *
+ *  Nota: el "rendimiento esperado" (cantidad producida al ejecutar la fórmula
+ *  una vez) es una propiedad de la FÓRMULA, no de cada ingrediente. La unidad
+ *  del rendimiento la resuelve el frontend desde `product.unit_id` del
+ *  producto objetivo de la fórmula.
  */
 class FormulasSeeder extends Seeder
 {
@@ -59,7 +64,7 @@ class FormulasSeeder extends Seeder
         $user = DB::table('users')->first();
         $userId = $user?->id;
 
-        // Definición de fórmulas: [product_code, name, description, items[]]
+        // Definición de fórmulas: [code, name, description, expected_output_quantity, items[]]
         $formulas = [
             // ═══════════════ NIVEL 1 ═══════════════
             // Cada fórmula de Nivel 1 produce UN derivado a partir de coco entero.
@@ -71,12 +76,12 @@ class FormulasSeeder extends Seeder
                 'name' => 'Producción de Agua de Coco',
                 'description' => 'Rinde aprox. 0.73 L de agua por coco entero. Usar junto con "Producción de Pulpa de Coco" para registrar el lote completo.',
                 'is_active' => true,
+                'expected_output_quantity' => 0.73,
                 'items' => [
                     [
                         'ingredient_code' => 'MP-COCO-001',
                         'unit' => 'Pieza',
                         'expected_quantity' => 1,
-                        'expected_output_quantity' => 0.73,
                         'notes' => 'Consumo: 1 coco entero. Rendimiento: ~0.73 L de agua.',
                     ],
                 ],
@@ -86,12 +91,12 @@ class FormulasSeeder extends Seeder
                 'name' => 'Producción de Pulpa de Coco',
                 'description' => 'Rinde aprox. 0.5 kg de pulpa por coco entero.',
                 'is_active' => true,
+                'expected_output_quantity' => 0.5,
                 'items' => [
                     [
                         'ingredient_code' => 'MP-COCO-001',
                         'unit' => 'Pieza',
                         'expected_quantity' => 1,
-                        'expected_output_quantity' => 0.5,
                         'notes' => 'Consumo: 1 coco entero. Rendimiento: ~0.5 kg de pulpa.',
                     ],
                 ],
@@ -102,12 +107,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-BC-500',
                 'name' => 'Botella de agua de coco 1/2 LT',
                 'description' => 'Llenado de botella 500 ml con agua de coco a granel.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-AGUA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 0.5,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -115,12 +120,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-BC-1L',
                 'name' => 'Botella de agua de coco 1 LT',
                 'description' => 'Llenado de botella 1 L con agua de coco a granel.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-AGUA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 1,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -128,12 +133,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-AC-GAL',
                 'name' => 'Galón de agua de coco 4 LT',
                 'description' => 'Galón de 4 L con agua de coco a granel.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-AGUA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 4,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -141,12 +146,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-VM-001',
                 'name' => 'Vaso de agua de coco mediano',
                 'description' => 'Vaso mediano (12 oz) de agua de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-AGUA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 0.35,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -154,12 +159,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-VG-001',
                 'name' => 'Vaso de agua de coco grande',
                 'description' => 'Vaso grande (16 oz) de agua de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-AGUA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 0.5,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -167,12 +172,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-MR-C/A',
                 'name' => 'Mariscoco con agua',
                 'description' => 'Mariscoco preparado con agua de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-AGUA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 0.5,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -182,12 +187,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'RAL-CR-1K',
                 'name' => 'Coco rallado 1 KG',
                 'description' => 'Rallado y empaquetado de 1 kg de pulpa de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-PULPA-001',
                         'unit' => 'Kilogramo',
                         'expected_quantity' => 1,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -197,12 +202,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-HC-1L',
                 'name' => 'Botella de horchata 1 LT',
                 'description' => 'Botella 1 L de horchata de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-HORCH-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 1,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -210,12 +215,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-HC-500',
                 'name' => 'Botella de horchata 1/2 LT',
                 'description' => 'Botella 500 ml de horchata de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-HORCH-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 0.5,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -223,12 +228,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-HC-GAL',
                 'name' => 'Galón de horchata',
                 'description' => 'Galón de 4 L de horchata de coco.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-HORCH-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 4,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -236,12 +241,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-TB-1L',
                 'name' => 'Tuba 1 LT',
                 'description' => 'Botella 1 L de tuba natural.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-TUBA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 1,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -249,12 +254,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-TB-500',
                 'name' => 'Tuba 1/2 LT',
                 'description' => 'Botella 500 ml de tuba natural.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-TUBA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 0.5,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -262,12 +267,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BEB-TB-GAL',
                 'name' => 'Galón de tuba',
                 'description' => 'Galón de 4 L de tuba natural.',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-TUBA-001',
                         'unit' => 'Litro',
                         'expected_quantity' => 4,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -277,12 +282,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'COC-CN-1P',
                 'name' => 'Cocada de nuez 1 pza',
                 'description' => 'Cocada de nuez individual (rinde ~10 cocadas por kg de pulpa).',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-PULPA-001',
                         'unit' => 'Kilogramo',
                         'expected_quantity' => 0.1,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -290,12 +295,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BAR-BC-001',
                 'name' => 'Barra de coco',
                 'description' => 'Barra de coco natural (rinde ~20 barras por kg de pulpa).',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-PULPA-001',
                         'unit' => 'Kilogramo',
                         'expected_quantity' => 0.05,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -303,12 +308,12 @@ class FormulasSeeder extends Seeder
                 'code' => 'BAR-BMC-1P',
                 'name' => 'Barra mixta chica',
                 'description' => 'Barra mixta pequeña (rinde ~25 barras por kg de pulpa).',
+                'expected_output_quantity' => 1,
                 'items' => [
                     [
                         'ingredient_code' => 'INT-PULPA-001',
                         'unit' => 'Kilogramo',
                         'expected_quantity' => 0.04,
-                        'expected_output_quantity' => 1,
                     ],
                 ],
             ],
@@ -329,6 +334,7 @@ class FormulasSeeder extends Seeder
                 'description' => $f['description'] ?? null,
                 'version' => 1,
                 'is_active' => $f['is_active'] ?? true,
+                'expected_output_quantity' => $f['expected_output_quantity'] ?? null,
                 'created_by' => $userId,
                 'updated_by' => $userId,
             ]);
@@ -347,7 +353,6 @@ class FormulasSeeder extends Seeder
                     'product_id' => $ingredient->id,
                     'unit_id' => $unitId,
                     'expected_quantity' => $item['expected_quantity'],
-                    'expected_output_quantity' => $item['expected_output_quantity'] ?? null,
                     'sort_order' => $i,
                     'notes' => $item['notes'] ?? null,
                 ]);

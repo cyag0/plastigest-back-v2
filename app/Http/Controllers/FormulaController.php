@@ -61,11 +61,11 @@ class FormulaController extends CrudController
             'description' => 'nullable|string',
             'is_active' => 'nullable|boolean',
             'notes' => 'nullable|string',
+            'expected_output_quantity' => 'nullable|numeric|min:0',
             'items' => 'nullable|array',
             'items.*.product_id' => 'required_with:items|exists:products,id',
             'items.*.unit_id' => 'required_with:items|exists:units,id',
             'items.*.expected_quantity' => 'required_with:items|numeric|min:0',
-            'items.*.expected_output_quantity' => 'nullable|numeric|min:0',
             'items.*.notes' => 'nullable|string',
         ]);
     }
@@ -77,11 +77,11 @@ class FormulaController extends CrudController
             'description' => 'nullable|string',
             'is_active' => 'nullable|boolean',
             'notes' => 'nullable|string',
+            'expected_output_quantity' => 'nullable|numeric|min:0',
             'items' => 'nullable|array',
             'items.*.product_id' => 'required_with:items|exists:products,id',
             'items.*.unit_id' => 'required_with:items|exists:units,id',
             'items.*.expected_quantity' => 'required_with:items|numeric|min:0',
-            'items.*.expected_output_quantity' => 'nullable|numeric|min:0',
             'items.*.notes' => 'nullable|string',
         ]);
     }

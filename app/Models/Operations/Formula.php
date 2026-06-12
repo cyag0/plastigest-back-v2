@@ -27,6 +27,7 @@ class Formula extends Model
         'version',
         'is_active',
         'notes',
+        'expected_output_quantity',
         'created_by',
         'updated_by',
     ];
@@ -34,6 +35,7 @@ class Formula extends Model
     protected $casts = [
         'version' => 'integer',
         'is_active' => 'boolean',
+        'expected_output_quantity' => 'decimal:4',
     ];
 
     protected static function booted(): void

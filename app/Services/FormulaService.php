@@ -29,6 +29,7 @@ class FormulaService
                 'version' => 1,
                 'is_active' => $data['is_active'] ?? true,
                 'notes' => $data['notes'] ?? null,
+                'expected_output_quantity' => isset($data['expected_output_quantity']) ? (float) $data['expected_output_quantity'] : null,
                 'created_by' => $user?->id,
                 'updated_by' => $user?->id,
             ]);
@@ -47,6 +48,9 @@ class FormulaService
                 'description' => array_key_exists('description', $data) ? $data['description'] : $formula->description,
                 'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : $formula->is_active,
                 'notes' => array_key_exists('notes', $data) ? $data['notes'] : $formula->notes,
+                'expected_output_quantity' => array_key_exists('expected_output_quantity', $data)
+                    ? (isset($data['expected_output_quantity']) ? (float) $data['expected_output_quantity'] : null)
+                    : $formula->expected_output_quantity,
                 'updated_by' => Auth::id(),
             ])->save();
 
@@ -77,6 +81,7 @@ class FormulaService
                 'version' => ($maxVersion ?? 0) + 1,
                 'is_active' => true,
                 'notes' => $formula->notes,
+                'expected_output_quantity' => $formula->expected_output_quantity,
                 'created_by' => Auth::id(),
                 'updated_by' => Auth::id(),
             ]);
@@ -87,7 +92,6 @@ class FormulaService
                     'product_id' => $item->product_id,
                     'unit_id' => $item->unit_id,
                     'expected_quantity' => $item->expected_quantity,
-                    'expected_output_quantity' => $item->expected_output_quantity,
                     'sort_order' => $item->sort_order,
                     'notes' => $item->notes,
                 ]);
@@ -136,7 +140,6 @@ class FormulaService
                 'product_id' => (int) $row['product_id'],
                 'unit_id' => (int) ($row['unit_id'] ?? 0),
                 'expected_quantity' => (float) $row['expected_quantity'],
-                'expected_output_quantity' => isset($row['expected_output_quantity']) ? (float) $row['expected_output_quantity'] : null,
                 'sort_order' => $i,
                 'notes' => $row['notes'] ?? null,
             ]);

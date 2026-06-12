@@ -19,14 +19,12 @@ class FormulaItem extends Model
         'product_id',
         'unit_id',
         'expected_quantity',
-        'expected_output_quantity',
         'sort_order',
         'notes',
     ];
 
     protected $casts = [
         'expected_quantity' => 'decimal:4',
-        'expected_output_quantity' => 'decimal:4',
         'sort_order' => 'integer',
     ];
 
