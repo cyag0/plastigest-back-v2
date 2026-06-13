@@ -39,7 +39,7 @@ class PermissionSeeder extends Seeder
             [Resources::PRODUCTS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
 
             // Operaciones
-            [Resources::INVENTORY, [Actions::READ, Actions::UPDATE, Actions::LIST, Actions::MANAGE]],
+            [Resources::INVENTORY, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
             [Resources::MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::LIST]],
             [Resources::TRANSFERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::SALES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],

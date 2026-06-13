@@ -412,10 +412,20 @@ class ReportController extends Controller
         // Calcular fechas según el período
         $dateRange = $this->getDateRange($period);
 
-        // Total de productos
-        $totalProducts = Product::where('company_id', $companyId)
-            ->where('is_active', true)
-            ->count();
+        // Total de productos activos. El estatus "activo" vive en el pivote
+        // product_location (columna `active`), no en la tabla products.
+        $totalProductsQuery = DB::table('product_location')
+            ->join('products', 'product_location.product_id', '=', 'products.id')
+            ->where('products.company_id', $companyId)
+            ->where('product_location.active', true);
+
+        if ($scope === 'location' && $locationId) {
+            $totalProductsQuery->where('product_location.location_id', $locationId);
+        }
+
+        $totalProducts = (clone $totalProductsQuery)
+            ->distinct()
+            ->count('product_location.product_id');
 
         // Total de stock actual (suma de current_stock en product_location)
         $totalStockQuery = DB::table('product_location')
@@ -890,10 +900,20 @@ class ReportController extends Controller
         $locationId = CurrentLocation::id();
         $scope = $request->get('scope', 'location');
 
-        // Total de productos
-        $totalProducts = Product::where('company_id', $companyId)
-            ->where('is_active', true)
-            ->count();
+        // Total de productos activos. El estatus "activo" vive en el pivote
+        // product_location (columna `active`), no en la tabla products.
+        $totalProductsQuery = DB::table('product_location')
+            ->join('products', 'product_location.product_id', '=', 'products.id')
+            ->where('products.company_id', $companyId)
+            ->where('product_location.active', true);
+
+        if ($scope === 'location' && $locationId) {
+            $totalProductsQuery->where('product_location.location_id', $locationId);
+        }
+
+        $totalProducts = (clone $totalProductsQuery)
+            ->distinct()
+            ->count('product_location.product_id');
 
         // Total de stock actual
         $totalStockQuery = DB::table('product_location')
@@ -941,7 +961,7 @@ class ReportController extends Controller
             ->leftJoin('product_location', 'products.id', '=', 'product_location.product_id')
             ->leftJoin('categories', 'products.category_id', '=', 'categories.id')
             ->where('products.company_id', $companyId)
-            ->where('products.is_active', true)
+            ->where('product_location.active', true)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('product_location.location_id', $locationId);
             })
@@ -983,11 +1003,13 @@ class ReportController extends Controller
                 ->where('product_location.current_stock', '<=', 0)
                 ->count();
 
+            // Conteos reales por estado. El frontend calcula los porcentajes
+            // a partir de estos valores (value / total * 100).
             $stockHealth = [
-                'optimal' => round(($optimal / $totalProductsInLocation) * 100, 0),
-                'low' => round(($low / $totalProductsInLocation) * 100, 0),
-                'critical' => round(($critical / $totalProductsInLocation) * 100, 0),
-                'out' => round(($out / $totalProductsInLocation) * 100, 0),
+                'optimal' => $optimal,
+                'low' => $low,
+                'critical' => $critical,
+                'out' => $out,
             ];
         } else {
             $stockHealth = [

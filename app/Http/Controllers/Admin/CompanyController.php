@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\CompanyResource;
 use App\Models\Admin\Company;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -22,6 +24,19 @@ class CompanyController extends CrudController
      */
     protected string $model = Company::class;
     protected ?string $permissionPrefix = 'companies';
+
+    /**
+     * El listado de compañías no requiere permiso.
+     * Cualquier usuario autenticado debe poder ver las compañías donde trabaja
+     * para poder seleccionarla, independientemente de sus permisos.
+     * El filtrado por compañías del usuario se aplica en handleQuery().
+     * Las demás acciones (crear/editar/eliminar/ver detalle) siguen protegidas
+     * por el prefijo 'companies'.
+     */
+    protected function canIndex(): bool
+    {
+        return true;
+    }
 
     /**
      * Relaciones que se cargarán en el index
@@ -50,6 +65,16 @@ class CompanyController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
+        // Scope por usuario: si NO tiene el permiso de listar compañías
+        // (permiso de super admin), solo puede ver las compañías a las que
+        // está asignado vía la tabla pivote user_company. Así el selector de
+        // compañía en el login muestra únicamente las compañías del usuario.
+        // Los super admins (con companies_list) ven todas para administración.
+        if (!CurrentWorker::hasPermission('companies_list')) {
+            $userId = Auth::id();
+            $query->whereHas('users', fn($q) => $q->where('users.id', $userId));
+        }
+
         // Filtro por estado activo/inactivo
         if (isset($params['is_active'])) {
             $query->where('is_active', $params['is_active']);

@@ -1165,7 +1165,7 @@ class InventoryTransferController extends Controller
             $saved[] = [
                 'name' => basename($result['path']),
                 'path' => $result['path'],
-                'url' => url('/storage/' . $result['path']),
+                'url' => url('/api/auth/files/' . $result['path']),
                 'mime_type' => $file->getMimeType(),
             ];
         }

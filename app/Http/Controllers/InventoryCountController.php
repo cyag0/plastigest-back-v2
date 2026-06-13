@@ -2,12 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\AdjustmentReasonCode;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\InventoryCountResource;
+use App\Models\InventoryAdjustmentDetail;
 use App\Models\InventoryCount;
 use App\Models\Product;
 use App\Models\Task;
 use App\Services\FirebaseService;
+use App\Services\MovementService;
 use App\Notifications\NotificationEngine;
 use App\Services\TaskService;
 use App\Support\CurrentCompany;
@@ -176,27 +179,99 @@ class InventoryCountController extends CrudController
 
             $discrepancies = [];
 
-            // Actualizar el stock en el pivote product_location solo cuando no coincidió el conteo
-            foreach ($details as $detail) {
-                // Solo actualizar si hubo diferencia (el conteo no coincidió con el sistema)
-                if ($detail->difference != 0) {
-                    // Registrar discrepancia
-                    $discrepancies[] = [
-                        'product_id' => $detail->product_id,
-                        'product_name' => $detail->product->name,
-                        'expected_quantity' => $detail->expected_quantity,
-                        'counted_quantity' => $detail->counted_quantity,
-                        'difference' => $detail->difference,
-                    ];
+            $movementService = app(MovementService::class);
+            $createdBy = Auth::id() ?? $inventoryCount->user_id;
 
-                    // Actualizar el current_stock en la tabla pivote product_location
-                    DB::table('product_location')
+            // Por cada diferencia generamos un ajuste de inventario (razón
+            // "Diferencia de Conteo") enlazado a este conteo. El ajuste es el
+            // registro auditable que afecta el stock; el conteo queda como
+            // documento informativo. Se aplica la DIFERENCIA (delta) para no
+            // pisar movimientos ocurridos entre el conteo y su cierre.
+            foreach ($details as $detail) {
+                // Solo cuando el conteo no coincidió con el sistema
+                if ($detail->difference == 0) {
+                    continue;
+                }
+
+                // Registrar discrepancia (para la tarea/notificación de revisión)
+                $discrepancies[] = [
+                    'product_id' => $detail->product_id,
+                    'product_name' => $detail->product->name,
+                    'expected_quantity' => $detail->system_quantity,
+                    'counted_quantity' => $detail->counted_quantity,
+                    'difference' => $detail->difference,
+                ];
+
+                try {
+                    $product = $detail->product;
+                    $unitId = (int) ($product->unit_id ?? 0);
+
+                    if (!$unitId) {
+                        Log::warning('Conteo: producto sin unidad base, se omite ajuste', [
+                            'inventory_count_id' => $inventoryCount->id,
+                            'product_id' => $detail->product_id,
+                        ]);
+                        continue;
+                    }
+
+                    $difference = (float) $detail->difference; // contado - sistema
+                    $direction = $difference > 0 ? 'in' : 'out';
+
+                    $previousStock = (float) (DB::table('product_location')
                         ->where('product_id', $detail->product_id)
                         ->where('location_id', $detail->location_id)
-                        ->update([
-                            'current_stock' => $detail->counted_quantity,
-                            'updated_at' => now(),
-                        ]);
+                        ->value('current_stock') ?? 0);
+
+                    // En faltantes no descontamos más de lo disponible para evitar
+                    // stock negativo si hubo movimientos intermedios.
+                    $quantity = $direction === 'in'
+                        ? abs($difference)
+                        : min(abs($difference), $previousStock);
+
+                    if ($quantity <= 0) {
+                        continue;
+                    }
+
+                    if ($direction === 'in') {
+                        $movementService->increment((int) $detail->location_id, (int) $detail->product_id, $unitId, $quantity);
+                    } else {
+                        $movementService->decrement((int) $detail->location_id, (int) $detail->product_id, $unitId, $quantity);
+                    }
+
+                    $newStock = (float) (DB::table('product_location')
+                        ->where('product_id', $detail->product_id)
+                        ->where('location_id', $detail->location_id)
+                        ->value('current_stock') ?? 0);
+
+                    InventoryAdjustmentDetail::create([
+                        'company_id' => $inventoryCount->company_id,
+                        'location_id' => $detail->location_id,
+                        'created_by' => $createdBy,
+                        'product_id' => (int) $detail->product_id,
+                        'direction' => $direction,
+                        'quantity' => $quantity,
+                        'unit_id' => $unitId,
+                        'previous_stock' => $previousStock,
+                        'new_stock' => $newStock,
+                        'reason_code' => AdjustmentReasonCode::COUNT_DIFF,
+                        'notes' => trim(sprintf(
+                            '[Diferencia de conteo · %s · #%d] %s',
+                            $inventoryCount->name,
+                            $inventoryCount->id,
+                            $detail->notes ?? ''
+                        )),
+                        'reference_id' => $inventoryCount->id,
+                        'reference_type' => 'inventory_count',
+                        'applied_at' => now(),
+                    ]);
+                } catch (\Exception $e) {
+                    // No abortar el cierre completo del conteo por un producto:
+                    // el MovementService revierte solo su savepoint y seguimos.
+                    Log::error('Conteo: error generando ajuste de diferencia', [
+                        'inventory_count_id' => $inventoryCount->id,
+                        'product_id' => $detail->product_id,
+                        'error' => $e->getMessage(),
+                    ]);
                 }
             }
 

@@ -20,9 +20,9 @@ class PurchaseUpdateTemplate extends BaseNotificationTemplate
         $supplierName = $this->context['supplier_name'] ?? 'Proveedor';
 
         return match ($subType) {
-            'in_transit' => "🚚 Compra en Tránsito — {$supplierName}",
-            'received'   => "✅ Compra Recibida — {$supplierName}",
-            default      => "📦 Actualización de Compra — {$supplierName}",
+            'in_transit' => "Compra en Tránsito — {$supplierName}",
+            'received'   => "Compra Recibida — {$supplierName}",
+            default      => "Actualización de Compra — {$supplierName}",
         };
     }
 

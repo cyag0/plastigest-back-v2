@@ -75,7 +75,10 @@ class ProductionOrderResource extends Resources
         }
 
         if ($resource->relationLoaded('wastes')) {
-            $item['wastes'] = $resource->wastes->map(function ($w) {
+            // getRelation() bypasses attribute casts — needed because 'wastes' is also
+            // a JSON column on the model, and getAttribute() would return the array cast
+            // instead of the Eloquent Collection.
+            $item['wastes'] = $resource->getRelation('wastes')->map(function ($w) {
                 return [
                     'id' => $w->id,
                     'product_id' => $w->product_id,
@@ -94,7 +97,7 @@ class ProductionOrderResource extends Resources
         $item['summary'] = [
             'consumption_count' => $resource->relationLoaded('consumptions') ? $resource->consumptions->count() : null,
             'output_count' => $resource->relationLoaded('outputs') ? $resource->outputs->count() : null,
-            'waste_count' => $resource->relationLoaded('wastes') ? $resource->wastes->count() : null,
+            'waste_count' => $resource->relationLoaded('wastes') ? $resource->getRelation('wastes')->count() : null,
             'waste_percentage' => $resource->waste_percentage !== null ? (float) $resource->waste_percentage : null,
         ];
 

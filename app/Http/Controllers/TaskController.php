@@ -23,9 +23,6 @@ class TaskController extends Controller
      */
     public function eligibleUsers(Request $request)
     {
-        if (!CurrentWorker::hasPermission('tasks_list')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
 
         $validated = $request->validate([
             'location_id' => 'required|integer|exists:locations,id',
@@ -73,9 +70,6 @@ class TaskController extends Controller
      */
     public function index(Request $request)
     {
-        if (!CurrentWorker::hasPermission('tasks_list')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
 
         $user = $request->user();
         $company = CurrentCompany::get();
@@ -143,9 +137,7 @@ class TaskController extends Controller
      */
     public function show(Request $request, Task $task)
     {
-        if (!CurrentWorker::hasPermission('tasks_read')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
+
 
         $company = CurrentCompany::get();
 
@@ -389,9 +381,7 @@ class TaskController extends Controller
      */
     public function statistics(Request $request)
     {
-        if (!CurrentWorker::hasPermission('tasks_list')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
+
 
         $company = CurrentCompany::get();
         $query = Task::where('company_id', $company->id);

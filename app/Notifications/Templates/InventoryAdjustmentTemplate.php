@@ -18,7 +18,7 @@ class InventoryAdjustmentTemplate extends BaseNotificationTemplate
     {
         $product = $this->context['product'] ?? null;
         $name    = $product?->name ?? 'Producto';
-        return "🔧 Ajuste de Inventario: {$name}";
+        return "Ajuste de Inventario: {$name}";
     }
 
     public function getMessage(): string

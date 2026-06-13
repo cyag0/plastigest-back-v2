@@ -180,6 +180,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Purchase V2 Management Routes (New System with Real-time Draft Sync)
             Route::prefix('purchases-v2')->group(function () {
+                Route::get('stats', [PurchaseV2Controller::class, 'stats']);
                 Route::post('upsert-draft', [PurchaseV2Controller::class, 'upsertDraft']);
                 Route::get('draft', [PurchaseV2Controller::class, 'getDraft']);
                 Route::post('add-detail', [PurchaseV2Controller::class, 'addDetail']);

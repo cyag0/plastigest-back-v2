@@ -23,7 +23,7 @@ class LowStockTemplate extends BaseNotificationTemplate
     {
         $product = $this->context['product'] ?? null;
         $name    = $product?->name ?? 'Producto';
-        return "⚠️ Stock Bajo: {$name}";
+        return "Stock Bajo: {$name}";
     }
 
     public function getMessage(): string

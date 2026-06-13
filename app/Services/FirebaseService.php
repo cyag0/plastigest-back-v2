@@ -65,9 +65,85 @@ class FirebaseService
             ];
         }
 
-        $tokens = $deviceTokens->pluck('token')->toArray();
+        $successCount = 0;
+        $failedTokens = [];
 
-        return $this->sendToTokens($tokens, $title, $body, $data);
+        // Enviamos por dispositivo (no en lote) porque el payload difiere por
+        // plataforma: web va data-only para evitar notificaciones DUPLICADAS,
+        // nativo lleva notification payload. Ver buildMessage().
+        foreach ($deviceTokens as $deviceToken) {
+            try {
+                $message = $this->buildMessage(
+                    $deviceToken->token,
+                    $deviceToken->device_type,
+                    $title,
+                    $body,
+                    $data,
+                );
+
+                $this->messaging->send($message);
+                $successCount++;
+
+                $deviceToken->update(['last_used_at' => now()]);
+            } catch (\Kreait\Firebase\Exception\Messaging\NotFound $e) {
+                // Token no válido, desactivarlo
+                Log::warning("Invalid FCM token, deactivating: {$deviceToken->token}");
+                $deviceToken->update(['is_active' => false]);
+                $failedTokens[] = $deviceToken->token;
+            } catch (\Exception $e) {
+                Log::error("Error sending notification to token {$deviceToken->token}: " . $e->getMessage());
+                $failedTokens[] = $deviceToken->token;
+            }
+        }
+
+        return [
+            'success'       => $successCount > 0,
+            'message'       => $successCount > 0
+                ? "Sent to {$successCount} device(s)"
+                : 'Failed to send notifications',
+            'sent_count'    => $successCount,
+            'failed_count'  => count($failedTokens),
+            'failed_tokens' => $failedTokens,
+        ];
+    }
+
+    /**
+     * Construye el CloudMessage según la plataforma del dispositivo.
+     *
+     * WEB: data-only. Si incluyéramos un `notification` payload, Chrome mostraría
+     * la notificación automáticamente Y nuestro Service Worker la mostraría otra
+     * vez en onBackgroundMessage → notificación DUPLICADA. Mandando solo data,
+     * únicamente nuestro handler la pinta (una sola) y conservamos el shape de
+     * `data` intacto para el deep-link al hacer click.
+     *
+     * NATIVE (android/ios): incluimos el `notification` payload para que el SO
+     * muestre la notificación automáticamente cuando la app está en segundo
+     * plano o cerrada.
+     */
+    private function buildMessage(
+        string  $token,
+        ?string $deviceType,
+        string  $title,
+        string  $body,
+        array   $data,
+    ): CloudMessage {
+        // FCM exige que TODOS los valores de data sean strings.
+        $stringData = array_map(
+            static fn ($value) => $value === null ? '' : (string) $value,
+            $data,
+        );
+
+        if ($deviceType === 'web') {
+            return CloudMessage::withTarget('token', $token)
+                ->withData(array_merge($stringData, [
+                    'title' => $title,
+                    'body'  => $body,
+                ]));
+        }
+
+        return CloudMessage::withTarget('token', $token)
+            ->withNotification(Notification::create($title, $body))
+            ->withData($stringData);
     }
 
     /**

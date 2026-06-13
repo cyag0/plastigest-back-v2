@@ -6,9 +6,11 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\LocationResource;
 use App\Models\Admin\Location;
 use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Container\Attributes\Log;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log as FacadesLog;
 
@@ -24,6 +26,19 @@ class LocationController extends CrudController
      */
     protected string $model = Location::class;
     protected ?string $permissionPrefix = 'locations';
+
+    /**
+     * El listado de sucursales no requiere permiso.
+     * Cualquier usuario autenticado debe poder ver las sucursales donde trabaja
+     * para poder seleccionarla, independientemente de sus permisos.
+     * El filtrado por sucursales del usuario se aplica en handleQuery().
+     * Las demás acciones (crear/editar/eliminar/ver detalle) siguen protegidas
+     * por el prefijo 'locations'.
+     */
+    protected function canIndex(): bool
+    {
+        return true;
+    }
 
     /**
      * Relaciones que se cargarán en el index
@@ -56,6 +71,20 @@ class LocationController extends CrudController
 
         if ($company) {
             $query->where('company_id', $company->id);
+        }
+
+        // Scope por usuario: si NO tiene el permiso de listar sucursales
+        // (permiso de admin de empresa), solo puede ver las sucursales a las
+        // que está asignado vía la tabla user_location_roles. Así el selector
+        // de sucursal en el login muestra únicamente las sucursales del usuario.
+        // Los admins (con locations_list) ven todas para administración.
+        if (!CurrentWorker::hasPermission('locations_list')) {
+            $userId = Auth::id();
+            $query->whereIn('id', function ($q) use ($userId) {
+                $q->select('location_id')
+                    ->from('user_location_roles')
+                    ->where('user_id', $userId);
+            });
         }
 
         FacadesLog::info('HandleQuery Params: ', $params);

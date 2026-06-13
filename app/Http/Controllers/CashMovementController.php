@@ -208,7 +208,28 @@ class CashMovementController extends CrudController
         // Estadísticas por fecha específica (para cierres de caja)
         $dateStats = null;
         if ($request->filled('date')) {
-            $dateQuery = (clone $baseQuery)->whereDate('movement_date', $request->input('date'));
+            $date = $request->input('date');
+            $dateQuery = (clone $baseQuery)->whereDate('movement_date', $date);
+
+            // Saldo de apertura: neto de TODOS los movimientos ANTERIORES a la fecha.
+            // (balance_actual incluye el día, por eso no sirve como apertura)
+            $openingQuery = (clone $baseQuery)->whereDate('movement_date', '<', $date);
+
+            $openingBalance = (float) ((clone $openingQuery)->selectRaw("
+                SUM(CASE WHEN type IN ('income', 'adjustment') THEN amount ELSE 0 END)
+                - SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS balance
+            ")->value('balance') ?? 0);
+
+            // Saldo de apertura por método de pago (para el efectivo esperado en caja)
+            $openingByMethod = (clone $openingQuery)
+                ->selectRaw("
+                    payment_method,
+                    SUM(CASE WHEN type IN ('income', 'adjustment') THEN amount ELSE 0 END)
+                    - SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS balance
+                ")
+                ->groupBy('payment_method')
+                ->get()
+                ->mapWithKeys(fn ($row) => [$row->payment_method => (float) $row->balance]);
 
             $dateTotals = (clone $dateQuery)->selectRaw("
                 SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS date_income,
@@ -231,11 +252,13 @@ class CashMovementController extends CrudController
                 ]);
 
             $dateStats = [
-                'date'              => $request->input('date'),
+                'date'              => $date,
+                'opening_balance'   => $openingBalance,
                 'date_income'       => (float) ($dateTotals->date_income ?? 0),
                 'date_expense'      => (float) ($dateTotals->date_expense ?? 0),
                 'date_count'        => (int)   ($dateTotals->date_count ?? 0),
                 'by_payment_method' => $dateByMethod,
+                'opening_by_method' => $openingByMethod,
             ];
         }
 

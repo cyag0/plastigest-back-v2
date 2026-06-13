@@ -94,9 +94,9 @@ class UnitsSeeder extends Seeder
         ]);
 
         // Conversiones de cantidad
-        $this->createConversion($caja, $pieza, 12); // 1 caja = 12 piezas
-        $this->createConversion($docena, $pieza, 12); // 1 docena = 12 piezas
-        $this->createConversion($paquete, $pieza, 100); // 1 paquete = 100 piezas
+        // Caja y Paquete no tienen conversión global: la cantidad por empaque
+        // varía por producto y se define en product_packages.quantity_per_package.
+        $this->createConversion($docena, $pieza, 12); // 1 docena = 12 piezas (siempre fijo)
 
         // Conversiones de peso
         $this->createConversion($kilogramo, $gramo, 1000); // 1 kg = 1000 g

@@ -91,7 +91,7 @@ class ProductionOrderController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         return $request->validate([
-            'location_id' => 'nullable|exists:locations,id',
+            //'location_id' => 'nullable|exists:locations,id',
             'production_date' => 'required|date',
             'responsible_user_id' => 'required|exists:users,id',
             'formula_id' => 'nullable|exists:formulas,id',
@@ -112,7 +112,7 @@ class ProductionOrderController extends CrudController
             'wastes.*.product_id' => 'required_with:wastes|exists:products,id',
             'wastes.*.unit_id' => 'required_with:wastes|exists:units,id',
             'wastes.*.quantity' => 'required_with:wastes|numeric|min:0.0001',
-            'wastes.*.reason' => 'required_with:wastes|in:coconut_no_water,coconut_no_pulp,damaged_coconut,other',
+            'wastes.*.reason' => 'required_with:wastes|in:damage,quality,expired,process_loss,spill,other',
             'wastes.*.notes' => 'nullable|string',
         ]);
     }
@@ -120,7 +120,7 @@ class ProductionOrderController extends CrudController
     protected function validateUpdateData(Request $request, Model $model): array
     {
         return $request->validate([
-            'location_id' => 'sometimes|exists:locations,id',
+            //'location_id' => 'sometimes|exists:locations,id',
             'production_date' => 'sometimes|date',
             'responsible_user_id' => 'sometimes|exists:users,id',
             'formula_id' => 'nullable|exists:formulas,id',
@@ -141,7 +141,7 @@ class ProductionOrderController extends CrudController
             'wastes.*.product_id' => 'required_with:wastes|exists:products,id',
             'wastes.*.unit_id' => 'required_with:wastes|exists:units,id',
             'wastes.*.quantity' => 'required_with:wastes|numeric|min:0.0001',
-            'wastes.*.reason' => 'required_with:wastes|in:coconut_no_water,coconut_no_pulp,damaged_coconut,other',
+            'wastes.*.reason' => 'required_with:wastes|in:damage,quality,expired,process_loss,spill,other',
             'wastes.*.notes' => 'nullable|string',
         ]);
     }
@@ -152,7 +152,7 @@ class ProductionOrderController extends CrudController
         $location = CurrentLocation::get();
 
         $data['company_id'] = $company?->id;
-        if (!$data['location_id'] ?? null) {
+        if (!isset($data['location_id']) || $data['location_id'] === null) {
             $data['location_id'] = $location?->id;
         }
 

@@ -20,7 +20,7 @@ class NotificationController extends CrudController
      * El modelo que manejará este controlador
      */
     protected string $model = Notification::class;
-    protected ?string $permissionPrefix = 'notifications';
+    protected ?string $permissionPrefix = null;
 
     /**
      * Relaciones que se cargarán en el index

@@ -22,6 +22,7 @@ class UnitResource extends Resources
             'id' => $resource->id,
             'name' => $resource->name,
             'abbreviation' => $resource->abbreviation,
+            'unit_type' => $resource->unit_type,
             'company_id' => $resource->company_id,
             'description' => "N/A",
             'base_unit_id' => $resource->base_unit_id,

@@ -77,6 +77,7 @@ class PurchaseV2Controller extends Controller
                     'purchase_date' => now(),
                     'status' => PurchaseV2::STATUS_DRAFT,
                     'notes' => $validated['notes'] ?? null,
+                    'payment_method' => $validated['payment_method'] ?? null,
                     'user_id' => $userId,
                 ]);
             } else {
@@ -675,6 +676,40 @@ class PurchaseV2Controller extends Controller
     }
 
     /**
+     * Eliminar compra (solo draft o canceladas)
+     */
+    public function destroy($id)
+    {
+        if (!CurrentWorker::hasPermission('purchases_delete')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        try {
+            $companyId = CurrentCompany::get()->id;
+            $locationId = CurrentLocation::get()->id;
+
+            $purchase = PurchaseV2::where('company_id', $companyId)
+                ->where('location_id', $locationId)
+                ->whereIn('status', [PurchaseV2::STATUS_DRAFT, PurchaseV2::STATUS_CANCELLED])
+                ->findOrFail($id);
+
+            $purchase->details()->delete();
+            $purchase->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Compra eliminada correctamente',
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al eliminar la compra',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Cancelar compra
      */
     public function cancel(Request $request, $id)
@@ -844,6 +879,98 @@ class PurchaseV2Controller extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Estadísticas de compras v2
+     */
+    public function stats(Request $request)
+    {
+        if (!CurrentWorker::hasPermission('purchases_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $companyId = CurrentCompany::get()->id;
+        $locationId = $request->input('location_id') ?? CurrentLocation::get()?->id;
+        $startDate = $request->input('start_date');
+        $endDate = $request->input('end_date');
+
+        $query = PurchaseV2::where('company_id', $companyId)
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId))
+            ->when($startDate, fn($q) => $q->whereDate('purchase_date', '>=', $startDate))
+            ->when($endDate, fn($q) => $q->whereDate('purchase_date', '<=', $endDate));
+
+        $totalPurchases = (clone $query)->count();
+        $totalAmount = (clone $query)->sum('total');
+        $averageAmount = $totalPurchases > 0 ? $totalAmount / $totalPurchases : 0;
+        $receivedCount = (clone $query)->where('status', PurchaseV2::STATUS_RECEIVED)->count();
+        $pendingCount = (clone $query)->whereIn('status', [PurchaseV2::STATUS_ORDERED, PurchaseV2::STATUS_IN_TRANSIT])->count();
+
+        $byStatus = (clone $query)
+            ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total) as total'))
+            ->groupBy('status')
+            ->get()
+            ->mapWithKeys(fn($item) => [$item->status => ['count' => $item->count, 'total' => (float) $item->total]]);
+
+        $topSuppliers = (clone $query)
+            ->select('supplier_id', DB::raw('COUNT(*) as purchase_count'), DB::raw('SUM(total) as total_amount'))
+            ->whereNotNull('supplier_id')
+            ->groupBy('supplier_id')
+            ->orderByDesc('total_amount')
+            ->limit(5)
+            ->with('supplier:id,name')
+            ->get()
+            ->map(fn($item) => [
+                'supplier_name' => $item->supplier?->name ?? 'Sin proveedor',
+                'purchase_count' => $item->purchase_count,
+                'total_amount' => (float) $item->total_amount,
+            ]);
+
+        $purchaseIds = (clone $query)->pluck('id');
+
+        $topProducts = PurchaseDetailV2::whereIn('purchase_id', $purchaseIds)
+            ->with('product:id,name')
+            ->get()
+            ->groupBy('product_id')
+            ->map(fn($rows) => [
+                'product_name' => $rows->first()?->product?->name ?? 'Sin nombre',
+                'total_quantity' => (float) $rows->sum('quantity'),
+                'total_amount' => (float) $rows->sum('total'),
+            ])
+            ->sortByDesc('total_amount')
+            ->take(10)
+            ->values();
+
+        $sixMonthsAgo = now()->subMonths(6)->startOfMonth();
+        $purchaseTrend = (clone $query)
+            ->where('purchase_date', '>=', $sixMonthsAgo)
+            ->select(
+                DB::raw('DATE_FORMAT(purchase_date, "%Y-%m") as month'),
+                DB::raw('COUNT(*) as count'),
+                DB::raw('SUM(total) as total')
+            )
+            ->groupBy('month')
+            ->orderBy('month')
+            ->get()
+            ->map(fn($item) => [
+                'month' => $item->month,
+                'count' => $item->count,
+                'total' => (float) $item->total,
+            ]);
+
+        return response()->json([
+            'data' => [
+                'total_purchases' => $totalPurchases,
+                'total_amount' => (float) $totalAmount,
+                'average_amount' => (float) $averageAmount,
+                'received_count' => $receivedCount,
+                'pending_count' => $pendingCount,
+                'by_status' => $byStatus,
+                'top_suppliers' => $topSuppliers,
+                'top_products' => $topProducts,
+                'purchase_trend' => $purchaseTrend,
+            ],
+        ]);
     }
 
     /**

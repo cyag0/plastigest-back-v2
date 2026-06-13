@@ -23,11 +23,11 @@ class TaskEventTemplate extends BaseNotificationTemplate
         $taskTitle = $task?->title ?? 'Tarea';
 
         return match ($subType) {
-            'assigned'  => "📋 Nueva tarea asignada: {$taskTitle}",
-            'completed' => "✅ Tarea completada: {$taskTitle}",
-            'overdue'   => "⏰ Tarea vencida: {$taskTitle}",
-            'comment'   => "💬 {$actorName} comentó en: {$taskTitle}",
-            default     => "📋 Actualización de tarea: {$taskTitle}",
+            'assigned'  => "Nueva tarea asignada: {$taskTitle}",
+            'completed' => "Tarea completada: {$taskTitle}",
+            'overdue'   => "Tarea vencida: {$taskTitle}",
+            'comment'   => "{$actorName} comentó en: {$taskTitle}",
+            default     => "Actualización de tarea: {$taskTitle}",
         };
     }
 

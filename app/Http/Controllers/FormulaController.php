@@ -22,7 +22,7 @@ class FormulaController extends CrudController
 
     protected function indexRelations(): array
     {
-        return ['product.mainImage', 'items.product', 'items.unit'];
+        return ['product.mainImage', 'product.unit', 'items.product', 'items.unit'];
     }
 
     protected function getShowRelations(): array
@@ -50,7 +50,9 @@ class FormulaController extends CrudController
 
     protected function applyBasicFilters($query, array $params)
     {
-        parent::applyBasicFilters($query, $params);
+        // Skip generic search — handleQuery has a formula-specific search
+        // that also searches by related product name.
+        parent::applyBasicFilters($query, array_diff_key($params, ['search' => true]));
     }
 
     protected function validateStoreData(Request $request): array

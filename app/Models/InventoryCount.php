@@ -53,6 +53,17 @@ class InventoryCount extends Model
     }
 
     /**
+     * Ajustes de inventario generados al completar este conteo
+     * (razón "Diferencia de Conteo"). El conteo es informativo; estos
+     * ajustes son el registro auditable que afectó el stock.
+     */
+    public function adjustmentDetails(): HasMany
+    {
+        return $this->hasMany(InventoryAdjustmentDetail::class, 'reference_id')
+            ->where('reference_type', 'inventory_count');
+    }
+
+    /**
      * Scope para filtrar por ubicación
      */
     public function scopeByLocation($query, $locationId)

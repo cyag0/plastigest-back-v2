@@ -42,12 +42,19 @@ class FormulaResource extends Resources
                     $product->mainImage->image_path,
                 );
             }
+            $unit = $product->relationLoaded('unit') ? $product->unit : null;
             $item['product'] = [
                 'id' => $product->id,
                 'name' => $product->name,
                 'code' => $product->code,
                 'product_type' => $product->product_type,
                 'unit_id' => $product->unit_id,
+                'unit' => $unit ? [
+                    'id' => $unit->id,
+                    'name' => $unit->name,
+                    'abbreviation' => $unit->abbreviation,
+                    'unit_type' => $unit->unit_type,
+                ] : null,
                 'main_image' => $mainImage,
             ];
         }
@@ -61,6 +68,8 @@ class FormulaResource extends Resources
                     'product_code' => $i->relationLoaded('product') ? ($i->product?->code) : null,
                     'unit_id' => $i->unit_id,
                     'unit_name' => $i->relationLoaded('unit') ? ($i->unit?->name) : null,
+                    'unit_abbreviation' => $i->relationLoaded('unit') ? ($i->unit?->abbreviation) : null,
+                    'unit_type' => $i->relationLoaded('unit') ? ($i->unit?->unit_type) : null,
                     'expected_quantity' => (float) $i->expected_quantity,
                     'sort_order' => $i->sort_order,
                     'notes' => $i->notes,

@@ -22,7 +22,7 @@ class InventoryCountDiscrepancyTemplate extends BaseNotificationTemplate
     public function getTitle(): string
     {
         $count = $this->context['discrepancies_count'] ?? 0;
-        return "🔴 Discrepancias en Conteo ({$count} productos)";
+        return "Discrepancias en Conteo ({$count} productos)";
     }
 
     public function getMessage(): string
