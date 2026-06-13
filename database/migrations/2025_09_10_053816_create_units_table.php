@@ -29,7 +29,9 @@ return new class extends Migration
             ['name' => 'Pieza', 'abbreviation' => 'pz', 'unit_type' => 'quantity', 'is_base_unit' => true, 'company_id' => null, 'factor_to_base' => 1.000000, 'created_at' => now(), 'updated_at' => now()],
             ['name' => 'Decena', 'abbreviation' => 'da', 'unit_type' => 'quantity', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 10.000000, 'created_at' => now(), 'updated_at' => now()],
             ['name' => 'Docena', 'abbreviation' => 'dz', 'unit_type' => 'quantity', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 12.000000, 'created_at' => now(), 'updated_at' => now()],
-            
+            // Unidad de empaque: la cantidad real por paquete se define en product_packages.quantity_per_package.
+            ['name' => 'Paquete', 'abbreviation' => 'pq', 'unit_type' => 'quantity', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 1.000000, 'created_at' => now(), 'updated_at' => now()],
+
             // Masa
             ['name' => 'Kilogramo', 'abbreviation' => 'kg', 'unit_type' => 'mass', 'is_base_unit' => true, 'company_id' => null, 'factor_to_base' => 1.000000, 'created_at' => now(), 'updated_at' => now()],
             ['name' => 'Gramo', 'abbreviation' => 'g', 'unit_type' => 'mass', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 0.001000, 'created_at' => now(), 'updated_at' => now()],

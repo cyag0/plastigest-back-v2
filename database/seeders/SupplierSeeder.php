@@ -208,6 +208,40 @@ class SupplierSeeder extends Seeder
                 'address' => null,
                 'category' => 'Publicidad',
             ],
+
+            // PROVEEDORES DE PRODUCTO (columna "Proveedor" del catálogo de productos)
+            [
+                'name' => 'Huerteros',
+                'contact_name' => 'Productores de coco',
+                'phone' => null,
+                'email' => null,
+                'address' => 'Huertas de coco de la región',
+                'category' => 'Materias Primas (Cocos)',
+            ],
+            [
+                'name' => 'Colima Tropical',
+                'contact_name' => 'Susy',
+                'phone' => null,
+                'email' => null,
+                'address' => 'Tecomán, Colima',
+                'category' => 'Derivados de coco (harina, azúcar, aceite)',
+            ],
+            [
+                'name' => 'Sofía Gómez',
+                'contact_name' => 'Sofía Gómez',
+                'phone' => null,
+                'email' => null,
+                'address' => null,
+                'category' => 'Galletas y postres',
+            ],
+            [
+                'name' => "Sam's Club",
+                'contact_name' => null,
+                'phone' => null,
+                'email' => null,
+                'address' => null,
+                'category' => 'Mayoreo (ingredientes y limpieza)',
+            ],
         ];
 
         foreach ($companies as $company) {

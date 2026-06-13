@@ -134,7 +134,7 @@
     <div class="wrapper">
         <div class="header">
             <h1>{{ $title ?? 'Notificación' }}</h1>
-            <div class="brand">Plastigest — Sistema de Gestión</div>
+            <div class="brand">GCStock — Sistema de Gestión</div>
         </div>
         <div class="content">
             @php
@@ -145,7 +145,7 @@
             @yield('body')
         </div>
         <div class="footer">
-            Este mensaje fue generado automáticamente por Plastigest. No responder a este correo.
+            Este mensaje fue generado automáticamente por GCStock. No responder a este correo.
         </div>
     </div>
 </body>

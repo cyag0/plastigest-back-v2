@@ -11,26 +11,14 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
 /**
- * FormulasSeeder — Crea las plantillas de fórmulas de la planta de cocos
- * organizadas en 3 niveles:
+ * FormulasSeeder — Una sola fórmula de ejemplo: Agua de Coco.
  *
- *  Nivel 1 (coco crudo → intermedios):
- *    - Coco Entero → Agua de Coco (a granel) + Pulpa de Coco (a granel)
+ * Produce "Agua de Coco 1 Litro" a partir de "Coco Entero". Sirve como plantilla
+ * para que el cliente capture el resto de sus fórmulas desde la app.
  *
- *  Nivel 2 (intermedios → productos finales):
- *    - Agua de Coco (a granel) → Botella 1/2 LT, Botella 1 LT, Galón 4 LT,
- *                                Vaso mediano, Vaso grande, Horchata base, Tuba base
- *    - Pulpa de Coco (a granel) → Coco rallado 1 KG
- *
- *  Nivel 3 (intermedios / comerciales → dulces y barras):
- *    - Agua de Coco → Horchata 1 LT, Horchata 1/2 LT, Galón de horchata
- *    - Tuba base → Tuba 1/2 LT, Tuba 1 LT, Galón de tuba
- *    - Pulpa de Coco → Cocada de nuez, Barra de coco, Barra mixta
- *
- *  Nota: el "rendimiento esperado" (cantidad producida al ejecutar la fórmula
- *  una vez) es una propiedad de la FÓRMULA, no de cada ingrediente. La unidad
- *  del rendimiento la resuelve el frontend desde `product.unit_id` del
- *  producto objetivo de la fórmula.
+ * El rendimiento (cantidad producida al ejecutar la fórmula una vez) vive en la
+ * FÓRMULA (`expected_output_quantity`); su unidad la resuelve el frontend desde
+ * la unidad del producto objetivo.
  */
 class FormulasSeeder extends Seeder
 {
@@ -45,322 +33,40 @@ class FormulasSeeder extends Seeder
         // Limpiar fórmulas previas de esta compañía
         DB::table('formulas')->where('company_id', $company->id)->delete();
 
-        // Resolver productos por código
-        $products = Product::where('company_id', $company->id)
-            ->get()
-            ->keyBy('code');
+        $products = Product::where('company_id', $company->id)->get()->keyBy('code');
+        $pieza = Unit::where('name', 'Pieza')->first();
 
-        $units = Unit::all()->keyBy('name');
+        $aguaDeCoco = $products->get('BEB-AC-1L');     // producto objetivo
+        $cocoEntero = $products->get('COC-ENT-001');   // ingrediente
 
-        if ($products->isEmpty()) {
-            $this->command->error('No hay productos. Ejecuta ProductsSeeder primero.');
+        if (!$aguaDeCoco || !$cocoEntero || !$pieza) {
+            $this->command->error('Faltan productos base (Agua de Coco / Coco Entero) o la unidad Pieza. Ejecuta ProductsSeeder y UnitsSeeder primero.');
             return;
         }
 
-        // Helper: encuentra producto por código
-        $p = fn(string $code) => $products->get($code);
-        $u = fn(string $name) => $units->get($name)?->id;
+        $userId = DB::table('users')->value('id');
 
-        $user = DB::table('users')->first();
-        $userId = $user?->id;
+        $formula = Formula::create([
+            'company_id' => $company->id,
+            'product_id' => $aguaDeCoco->id,
+            'name' => 'Producción de Agua de Coco 1 Litro',
+            'description' => 'Fórmula de ejemplo: rinde ~1 L de agua de coco a partir de coco entero (≈0.73 L por coco).',
+            'version' => 1,
+            'is_active' => true,
+            'expected_output_quantity' => 1,
+            'created_by' => $userId,
+            'updated_by' => $userId,
+        ]);
 
-        // Definición de fórmulas: [code, name, description, expected_output_quantity, items[]]
-        $formulas = [
-            // ═══════════════ NIVEL 1 ═══════════════
-            // Cada fórmula de Nivel 1 produce UN derivado a partir de coco entero.
-            // En la UI, el usuario puede capturar UNA sola producción con varios
-            // outputs seleccionando primero la fórmula de Agua y luego agregando
-            // manualmente la línea de Pulpa, o usando "Duplicar producción".
-            [
-                'code' => 'INT-AGUA-001',
-                'name' => 'Producción de Agua de Coco',
-                'description' => 'Rinde aprox. 0.73 L de agua por coco entero. Usar junto con "Producción de Pulpa de Coco" para registrar el lote completo.',
-                'is_active' => true,
-                'expected_output_quantity' => 0.73,
-                'items' => [
-                    [
-                        'ingredient_code' => 'MP-COCO-001',
-                        'unit' => 'Pieza',
-                        'expected_quantity' => 1,
-                        'notes' => 'Consumo: 1 coco entero. Rendimiento: ~0.73 L de agua.',
-                    ],
-                ],
-            ],
-            [
-                'code' => 'INT-PULPA-001',
-                'name' => 'Producción de Pulpa de Coco',
-                'description' => 'Rinde aprox. 0.5 kg de pulpa por coco entero.',
-                'is_active' => true,
-                'expected_output_quantity' => 0.5,
-                'items' => [
-                    [
-                        'ingredient_code' => 'MP-COCO-001',
-                        'unit' => 'Pieza',
-                        'expected_quantity' => 1,
-                        'notes' => 'Consumo: 1 coco entero. Rendimiento: ~0.5 kg de pulpa.',
-                    ],
-                ],
-            ],
+        FormulaItem::create([
+            'formula_id' => $formula->id,
+            'product_id' => $cocoEntero->id,
+            'unit_id' => $pieza->id,
+            'expected_quantity' => 1.4,
+            'sort_order' => 0,
+            'notes' => 'Se requieren ~1.4 cocos enteros para obtener 1 L de agua.',
+        ]);
 
-            // ═══════════════ NIVEL 2 - AGUA A GRANEL → BEBIDAS ENVASADAS ═══════════════
-            [
-                'code' => 'BEB-BC-500',
-                'name' => 'Botella de agua de coco 1/2 LT',
-                'description' => 'Llenado de botella 500 ml con agua de coco a granel.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-AGUA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 0.5,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-BC-1L',
-                'name' => 'Botella de agua de coco 1 LT',
-                'description' => 'Llenado de botella 1 L con agua de coco a granel.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-AGUA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 1,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-AC-GAL',
-                'name' => 'Galón de agua de coco 4 LT',
-                'description' => 'Galón de 4 L con agua de coco a granel.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-AGUA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 4,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-VM-001',
-                'name' => 'Vaso de agua de coco mediano',
-                'description' => 'Vaso mediano (12 oz) de agua de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-AGUA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 0.35,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-VG-001',
-                'name' => 'Vaso de agua de coco grande',
-                'description' => 'Vaso grande (16 oz) de agua de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-AGUA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 0.5,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-MR-C/A',
-                'name' => 'Mariscoco con agua',
-                'description' => 'Mariscoco preparado con agua de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-AGUA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 0.5,
-                    ],
-                ],
-            ],
-
-            // ═══════════════ NIVEL 2 - PULPA A GRANEL → DERIVADOS ═══════════════
-            [
-                'code' => 'RAL-CR-1K',
-                'name' => 'Coco rallado 1 KG',
-                'description' => 'Rallado y empaquetado de 1 kg de pulpa de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-PULPA-001',
-                        'unit' => 'Kilogramo',
-                        'expected_quantity' => 1,
-                    ],
-                ],
-            ],
-
-            // ═══════════════ NIVEL 2 - BASES → ENVASADOS ═══════════════
-            [
-                'code' => 'BEB-HC-1L',
-                'name' => 'Botella de horchata 1 LT',
-                'description' => 'Botella 1 L de horchata de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-HORCH-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 1,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-HC-500',
-                'name' => 'Botella de horchata 1/2 LT',
-                'description' => 'Botella 500 ml de horchata de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-HORCH-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 0.5,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-HC-GAL',
-                'name' => 'Galón de horchata',
-                'description' => 'Galón de 4 L de horchata de coco.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-HORCH-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 4,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-TB-1L',
-                'name' => 'Tuba 1 LT',
-                'description' => 'Botella 1 L de tuba natural.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-TUBA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 1,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-TB-500',
-                'name' => 'Tuba 1/2 LT',
-                'description' => 'Botella 500 ml de tuba natural.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-TUBA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 0.5,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BEB-TB-GAL',
-                'name' => 'Galón de tuba',
-                'description' => 'Galón de 4 L de tuba natural.',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-TUBA-001',
-                        'unit' => 'Litro',
-                        'expected_quantity' => 4,
-                    ],
-                ],
-            ],
-
-            // ═══════════════ NIVEL 3 - DULCES Y BARRAS ═══════════════
-            [
-                'code' => 'COC-CN-1P',
-                'name' => 'Cocada de nuez 1 pza',
-                'description' => 'Cocada de nuez individual (rinde ~10 cocadas por kg de pulpa).',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-PULPA-001',
-                        'unit' => 'Kilogramo',
-                        'expected_quantity' => 0.1,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BAR-BC-001',
-                'name' => 'Barra de coco',
-                'description' => 'Barra de coco natural (rinde ~20 barras por kg de pulpa).',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-PULPA-001',
-                        'unit' => 'Kilogramo',
-                        'expected_quantity' => 0.05,
-                    ],
-                ],
-            ],
-            [
-                'code' => 'BAR-BMC-1P',
-                'name' => 'Barra mixta chica',
-                'description' => 'Barra mixta pequeña (rinde ~25 barras por kg de pulpa).',
-                'expected_output_quantity' => 1,
-                'items' => [
-                    [
-                        'ingredient_code' => 'INT-PULPA-001',
-                        'unit' => 'Kilogramo',
-                        'expected_quantity' => 0.04,
-                    ],
-                ],
-            ],
-        ];
-
-        $created = 0;
-        foreach ($formulas as $f) {
-            $product = $p($f['code']);
-            if (!$product) {
-                $this->command->warn("  ⚠ Producto {$f['code']} no encontrado, se omite fórmula {$f['name']}");
-                continue;
-            }
-
-            $formula = Formula::create([
-                'company_id' => $company->id,
-                'product_id' => $product->id,
-                'name' => $f['name'],
-                'description' => $f['description'] ?? null,
-                'version' => 1,
-                'is_active' => $f['is_active'] ?? true,
-                'expected_output_quantity' => $f['expected_output_quantity'] ?? null,
-                'created_by' => $userId,
-                'updated_by' => $userId,
-            ]);
-
-            foreach ($f['items'] as $i => $item) {
-                $ingredient = $p($item['ingredient_code']);
-                $unitId = $u($item['unit']);
-
-                if (!$ingredient || !$unitId) {
-                    $this->command->warn("  ⚠ Ingrediente/unidad faltante en fórmula {$f['name']}");
-                    continue;
-                }
-
-                FormulaItem::create([
-                    'formula_id' => $formula->id,
-                    'product_id' => $ingredient->id,
-                    'unit_id' => $unitId,
-                    'expected_quantity' => $item['expected_quantity'],
-                    'sort_order' => $i,
-                    'notes' => $item['notes'] ?? null,
-                ]);
-            }
-
-            $created++;
-        }
-
-        $this->command->info("✅ Creadas {$created} fórmulas (Nivel 1: 2, Nivel 2: 9, Nivel 3: 7)");
+        $this->command->info('✅ Creada 1 fórmula de ejemplo: Producción de Agua de Coco 1 Litro');
     }
 }

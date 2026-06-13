@@ -91,6 +91,24 @@ class CategoriesSeeder extends Seeder
                 'company_id' => $cocosfrancisco->id,
                 'is_active' => true,
             ],
+            [
+                'name' => 'Envases y PET',
+                'description' => 'Botellas, galones y tapas de PET usados para envasar las bebidas',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Ingredientes',
+                'description' => 'Insumos de compra para producción: calahua, leche, sal y similares',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
+                'name' => 'Limpieza',
+                'description' => 'Productos de limpieza e higiene para las sucursales',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
         ];
 
         // Crear categorías de Cocos Francisco
