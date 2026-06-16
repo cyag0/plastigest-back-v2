@@ -6,6 +6,7 @@ use App\Models\ProductPackage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use App\Support\CurrentCompany;
 
 class ProductPackageController extends Controller
 {
@@ -44,7 +45,6 @@ class ProductPackageController extends Controller
     {
         $validated = $request->validate([
             'product_id' => 'required|exists:products,id',
-            'company_id' => 'required|exists:companies,id',
             'unit_id' => 'nullable|exists:units,id',
             'package_name' => 'required|string|max:100',
             'barcode' => 'required|string|max:100|unique:product_packages,barcode',
@@ -59,6 +59,13 @@ class ProductPackageController extends Controller
 
         DB::beginTransaction();
         try {
+            $company = CurrentCompany::get();
+            if (!$company) {
+                throw new \Exception('No se ha establecido la empresa actual');
+            }
+
+            $validated['company_id'] = $company->id;
+
             // Si es el empaque por defecto, desmarcar los demás
             if ($validated['is_default'] ?? false) {
                 ProductPackage::where('product_id', $validated['product_id'])
