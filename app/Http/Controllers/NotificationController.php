@@ -177,6 +177,7 @@ class NotificationController extends CrudController
 
             $count = Notification::where('user_id', $user->id)
                 ->where('company_id', $company->id)
+                ->inApp()
                 ->whereNull('read_at')
                 ->update(['read_at' => now()]);
 
@@ -204,6 +205,7 @@ class NotificationController extends CrudController
 
             $count = Notification::where('user_id', $user->id)
                 ->where('company_id', $company->id)
+                ->inApp()
                 ->unread()
                 ->count();
 

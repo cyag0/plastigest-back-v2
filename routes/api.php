@@ -7,6 +7,7 @@ use App\Http\Controllers\Admin\PermissionsController;
 use App\Http\Controllers\Admin\RolesController;
 use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductionOrderController;
@@ -71,6 +72,14 @@ Route::prefix('auth')->group(function () {
     Route::post('register', [AuthController::class, 'register'])
         ->middleware('throttle:3,1');
     Route::post('login', [AuthController::class, 'login'])
+        ->middleware('throttle:5,1');
+
+    // Recuperación de contraseña vía código OTP enviado por correo
+    Route::post('forgot-password', [PasswordResetController::class, 'forgotPassword'])
+        ->middleware('throttle:3,1');
+    Route::post('verify-reset-code', [PasswordResetController::class, 'verifyResetCode'])
+        ->middleware('throttle:5,1');
+    Route::post('reset-password', [PasswordResetController::class, 'resetPassword'])
         ->middleware('throttle:5,1');
 });
 
