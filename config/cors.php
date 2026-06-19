@@ -38,22 +38,27 @@ return [
     | Origins that are allowed to make CORS requests.
     | Para desarrollo, permitir localhost en cualquier puerto.
     */
-    'allowed_origins' => [
-        'http://localhost',
-        'http://localhost:8081',
-        'http://127.0.0.1',
-        'http://192.168.100.109',
-        'http://192.168.100.201:8081',
-        env('FRONTEND_URL', 'http://localhost:8081'),
-    ],
+    'allowed_origins' => array_values(array_filter(
+        env('APP_ENV') === 'production'
+            ? [env('FRONTEND_URL')] // En producción, solo la web oficial.
+            : [
+                'http://localhost',
+                'http://localhost:8081',
+                'http://127.0.0.1',
+                'http://192.168.100.109',
+                'http://192.168.100.201:8081',
+                env('FRONTEND_URL', 'http://localhost:8081'),
+            ]
+    )),
 
     /*
     |--------------------------------------------------------------------------
     | Allowed Origins Patterns
     |--------------------------------------------------------------------------
     | Patterns for dynamic origins (useful for development).
+    | Solo en entornos no productivos; en producción no se permiten patrones.
     */
-    'allowed_origins_patterns' => [
+    'allowed_origins_patterns' => env('APP_ENV') === 'production' ? [] : [
         '/^http:\/\/localhost:\d+$/',
         '/^http:\/\/127\.0\.0\.1:\d+$/',
         '/^http:\/\/192\.168\.\d+\.\d+:\d+$/', // Permite cualquier IP local con puerto
