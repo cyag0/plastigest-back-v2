@@ -100,6 +100,10 @@ Route::get('sales/{sale}/pdf', [SaleController::class, 'generatePdf'])
     ->name('sales.pdf')
     ->middleware('signed');
 
+Route::get('cash-closings/{id}/pdf', [CashClosingController::class, 'generatePdf'])
+    ->name('cash-closings.pdf')
+    ->middleware('signed');
+
 Route::get('products/{product}/labels/pdf', [ProductController::class, 'printLabels'])
     ->name('products.labels.pdf')
     ->middleware('signed');
@@ -248,6 +252,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Cash Movement Routes
             Route::get('cash-movements/stats', [CashMovementController::class, 'stats']);
             Route::apiResource('cash-movements', CashMovementController::class);
+            Route::get('cash-closings/{id}/pdf-url', [CashClosingController::class, 'generatePdfUrl']);
             Route::apiResource('cash-closings', CashClosingController::class);
 
             // Expense Management Routes

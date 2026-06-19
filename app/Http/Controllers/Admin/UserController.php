@@ -194,11 +194,8 @@ class UserController extends CrudController
         // Remover avatar del array de validatedData para evitar errores
         unset($validatedData['avatar.*']);
 
-        // Agregar la compañía actual si no se proporcionó
-        $company = CurrentCompany::get();
-        if ($company && !isset($validatedData['company_ids'])) {
-            $validatedData['company_ids'] = [$company->id];
-        }
+        // La asociación con la empresa actual se hace en afterStore(),
+        // ya que company_ids es una relación many-to-many, no una columna.
 
         return $validatedData;
     }
@@ -247,9 +244,15 @@ class UserController extends CrudController
             $user->roles()->sync($request->role_ids);
         }
 
-        // Sincronizar empresas
+        // Sincronizar empresas. Si no se enviaron company_ids, asociar el
+        // usuario a la empresa actual (CurrentCompany) por defecto.
         if ($request->has('company_ids') && is_array($request->company_ids)) {
             $user->companies()->sync($request->company_ids);
+        } else {
+            $company = CurrentCompany::get();
+            if ($company) {
+                $user->companies()->syncWithoutDetaching([$company->id]);
+            }
         }
 
         // Sincronizar sucursales+rol

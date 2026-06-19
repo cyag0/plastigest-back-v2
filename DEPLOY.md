@@ -1,37 +1,40 @@
 # Plan de despliegue — PlastiGest (web, sin Forge)
 
-Runbook para sacar el beta a producción montando el servidor **a mano** sobre un VPS Hetzner. Stack detectado:
+Runbook para sacar el beta a producción montando el servidor **a mano** sobre un VPS. Stack detectado:
 
 - **Backend:** Laravel 12, PHP 8.2+, Sanctum (token Bearer), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00), PDFs con dompdf, push con Firebase (kreait).
 - **Frontend:** Expo 54 / Expo Router (web `output: "static"`). API por `EXPO_PUBLIC_API_URL`.
 - **Objetivo:** 8 sucursales, ~30 usuarios en total. Pico concurrente ~24 (3 por sucursal), realista ~8. Carga pequeña: el VPS va sobrado.
 
+> **Estado:** el VPS ya está aprovisionado → `vps3451515.trouble-free.net` (Contabo). Ya no hay que crear servidor (Fase 1.1). Falta el hardening del SO, el dominio y todo el stack. Ver **"Qué falta"** al final.
+
 Arquitectura objetivo:
-- `api.tudominio.com` → VPS Hetzner **CPX21** (3 vCPU / 4 GB / 80 GB), Ubuntu 24.04, stack LEMP a mano.
+- `api.tudominio.com` → **VPS Contabo** (`vps3451515.trouble-free.net`), Ubuntu 24.04, stack LEMP a mano.
 - `app.tudominio.com` → Cloudflare Pages (build estático de Expo web).
 - DNS en Cloudflare; SSL del backend con Certbot (Let's Encrypt) en el VPS.
 
-> Todos los comandos del backend se corren **por SSH dentro del VPS**. Reemplaza `tudominio.com`, contraseñas y rutas por los tuyos.
+> Todos los comandos del backend se corren **por SSH dentro del VPS** (`ssh root@vps3451515.trouble-free.net`). Reemplaza `tudominio.com`, contraseñas y rutas por los tuyos.
 
 ---
 
 ## Fase 0 — Antes de tocar nada
 
-- [ ] Comprar dominio y mover su DNS a Cloudflare.
-- [ ] Crear cuentas: [Hetzner Cloud](https://www.hetzner.com/cloud) y [Cloudflare](https://dash.cloudflare.com) (gratis).
-- [ ] Generar un **par de llaves SSH** en tu máquina si no tienes (`ssh-keygen -t ed25519`).
+- [x] ~~Crear cuenta y servidor~~ — VPS Contabo ya contratado (`vps3451515.trouble-free.net`).
+- [ ] Comprar dominio y mover su DNS a Cloudflare. **(Bloqueante: sin dominio no hay SSL, CORS ni frontend en producción.)**
+- [ ] Crear cuenta de [Cloudflare](https://dash.cloudflare.com) (gratis) para DNS + Pages.
+- [ ] Generar un **par de llaves SSH** y subir la pública al VPS (Contabo suele dar acceso root por contraseña; conviene pasar a llave). Si no tienes: `ssh-keygen -t ed25519`, luego `ssh-copy-id root@vps3451515.trouble-free.net`.
 - [ ] Tener el **JSON de credenciales de Firebase** (service account) que ya usas en dev.
 - [ ] **Commit + push del fix de doble-venta** y limpiar los `console.log` de debug en `inventory/products/form.tsx`.
 - [ ] Decidir qué seeders corren en producción (Fase 4): solo datos de referencia (permisos, unidades), **no** datos demo de productos.
 
 ---
 
-## Fase 1 — Crear y asegurar el servidor
+## Fase 1 — Asegurar el servidor
 
-1. [ ] Hetzner Cloud Console → *Add Server*:
-   - Imagen: **Ubuntu 24.04**. Tipo: **CPX21**. Región: la de EE.UU. más cercana.
-   - Añadir tu **llave SSH pública**. Crear.
-2. [ ] Anotar la **IP pública**. Entrar como root: `ssh root@IP`.
+> El VPS **ya existe** (`vps3451515.trouble-free.net`, Contabo). Te saltas la creación; empieza por entrar y endurecerlo.
+
+1. [x] ~~Crear servidor~~ — ya aprovisionado (Contabo). Verifica que sea **Ubuntu 24.04** (`lsb_release -a`); si es otra versión, los comandos de PHP/Nginx siguen igual pero anótalo.
+2. [ ] Entrar como root y anotar la IP pública (`curl ifconfig.me`): `ssh root@vps3451515.trouble-free.net`.
 3. [ ] Actualizar y crear un usuario de trabajo con sudo:
    ```bash
    apt update && apt upgrade -y
@@ -369,3 +372,39 @@ En `app.tudominio.com`, ciclo real completo:
 ### Cadencia estimada
 
 Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez. Fase 9-10 (frontend + DNS) ≈ 1-2 h. El resto es pruebas y respaldos. El cuello de botella operativo no será el servidor, sino el internet de cada sucursal y los respaldos: cuida esos dos.
+
+---
+
+## Qué falta (estado a 2026-06-19)
+
+**Hecho**
+- [x] VPS aprovisionado (`vps3451515.trouble-free.net`, Contabo).
+
+**Bloqueante antes de seguir**
+- [ ] **Dominio** comprado y su DNS movido a Cloudflare. Sin esto no hay SSL (Certbot), ni CORS correcto, ni `app/api.tudominio.com`. Es lo primero.
+- [ ] Confirmar que el VPS es **Ubuntu 24.04** (`lsb_release -a`).
+
+**Servidor (Fases 1-6) — todo pendiente**
+- [ ] Endurecer SO: usuario `deploy` con sudo, firewall UFW (22/80/443), deshabilitar login root por contraseña.
+- [ ] Instalar stack: Nginx, PHP 8.3 + extensiones, MySQL, Composer, Git.
+- [ ] Crear BD `plastigest` + usuario.
+- [ ] Clonar repo, `composer install --no-dev`, `.env` de producción, `key:generate`.
+- [ ] Subir el **JSON de Firebase** por `scp` (nunca al repo) y apuntar `FIREBASE_CREDENTIALS`.
+- [ ] `migrate --force` + seeders de **referencia** (Permission, Units), `storage:link`, permisos `www-data`, `config/route/view:cache`.
+- [ ] Crear admin + empresa + 8 sucursales.
+- [ ] Nginx server block + Certbot SSL.
+- [ ] systemd `plastigest-worker` (cola) + cron del scheduler.
+
+**Frontend / DNS (Fases 9-10)**
+- [ ] Cloudflare Pages conectado a `plastigest-app-v3` con `EXPO_PUBLIC_*` de producción.
+- [ ] Registros A (`api.`) y CNAME de Pages (`app.`) en Cloudflare DNS.
+
+**Operación / go-live (Fases 11-14)**
+- [ ] Backups con `mysqldump` + subida a R2/S3 y **restauración probada**.
+- [ ] `APP_DEBUG=false`, CORS restringido al dominio real (no `*`).
+- [ ] Verificar **fix de doble-venta** desplegado y `console.log` de debug limpiados.
+- [ ] Prueba de humo completa (Fase 13).
+
+**Decisiones pendientes (necesito que confirmes)**
+- ¿Qué **dominio** vas a usar? (afecta `APP_URL`, `FRONTEND_URL`, CORS, certs y las vars del frontend).
+- ¿El correo (`CashClosingMail` que estás agregando ahora) requiere SMTP en producción? No está en el plan: hay que configurar `MAIL_*` en el `.env` y un proveedor (Resend/Mailgun/SES). **Esto es nuevo respecto al runbook original.**
