@@ -35,20 +35,20 @@ class UnitsSeeder extends Seeder
             'abbreviation' => 'dz',
         ]);
 
-        $paquete = Unit::create([
+      /*   $paquete = Unit::create([
             'name' => 'Paquete',
             'abbreviation' => 'pq',
-        ]);
+        ]); */
 
-        $bulto = Unit::create([
+/*         $bulto = Unit::create([
             'name' => 'Bulto',
             'abbreviation' => 'bl',
-        ]);
+        ]); */
 
-        $promo = Unit::create([
+/*         $promo = Unit::create([
             'name' => 'Promo',
             'abbreviation' => 'pr',
-        ]);
+        ]); */
 
         // Unidades de peso
         $kilogramo = Unit::create([

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\ProductPackage;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use App\Support\CurrentCompany;
@@ -32,8 +33,29 @@ class ProductPackageController extends Controller
             $query->active();
         }
 
+        // Búsqueda general: nombre del empaque, código de barras o nombre del producto
+        if ($request->filled('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('package_name', 'like', "%{$search}%")
+                    ->orWhere('barcode', 'like', "%{$search}%")
+                    ->orWhereHas('product', function ($productQuery) use ($search) {
+                        $productQuery->where('name', 'like', "%{$search}%")
+                            ->orWhere('code', 'like', "%{$search}%");
+                    });
+            });
+        }
+
         // Ordenar
         $query->orderBy('sort_order')->orderBy('package_name');
+
+        // Paginación opcional (el frontend la solicita con paginated=true).
+        // Se envuelve en un JsonResource para devolver el sobre data/links/meta
+        // que espera el frontend (AppList lee response.data.data y response.data.meta).
+        if ($request->boolean('paginated')) {
+            $perPage = (int) $request->input('per_page', 20);
+            return JsonResource::collection($query->paginate($perPage));
+        }
 
         return response()->json($query->get());
     }
