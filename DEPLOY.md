@@ -117,6 +117,7 @@ EXIT;
    ```
    Ajustes de producción:
    ```env
+   APP_NAME=GCStock
    APP_ENV=production
    APP_DEBUG=false
    APP_URL=https://api.cocos-francisco.com
