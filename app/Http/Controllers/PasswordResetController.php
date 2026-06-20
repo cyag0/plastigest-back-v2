@@ -61,7 +61,10 @@ class PasswordResetController extends Controller
                 ]
             );
 
-            Mail::to($user->email)->send(new PasswordResetMail($user, $code));
+            // Encolado: no bloquear la respuesta esperando al SMTP (la respuesta
+            // es genérica a propósito, no revela si el correo existe). El queue
+            // worker lo entrega; con QUEUE_CONNECTION=sync corre inline.
+            Mail::to($user->email)->queue(new PasswordResetMail($user, $code));
 
             return $genericResponse;
         } catch (ValidationException $e) {

@@ -220,7 +220,10 @@ class CashClosingController extends CrudController
 
         $pdfContent = $this->buildPdf($closing)->output();
 
-        Mail::to($recipients)->send(new CashClosingMail($closing, $pdfContent));
+        // Encolado (no síncrono): el envío SMTP corre en el queue worker para
+        // no bloquear la respuesta del cierre de caja. Con QUEUE_CONNECTION=sync
+        // (dev sin worker) se ejecuta inline igual.
+        Mail::to($recipients)->queue(new CashClosingMail($closing, $pdfContent));
     }
 
     /**

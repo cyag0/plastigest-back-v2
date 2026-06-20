@@ -8,20 +8,22 @@ Runbook para sacar el beta a producción montando el servidor **a mano** sobre u
 
 > **Estado:** el VPS ya está aprovisionado → `vps3451515.trouble-free.net` (Contabo). Ya no hay que crear servidor (Fase 1.1). Falta el hardening del SO, el dominio y todo el stack. Ver **"Qué falta"** al final.
 
-Arquitectura objetivo:
-- `api.tudominio.com` → **VPS Contabo** (`vps3451515.trouble-free.net`), Ubuntu 24.04, stack LEMP a mano.
-- `app.tudominio.com` → Cloudflare Pages (build estático de Expo web).
-- DNS en Cloudflare; SSL del backend con Certbot (Let's Encrypt) en el VPS.
+> **Dominio:** `cocos-francisco.com`, **comprado en Cloudflare** (Cloudflare Registrar). El DNS ya vive en Cloudflare, así que el paso de "mover DNS" de la Fase 0 ya está resuelto: solo hay que crear los registros (Fase 10).
 
-> Todos los comandos del backend se corren **por SSH dentro del VPS** (`ssh root@vps3451515.trouble-free.net`). Reemplaza `tudominio.com`, contraseñas y rutas por los tuyos.
+Arquitectura objetivo:
+- `api.cocos-francisco.com` → **VPS Contabo** (`vps3451515.trouble-free.net`), Ubuntu 24.04, stack LEMP a mano.
+- `app.cocos-francisco.com` → Cloudflare Pages (build estático de Expo web).
+- DNS en Cloudflare (dominio ya registrado ahí); SSL del backend con Certbot (Let's Encrypt) en el VPS.
+
+> Todos los comandos del backend se corren **por SSH dentro del VPS** (`ssh root@vps3451515.trouble-free.net`). Reemplaza `cocos-francisco.com`, contraseñas y rutas por los tuyos.
 
 ---
 
 ## Fase 0 — Antes de tocar nada
 
 - [x] ~~Crear cuenta y servidor~~ — VPS Contabo ya contratado (`vps3451515.trouble-free.net`).
-- [ ] Comprar dominio y mover su DNS a Cloudflare. **(Bloqueante: sin dominio no hay SSL, CORS ni frontend en producción.)**
-- [ ] Crear cuenta de [Cloudflare](https://dash.cloudflare.com) (gratis) para DNS + Pages.
+- [x] ~~Comprar dominio y mover su DNS a Cloudflare~~ — `cocos-francisco.com` comprado en **Cloudflare Registrar**; el DNS ya está en Cloudflare.
+- [x] ~~Crear cuenta de Cloudflare~~ — ya existe (el dominio está ahí). Sirve para DNS + Pages.
 - [ ] Generar un **par de llaves SSH** y subir la pública al VPS (Contabo suele dar acceso root por contraseña; conviene pasar a llave). Si no tienes: `ssh-keygen -t ed25519`, luego `ssh-copy-id root@vps3451515.trouble-free.net`.
 - [ ] Tener el **JSON de credenciales de Firebase** (service account) que ya usas en dev.
 - [ ] **Commit + push del fix de doble-venta** y limpiar los `console.log` de debug en `inventory/products/form.tsx`.
@@ -117,7 +119,7 @@ EXIT;
    ```env
    APP_ENV=production
    APP_DEBUG=false
-   APP_URL=https://api.tudominio.com
+   APP_URL=https://api.cocos-francisco.com
 
    DB_CONNECTION=mysql
    DB_HOST=127.0.0.1
@@ -131,7 +133,7 @@ EXIT;
    SESSION_DRIVER=database
    FILESYSTEM_DISK=local
 
-   FRONTEND_URL=https://app.tudominio.com
+   FRONTEND_URL=https://app.cocos-francisco.com
 
    # Firebase (ajusta al nombre real de la var que lee tu FirebaseService)
    FIREBASE_CREDENTIALS=/var/www/plastigest/storage/app/firebase/credentials.json
@@ -170,7 +172,7 @@ EXIT;
    ```nginx
    server {
        listen 80;
-       server_name api.tudominio.com;
+       server_name api.cocos-francisco.com;
        root /var/www/plastigest/public;
 
        index index.php;
@@ -198,10 +200,10 @@ EXIT;
    sudo rm -f /etc/nginx/sites-enabled/default
    sudo nginx -t && sudo systemctl reload nginx
    ```
-3. [ ] **Antes del SSL**, apuntar el DNS (Fase 10) para que `api.tudominio.com` resuelva a la IP. Luego:
+3. [ ] **Antes del SSL**, apuntar el DNS (Fase 10) para que `api.cocos-francisco.com` resuelva a la IP. Luego:
    ```bash
    sudo apt install -y certbot python3-certbot-nginx
-   sudo certbot --nginx -d api.tudominio.com
+   sudo certbot --nginx -d api.cocos-francisco.com
    ```
    Certbot edita el Nginx para HTTPS y renueva solo.
 
@@ -243,11 +245,64 @@ Esto dispara `tasks:generate-recurring` a las 06:00.
 
 1. [ ] En `config/cors.php`, restringir el origen a la web:
    ```php
-   'allowed_origins' => [env('FRONTEND_URL', 'https://app.tudominio.com')],
+   'allowed_origins' => [env('FRONTEND_URL', 'https://app.cocos-francisco.com')],
    'allowed_headers' => ['*'],       // cubre Authorization, X-Company-ID, X-Location-ID
    'supports_credentials' => false,  // usamos token Bearer, no cookies
    ```
 2. [ ] Commit + en el VPS: `git pull`, `php artisan config:cache`. (Cambios en config requieren re-cachear.)
+
+---
+
+## Fase 7.5 — Correo saliente (SMTP)
+
+La app **sí manda correos** y hay que configurarlos: recuperación de contraseña con OTP (`PasswordResetMail`), notificaciones (`GenericNotificationMail`) y el **cierre de caja con PDF adjunto** (`CashClosingMail`, `CashClosingController@…`).
+
+> ⚠️ **Importante:** estos correos se envían **sincrónicos** (`Mail::to(...)->send(...)`, no `->queue(...)`). Si el SMTP está mal o lento, la **petición HTTP se bloquea o falla** (p. ej. el cierre de caja). No basta con "dejarlo para después": sin `MAIL_*` válidos, esas acciones rompen en producción. (Mejora futura: pasar estos envíos a la cola con `->queue()`, ya hay worker en la Fase 6.)
+
+En dev se usa **MailHog** (contenedor del `docker-compose.yml`, SMTP `1025`, UI `8025`). En producción hay que apuntar a un proveedor real.
+
+**Recomendado: Resend** (driver `resend` ya soportado por Laravel; dominio propio en Cloudflare facilita el SPF/DKIM). Alternativas: Mailgun, Amazon SES, SendGrid, o SMTP de Gmail/Google Workspace.
+
+### Opción A — Resend (recomendada)
+1. [ ] Crear cuenta en [resend.com](https://resend.com) → *API Keys* → generar una.
+2. [x] *Domains* → verificado el **subdominio** `mail.cocos-francisco.com` (DKIM/SPF/MX en verde en Cloudflare). El `from` debe usar ese subdominio.
+3. [x] `resend/resend-php` ya instalado (`composer.json`) — el transporte `resend` ya está en `config/mail.php`.
+4. [ ] Variables en `.env` de producción:
+   ```env
+   MAIL_MAILER=resend
+   RESEND_KEY=re_xxxxxxxxxxxxxxxxx
+   MAIL_FROM_ADDRESS="no-reply@mail.cocos-francisco.com"
+   MAIL_FROM_NAME="GCStock"
+   ```
+
+### Opción B — SMTP genérico (Mailgun/SES/Gmail/Workspace)
+1. [ ] Conseguir host/puerto/usuario/contraseña del proveedor (en Gmail/Workspace: una **App Password**, no la contraseña normal).
+2. [ ] Verificar el dominio en el proveedor y crear sus **SPF/DKIM (TXT)** en Cloudflare DNS (Fase 10).
+3. [ ] Variables en `.env` de producción:
+   ```env
+   MAIL_MAILER=smtp
+   MAIL_HOST=smtp.tu-proveedor.com
+   MAIL_PORT=587
+   MAIL_SCHEME=tls            # o "ssl" para puerto 465
+   MAIL_USERNAME=<usuario>
+   MAIL_PASSWORD=<password / app-password>
+   MAIL_FROM_ADDRESS="no-reply@mail.cocos-francisco.com"
+   MAIL_FROM_NAME="GCStock"
+   ```
+
+### Verificación (cualquier opción)
+1. [ ] Tras editar `.env`: `php artisan config:cache`.
+2. [ ] Probar el envío real desde el VPS:
+   ```bash
+   php artisan tinker
+   >>> Mail::raw('Prueba de correo prod', fn($m) => $m->to('TU_CORREO@gmail.com')->subject('Test GCStock'));
+   ```
+   Debe llegar a la bandeja (revisa spam). Si falla, mira `storage/logs/laravel.log`.
+3. [ ] Probar un **flujo real**: solicitar reset de contraseña (OTP) y hacer un **cierre de caja** → que llegue el correo con el **PDF adjunto**.
+
+> **Salida de SMTP en el VPS:** Contabo no suele bloquear el puerto **587/465** saliente, pero algunos proveedores VPS sí. Si los correos no salen, prueba el otro puerto o usa la API HTTPS del proveedor (Resend/Mailgun por API evita el puerto SMTP por completo).
+
+> **DNS anti-spam (clave para que no caigan en spam):** crea en Cloudflare (Fase 10) los **SPF**, **DKIM** y un **DMARC** básico (`v=DMARC1; p=none; rua=mailto:postmaster@cocos-francisco.com`). Sin esto, Gmail/Outlook marcan o rechazan.
 
 ---
 
@@ -269,7 +324,7 @@ Para el beta el disco local del VPS (80 GB) sirve. Si quieres sacar imágenes/PD
    - **Output directory:** `dist`
 3. [ ] Variables de entorno (`EXPO_PUBLIC_*` de producción; se **incrustan en el build**):
    ```env
-   EXPO_PUBLIC_API_URL=https://api.tudominio.com/api
+   EXPO_PUBLIC_API_URL=https://api.cocos-francisco.com/api
    EXPO_PUBLIC_APP_ENV=production
    EXPO_PUBLIC_APP_NAME=PlastiGest
    EXPO_PUBLIC_APP_VERSION=1.0.0
@@ -283,9 +338,10 @@ Para el beta el disco local del VPS (80 GB) sirve. Si quieres sacar imágenes/PD
 
 ## Fase 10 — DNS
 
-Cloudflare DNS:
-- [ ] `api.tudominio.com` → registro **A** a la IP del VPS. Para emitir el cert de Certbot ponlo en **DNS only** (nube gris); luego puedes proxearlo y usar SSL mode **Full (strict)**.
-- [ ] `app.tudominio.com` → el registro que Pages crea al añadir el *Custom domain* en el proyecto.
+Cloudflare DNS (el dominio ya está en Cloudflare, solo creas registros):
+- [ ] `api.cocos-francisco.com` → registro **A** a la IP del VPS. Para emitir el cert de Certbot ponlo en **DNS only** (nube gris); luego puedes proxearlo y usar SSL mode **Full (strict)**.
+- [ ] `app.cocos-francisco.com` → el registro que Pages crea al añadir el *Custom domain* en el proyecto.
+- [ ] **Correo (Fase 7.5):** los **TXT de SPF y DKIM** que dé tu proveedor (Resend/Mailgun/SES) + un **DMARC** TXT en `_dmarc.cocos-francisco.com`. Estos van **DNS only** (no se proxean). Sin ellos los correos caen en spam.
 
 ---
 
@@ -330,7 +386,7 @@ Cada actualización: `bash deploy.sh`.
 
 ## Fase 13 — Prueba de humo antes de abrir a usuarios
 
-En `app.tudominio.com`, ciclo real completo:
+En `app.cocos-francisco.com`, ciclo real completo:
 
 1. [ ] Login real → seleccionar empresa y sucursal.
 2. [ ] **Vender** → confirmar que el **stock baja**.
@@ -348,6 +404,7 @@ En `app.tudominio.com`, ciclo real completo:
 - [ ] `APP_DEBUG=false`.
 - [ ] CORS restringido al dominio de la web (no `*`).
 - [ ] `plastigest-worker` activo (`systemctl status`) y cron del scheduler puesto.
+- [ ] **Correo en producción funcionando** (Fase 7.5): SPF/DKIM/DMARC en DNS y prueba real de reset de contraseña y cierre de caja con PDF.
 - [ ] Backup diario **probado** (restauración verificada, fuera del servidor).
 - [ ] Fix de doble-venta desplegado.
 - [ ] Plan de internet de respaldo por sucursal (POS web = sin internet, sin ventas).
@@ -379,10 +436,11 @@ Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez
 
 **Hecho**
 - [x] VPS aprovisionado (`vps3451515.trouble-free.net`, Contabo).
+- [x] **Dominio** `cocos-francisco.com` comprado en **Cloudflare Registrar** (DNS ya en Cloudflare).
 
 **Bloqueante antes de seguir**
-- [ ] **Dominio** comprado y su DNS movido a Cloudflare. Sin esto no hay SSL (Certbot), ni CORS correcto, ni `app/api.tudominio.com`. Es lo primero.
 - [ ] Confirmar que el VPS es **Ubuntu 24.04** (`lsb_release -a`).
+- [ ] Elegir **proveedor de correo** (Resend recomendado) y crear sus DNS — bloqueante para reset de contraseña y cierre de caja (Fase 7.5).
 
 **Servidor (Fases 1-6) — todo pendiente**
 - [ ] Endurecer SO: usuario `deploy` con sudo, firewall UFW (22/80/443), deshabilitar login root por contraseña.
@@ -399,12 +457,17 @@ Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez
 - [ ] Cloudflare Pages conectado a `plastigest-app-v3` con `EXPO_PUBLIC_*` de producción.
 - [ ] Registros A (`api.`) y CNAME de Pages (`app.`) en Cloudflare DNS.
 
+**Correo (Fase 7.5) — pendiente**
+- [ ] Proveedor SMTP/API elegido y configurado (`MAIL_*` / `RESEND_KEY` en `.env`).
+- [ ] SPF + DKIM + DMARC creados en Cloudflare DNS y verificados por el proveedor.
+- [ ] Prueba real: reset de contraseña (OTP) y cierre de caja con PDF adjunto llegan a la bandeja.
+
 **Operación / go-live (Fases 11-14)**
 - [ ] Backups con `mysqldump` + subida a R2/S3 y **restauración probada**.
 - [ ] `APP_DEBUG=false`, CORS restringido al dominio real (no `*`).
 - [ ] Verificar **fix de doble-venta** desplegado y `console.log` de debug limpiados.
 - [ ] Prueba de humo completa (Fase 13).
 
-**Decisiones pendientes (necesito que confirmes)**
-- ¿Qué **dominio** vas a usar? (afecta `APP_URL`, `FRONTEND_URL`, CORS, certs y las vars del frontend).
-- ¿El correo (`CashClosingMail` que estás agregando ahora) requiere SMTP en producción? No está en el plan: hay que configurar `MAIL_*` en el `.env` y un proveedor (Resend/Mailgun/SES). **Esto es nuevo respecto al runbook original.**
+**Decisiones resueltas**
+- ✅ **Dominio:** `cocos-francisco.com` (comprado en Cloudflare). Ya aplicado a `APP_URL`, `FRONTEND_URL`, CORS, certs y vars del frontend en todo el plan.
+- ✅ **Correo:** sí requiere proveedor en producción (los envíos son síncronos; ver Fase 7.5). Recomendado **Resend**; falta solo crear la cuenta, la API key y los DNS.

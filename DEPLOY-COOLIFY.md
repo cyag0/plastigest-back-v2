@@ -17,8 +17,9 @@ Arquitectura objetivo:
 
 ## Fase 0 — Antes de tocar nada
 
-- [ ] Comprar dominio y mover su DNS a Cloudflare (Cloudflare Registrar es lo más simple).
-- [ ] Crear cuentas: [Hetzner Cloud](https://www.hetzner.com/cloud) y [Cloudflare](https://dash.cloudflare.com) (gratis).
+- [x] ~~Comprar dominio y mover su DNS a Cloudflare~~ — `cocos-francisco.com` comprado en **Cloudflare Registrar**; el DNS ya está en Cloudflare (solo falta crear los registros, Fase 8).
+- [ ] Crear cuentas: [Hetzner Cloud](https://www.hetzner.com/cloud) y [Cloudflare](https://dash.cloudflare.com) (gratis). ✅ Cloudflare ya la tienes (el dominio está ahí).
+- [ ] **Decidir proveedor de correo** (Resend recomendado) — necesario para reset de contraseña, notificaciones y cierre de caja (Fase 7.5).
 - [ ] Llave SSH lista (`~/.ssh/id_ed25519.pub`). ✅ (ya la tienes)
 - [ ] Tener el **JSON de credenciales de Firebase** (service account) que ya usas en dev.
 - [ ] **Commit + push del fix de doble-venta** y limpiar `console.log` de debug en `inventory/products/form.tsx`.
@@ -109,6 +110,12 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
 
    FRONTEND_URL=https://app.cocos-francisco.com
 
+   # Correo (ver Fase 7.5 para el detalle del proveedor). Ejemplo con Resend:
+   MAIL_MAILER=resend
+   RESEND_KEY=re_xxxxxxxxxxxxxxxxx
+   MAIL_FROM_ADDRESS=no-reply@mail.cocos-francisco.com
+   MAIL_FROM_NAME=GCStock
+
    # Firebase — la lee config/services.php → services.firebase.credentials
    FIREBASE_CREDENTIALS=/var/www/html/storage/app/firebase/service-account.json
    ```
@@ -163,6 +170,58 @@ El scheduler dispara `tasks:generate-recurring` a las 06:00 (definido en `routes
 
 ---
 
+## Fase 7.5 — Correo saliente (SMTP / Resend)
+
+La app **manda correos** y hay que configurarlos: reset de contraseña con OTP (`PasswordResetMail`), notificaciones (`GenericNotificationMail`) y el **cierre de caja con PDF adjunto** (`CashClosingMail`).
+
+> ✅ **Resuelto en código:** el cierre de caja (`CashClosingController`) y el reset de contraseña (`PasswordResetController`) ahora usan `Mail::to(...)->queue(...)`, así que el envío SMTP corre en el **queue worker** (Fase 6) y **no bloquea** la petición HTTP. Por eso el worker de la Fase 6 es **obligatorio** en producción: si no está corriendo, los correos se quedan en la tabla `jobs` sin enviarse. (En dev sin worker, `QUEUE_CONNECTION=sync` los corre inline.)
+
+En dev se usa **MailHog**. En producción, proveedor real. **Recomendado: Resend** (driver `resend` ya en `config/mail.php`, y el dominio en Cloudflare facilita SPF/DKIM).
+
+### Opción A — Resend (recomendada)
+1. [ ] Cuenta en [resend.com](https://resend.com) → *API Keys* → generar.
+2. [x] *Domains* → se verificó el **subdominio** `mail.cocos-francisco.com` (DKIM/SPF/MX en verde en Cloudflare). El `from` DEBE estar en ese subdominio, no en la raíz.
+3. [x] `resend/resend-php` ya está instalado (`composer require resend/resend-php`, en `composer.json`).
+4. [ ] En Coolify, las env vars de correo ya van en la Fase 5:
+   ```env
+   MAIL_MAILER=resend
+   RESEND_KEY=re_xxxxxxxxxxxxxxxxx
+   MAIL_FROM_ADDRESS=no-reply@mail.cocos-francisco.com
+   MAIL_FROM_NAME=GCStock
+   ```
+
+### Opción B — SMTP genérico (Mailgun / SES / Gmail-Workspace)
+1. [ ] Host/puerto/usuario/contraseña del proveedor (Gmail/Workspace: **App Password**).
+2. [ ] Verifica el dominio y crea sus **SPF/DKIM (TXT)** en Cloudflare DNS (Fase 8).
+3. [ ] Env vars en Coolify (en vez de las de Resend):
+   ```env
+   MAIL_MAILER=smtp
+   MAIL_HOST=smtp.tu-proveedor.com
+   MAIL_PORT=587
+   MAIL_SCHEME=tls            # "ssl" para puerto 465
+   MAIL_USERNAME=<usuario>
+   MAIL_PASSWORD=<password / app-password>
+   MAIL_FROM_ADDRESS=no-reply@mail.cocos-francisco.com
+   MAIL_FROM_NAME=GCStock
+   ```
+
+> Coolify aplica las env vars en el redeploy (y el `config:cache` del post-deploy). Cambiar correo = editar vars + redeploy.
+
+### Verificación
+1. [ ] Desde la **terminal de la app** en Coolify:
+   ```bash
+   php artisan tinker
+   >>> Mail::raw('Prueba prod', fn($m) => $m->to('TU_CORREO@gmail.com')->subject('Test GCStock'));
+   ```
+   Debe llegar (revisa spam). Si falla, mira los logs de la app en Coolify.
+2. [ ] Flujo real: reset de contraseña (OTP) y un **cierre de caja** → que llegue con el **PDF adjunto**.
+
+> **Salida SMTP:** con Resend/Mailgun **por API HTTPS** no dependes del puerto SMTP (Traefik/Docker no lo bloquean). Con SMTP puro, verifica que el contenedor pueda salir al 587/465.
+
+> **DNS anti-spam (Fase 8):** además de SPF y DKIM, agrega un **DMARC** TXT en `_dmarc.cocos-francisco.com` (`v=DMARC1; p=none; rua=mailto:postmaster@cocos-francisco.com`). Sin esto Gmail/Outlook marcan o rechazan.
+
+---
+
 ## Fase 8 — DNS y SSL
 
 Cloudflare DNS:
@@ -171,6 +230,7 @@ Cloudflare DNS:
   - Una vez emitido, puedes proxearlo (nube naranja) con SSL mode **Full (strict)** en Cloudflare.
 - [ ] `app.cocos-francisco.com` → lo crea Cloudflare Pages al añadir el *Custom domain* (Fase 9).
 - [ ] (Opcional) `coolify.cocos-francisco.com` → **A** a la IP, para el panel.
+- [ ] **Correo (Fase 7.5):** los **TXT de SPF y DKIM** del proveedor + **DMARC** en `_dmarc.cocos-francisco.com`. Van **DNS only** (no se proxean). Sin ellos los correos caen en spam.
 
 SSL del backend: **automático** en Coolify una vez que el DNS resuelve. No hay Certbot manual.
 
@@ -256,6 +316,7 @@ En `app.cocos-francisco.com`, ciclo real completo:
 - [ ] `APP_DEBUG=false` y `APP_KEY` fijo.
 - [ ] CORS restringido al dominio de la web (no `*`).
 - [ ] Queue worker (Fase 6) **running** y scheduled task (Fase 7) puesto.
+- [ ] **Correo (Fase 7.5)** funcionando: proveedor configurado, SPF/DKIM/DMARC en DNS y prueba real (reset de contraseña + cierre de caja con PDF).
 - [ ] Volúmenes persistentes para Firebase JSON y `storage/app` (o R2).
 - [ ] Backup diario de la DB **probado** (restauración verificada, fuera del servidor).
 - [ ] Fix de doble-venta desplegado.
