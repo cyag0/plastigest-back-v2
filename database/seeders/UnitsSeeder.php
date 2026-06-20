@@ -3,13 +3,17 @@
 namespace Database\Seeders;
 
 use App\Models\Unit;
-use App\Models\UnitConversion;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 
 class UnitsSeeder extends Seeder
 {
     /**
      * Run the database seeds.
+     *
+     * Fuente de verdad de las unidades del sistema. El motor de inventario
+     * (MovementService, etc.) convierte usando units.factor_to_base, por eso
+     * cada unidad define su unit_type, is_base_unit y factor_to_base.
      */
     public function run(): void
     {
@@ -19,118 +23,26 @@ class UnitsSeeder extends Seeder
             return;
         }
 
-        // Unidades básicas de cantidad
-        $pieza = Unit::create([
-            'name' => 'Pieza',
-            'abbreviation' => 'pz',
+        DB::table('units')->insert([
+            // Cantidad
+            ['name' => 'Pieza', 'abbreviation' => 'pz', 'unit_type' => 'quantity', 'is_base_unit' => true, 'company_id' => null, 'factor_to_base' => 1.000000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Decena', 'abbreviation' => 'da', 'unit_type' => 'quantity', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 10.000000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Docena', 'abbreviation' => 'dz', 'unit_type' => 'quantity', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 12.000000, 'created_at' => now(), 'updated_at' => now()],
+
+            // Masa
+            ['name' => 'Kilogramo', 'abbreviation' => 'kg', 'unit_type' => 'mass', 'is_base_unit' => true, 'company_id' => null, 'factor_to_base' => 1.000000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Gramo', 'abbreviation' => 'g', 'unit_type' => 'mass', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 0.001000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Tonelada', 'abbreviation' => 'ton', 'unit_type' => 'mass', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 1000.000000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Miligramo', 'abbreviation' => 'mg', 'unit_type' => 'mass', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 0.000001, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Libra', 'abbreviation' => 'lb', 'unit_type' => 'mass', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 0.453592, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Onza', 'abbreviation' => 'oz', 'unit_type' => 'mass', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 0.028350, 'created_at' => now(), 'updated_at' => now()],
+
+            // Volumen
+            ['name' => 'Litro', 'abbreviation' => 'L', 'unit_type' => 'volume', 'is_base_unit' => true, 'company_id' => null, 'factor_to_base' => 1.000000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Mililitro', 'abbreviation' => 'ml', 'unit_type' => 'volume', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 0.001000, 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Galón', 'abbreviation' => 'gal', 'unit_type' => 'volume', 'is_base_unit' => false, 'company_id' => null, 'factor_to_base' => 3.785410, 'created_at' => now(), 'updated_at' => now()],
         ]);
 
-        $caja = Unit::create([
-            'name' => 'Caja',
-            'abbreviation' => 'cj',
-        ]);
-
-        $docena = Unit::create([
-            'name' => 'Docena',
-            'abbreviation' => 'dz',
-        ]);
-
-      /*   $paquete = Unit::create([
-            'name' => 'Paquete',
-            'abbreviation' => 'pq',
-        ]); */
-
-/*         $bulto = Unit::create([
-            'name' => 'Bulto',
-            'abbreviation' => 'bl',
-        ]); */
-
-/*         $promo = Unit::create([
-            'name' => 'Promo',
-            'abbreviation' => 'pr',
-        ]); */
-
-        // Unidades de peso
-        $kilogramo = Unit::create([
-            'name' => 'Kilogramo',
-            'abbreviation' => 'kg',
-        ]);
-
-        $gramo = Unit::create([
-            'name' => 'Gramo',
-            'abbreviation' => 'g',
-        ]);
-
-        $tonelada = Unit::create([
-            'name' => 'Tonelada',
-            'abbreviation' => 'ton',
-        ]);
-
-        // Unidades de longitud
-        $metro = Unit::create([
-            'name' => 'Metro',
-            'abbreviation' => 'm',
-        ]);
-
-        $centimetro = Unit::create([
-            'name' => 'Centímetro',
-            'abbreviation' => 'cm',
-        ]);
-
-        $milimetro = Unit::create([
-            'name' => 'Milímetro',
-            'abbreviation' => 'mm',
-        ]);
-
-        // Unidades de volumen
-        $litro = Unit::create([
-            'name' => 'Litro',
-            'abbreviation' => 'L',
-        ]);
-
-        $mililitro = Unit::create([
-            'name' => 'Mililitro',
-            'abbreviation' => 'ml',
-        ]);
-
-        // Conversiones de cantidad
-        // Caja y Paquete no tienen conversión global: la cantidad por empaque
-        // varía por producto y se define en product_packages.quantity_per_package.
-        $this->createConversion($docena, $pieza, 12); // 1 docena = 12 piezas (siempre fijo)
-
-        // Conversiones de peso
-        $this->createConversion($kilogramo, $gramo, 1000); // 1 kg = 1000 g
-        $this->createConversion($tonelada, $kilogramo, 1000); // 1 ton = 1000 kg
-        $this->createConversion($tonelada, $gramo, 1000000); // 1 ton = 1,000,000 g
-
-        // Conversiones de longitud
-        $this->createConversion($metro, $centimetro, 100); // 1 m = 100 cm
-        $this->createConversion($metro, $milimetro, 1000); // 1 m = 1000 mm
-        $this->createConversion($centimetro, $milimetro, 10); // 1 cm = 10 mm
-
-        // Conversiones de volumen
-        $this->createConversion($litro, $mililitro, 1000); // 1 L = 1000 ml
-
-        $this->command->info('✅ Unidades y conversiones creadas exitosamente');
-    }
-
-    /**
-     * Crear conversión bidireccional entre dos unidades
-     */
-    private function createConversion(Unit $from, Unit $to, float $factor): void
-    {
-        // Conversión directa
-        UnitConversion::create([
-            'from_unit_id' => $from->id,
-            'to_unit_id' => $to->id,
-            'factor' => $factor,
-        ]);
-
-        // Conversión inversa
-        UnitConversion::create([
-            'from_unit_id' => $to->id,
-            'to_unit_id' => $from->id,
-            'factor' => 1 / $factor,
-        ]);
+        $this->command->info('✅ Unidades creadas exitosamente');
     }
 }
