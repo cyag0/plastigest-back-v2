@@ -6,7 +6,6 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
 use App\Models\User;
-use App\Models\Admin\Location;
 
 class UserSeeder extends Seeder
 {
@@ -15,63 +14,6 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
-        $locations = Location::all();
-
-        $userTypes = [
-            ['name' => 'Gerente', 'email' => 'gerente'],
-            ['name' => 'Vendedor', 'email' => 'vendedor'],
-            ['name' => 'Almacenista', 'email' => 'almacenista'],
-            ['name' => 'Auxiliar', 'email' => 'auxiliar'],
-        ];
-
-        foreach ($locations as $location) {
-            foreach ($userTypes as $index => $type) {
-                $locationSlug = strtolower(str_replace(' ', '', $location->name));
-                $companySlug = strtolower(str_replace(' ', '', $location->company->name));
-                $email = $type['email'] . '.' . $locationSlug . '.' . $companySlug . '@test.com';
-
-                $user = User::firstOrCreate(
-                    ['email' => $email],
-                    [
-                        'name' => $type['name'] . ' ' . $location->name,
-                        'password' => Hash::make('password123'),
-                        'email_verified_at' => now(),
-                    ]
-                );
-
-                if ($user->wasRecentlyCreated) {
-                    // Asociar usuario con la compañía
-                    DB::table('user_company')->insertOrIgnore([
-                        'user_id' => $user->id,
-                        'company_id' => $location->company_id,
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]);
-
-                    // Crear worker para el usuario
-                    $workerId = DB::table('workers')->insertGetId([
-                        'company_id' => $location->company_id,
-                        'user_id' => $user->id,
-                        'position' => $type['name'],
-                        'department' => 'Operaciones',
-                        'hire_date' => now()->subMonths(rand(1, 24)),
-                        'salary' => rand(8000, 25000),
-                        'is_active' => true,
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]);
-
-                    // Asociar worker con la locación
-                    DB::table('location_worker')->insert([
-                        'location_id' => $location->id,
-                        'worker_id' => $workerId,
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]);
-                }
-            }
-        }
-
         // Crear un super admin
         $superAdmin = User::firstOrCreate(
             ['email' => 'admin@plastigest.com'],
