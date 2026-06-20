@@ -16,10 +16,10 @@ class UserSeeder extends Seeder
     {
         // Crear un super admin
         $superAdmin = User::firstOrCreate(
-            ['email' => 'admin@plastigest.com'],
+            ['email' => 'admin@cocos-francisco.com'],
             [
-                'name' => 'Super Admin',
-                'password' => Hash::make('admin123'),
+                'name' => 'Administrador',
+                'password' => Hash::make('GCStock2026$Admin'),
                 'email_verified_at' => now(),
             ]
         );
