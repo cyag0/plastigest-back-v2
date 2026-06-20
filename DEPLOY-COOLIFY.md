@@ -91,6 +91,7 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
 
 1. [ ] En la app → *Environment Variables*, pega la config de producción (Coolify las inyecta; **no** subas `.env` al repo):
    ```env
+   APP_NAME=GCStock
    APP_ENV=production
    APP_DEBUG=false
    APP_KEY=            # genera uno (ver abajo) y pégalo aquí
