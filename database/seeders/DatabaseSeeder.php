@@ -13,8 +13,6 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->command->info('🧹 Limpiando la base de datos...');
-        Artisan::call('migrate:fresh');
-        $this->command->info('✅ Base de datos limpiada');
 
         $this->command->info('🌱 Iniciando seeders...');
 
