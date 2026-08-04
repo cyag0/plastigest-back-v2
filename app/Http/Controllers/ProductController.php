@@ -138,8 +138,8 @@ class ProductController extends CrudController
         }
 
 
-        // Filtrar por categoría
-        if (isset($params['category_id'])) {
+        // Filtrar por categoría (ignoramos valor vacío = "Todas")
+        if (!empty($params['category_id'])) {
             $query->where('category_id', $params['category_id']);
         }
 
@@ -148,6 +148,16 @@ class ProductController extends CrudController
             $query->whereHas('locations', function ($q) use ($params, $locationId, $isActive) {
                 $q->where('location_id', $locationId)
                     ->where('product_location.active', $isActive);
+            });
+        }
+
+        // Filtrar por existencia de stock en la ubicación actual.
+        // "" = "Todos", "1" = con stock (>0), "0" = sin stock (<=0).
+        if ($locationId && isset($params['in_stock']) && $params['in_stock'] !== '') {
+            $operator = $params['in_stock'] ? '>' : '<=';
+            $query->whereHas('locations', function ($q) use ($locationId, $operator) {
+                $q->where('location_id', $locationId)
+                    ->where('product_location.current_stock', $operator, 0);
             });
         }
 
@@ -162,9 +172,10 @@ class ProductController extends CrudController
             }
         }
 
-        // Filtrar por disponibilidad para venta
-        if (isset($params['for_sale'])) {
-            $query->where('for_sale', true);
+        // Filtrar por disponibilidad para venta. "" = "Todos" (sin filtro),
+        // "1" = sólo para venta, "0" = sólo NO para venta.
+        if (isset($params['for_sale']) && $params['for_sale'] !== '') {
+            $query->where('for_sale', (bool) $params['for_sale']);
         }
 
         // Búsqueda por nombre o código
@@ -176,7 +187,7 @@ class ProductController extends CrudController
             });
         }
 
-        if (isset($params['product_type']) && is_array($params['product_type'])) {
+        if (isset($params['product_type']) && is_array($params['product_type']) && count($params['product_type']) > 0) {
             $query->whereIn('product_type', $params['product_type']);
         }
     }

@@ -185,7 +185,17 @@ class MovementService
             ->value('current_stock');
 
         if ($stock === null || $stock < $quantity) {
-            throw new Exception("Stock insuficiente para el producto ID {$productId}. Disponible: {$stock}, Solicitado: {$quantity}");
+            $product = Product::with('unit')->find($productId);
+            $productName = $product?->name ?? "producto ID {$productId}";
+            $unitName = $product?->unit?->name ?? '';
+            $suffix = $unitName !== '' ? " {$unitName}" : '';
+            $available = round((float) ($stock ?? 0), 3);
+            $requested = round($quantity, 3);
+
+            throw new Exception(
+                "Stock insuficiente para \"{$productName}\". " .
+                "Disponible: {$available}{$suffix}, solicitado: {$requested}{$suffix}."
+            );
         }
     }
 

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd /home/yahir/personal/projects/plastigest-back-v2 && sleep 10 && ./vendor/bin/sail artisan key:generate 2>&1\")",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd /home/yahir/personal/projects/plastigest-back-v2 && ./vendor/bin/sail artisan migrate --seed 2>&1\")"
+    ]
+  }
+}

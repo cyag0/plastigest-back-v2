@@ -159,7 +159,28 @@ class ProductionOrderController extends CrudController
         if ($method === 'create') {
             $data['created_by'] = Auth::id();
             $data['updated_by'] = Auth::id();
-            $order = $this->service->createDraft($data);
+
+            // Si se pide afectar stock, creamos y completamos en una sola
+            // transacción: si el stock es insuficiente, se revierte TODO y no
+            // queda una orden en borrador huérfana.
+            if (request()->boolean('affect_stock')) {
+                try {
+                    $order = DB::transaction(function () use ($data) {
+                        $draft = $this->service->createDraft($data);
+                        return $this->service->complete($draft);
+                    });
+                } catch (\Illuminate\Validation\ValidationException $e) {
+                    throw $e;
+                } catch (\Throwable $e) {
+                    // Exponemos el detalle (p. ej. "Stock insuficiente para …")
+                    // como error de validación 422, no como 500.
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'stock' => [$e->getMessage()],
+                    ]);
+                }
+            } else {
+                $order = $this->service->createDraft($data);
+            }
         } else {
             $id = request()->route('id') ?? request()->route('production_order');
             $order = ProductionOrder::findOrFail((int) $id);
