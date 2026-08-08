@@ -13,6 +13,7 @@ enum Resources: string
     case SUPPLIERS = 'suppliers';
     case UNITS = 'units';
     case CATEGORIES = 'categories';
+    case INVENTORY_TYPES = 'inventory_types';
     case PRODUCTS = 'products';
     case INVENTORY = 'inventory';
     case MOVEMENTS = 'movements';
@@ -47,6 +48,7 @@ enum Resources: string
             self::SUPPLIERS => 'Proveedores',
             self::UNITS => 'Unidades',
             self::CATEGORIES => 'Categorías',
+            self::INVENTORY_TYPES => 'Tipos de Inventario',
             self::PRODUCTS => 'Productos',
             self::INVENTORY => 'Inventario',
             self::MOVEMENTS => 'Movimientos',
@@ -83,6 +85,7 @@ enum Resources: string
             self::SUPPLIERS => 'Administración de proveedores',
             self::UNITS => 'Unidades de medida',
             self::CATEGORIES => 'Categorías de productos',
+            self::INVENTORY_TYPES => 'Clasificación de productos: materia prima, empaque, terminado, etc.',
             self::PRODUCTS => 'Catálogo de productos',
             self::INVENTORY => 'Control de inventario',
             self::MOVEMENTS => 'Movimientos de inventario',
@@ -119,6 +122,7 @@ enum Resources: string
             self::SUPPLIERS => 'truck-delivery',
             self::UNITS => 'scale-balance',
             self::CATEGORIES => 'tag-multiple',
+            self::INVENTORY_TYPES => 'shape-outline',
             self::PRODUCTS => 'package-variant',
             self::INVENTORY => 'warehouse',
             self::MOVEMENTS => 'swap-horizontal',

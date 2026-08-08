@@ -63,6 +63,14 @@ class Product extends Model
     }
 
     /**
+     * Get the inventory type that owns the product.
+     */
+    public function inventoryType()
+    {
+        return $this->belongsTo(InventoryType::class);
+    }
+
+    /**
      * Get the unit that owns the product.
      */
     public function unit()

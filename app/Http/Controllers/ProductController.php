@@ -190,6 +190,22 @@ class ProductController extends CrudController
         if (isset($params['product_type']) && is_array($params['product_type']) && count($params['product_type']) > 0) {
             $query->whereIn('product_type', $params['product_type']);
         }
+
+        // Filtrar por tipo de inventario (uno o varios ids). Es el filtro que usa
+        // el menú de tipos de inventario de la app.
+        if (!empty($params['inventory_type_id'])) {
+            $query->whereIn('inventory_type_id', (array) $params['inventory_type_id']);
+        }
+
+        // Filtrar por slug del tipo (materia-prima, material-de-empaque, ...).
+        // Es lo que manda la app: el slug es lo que viaja en la URL.
+        if (!empty($params['inventory_type_slug'])) {
+            $slugs = (array) $params['inventory_type_slug'];
+
+            $query->whereHas('inventoryType', function ($q) use ($slugs) {
+                $q->whereIn('slug', $slugs);
+            });
+        }
     }
 
     /**

@@ -9,6 +9,7 @@ use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\CategoryController;
+use App\Http\Controllers\InventoryTypeController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductionOrderController;
 use App\Http\Controllers\FormulaController;
@@ -144,6 +145,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('locations', LocationController::class);
             Route::apiResource('workers', WorkerController::class);
             Route::apiResource('categories', CategoryController::class);
+            Route::apiResource('inventory-types', InventoryTypeController::class);
             Route::apiResource('products', ProductController::class);
             Route::apiResource('suppliers', SupplierController::class);
             Route::apiResource('customers', CustomerController::class);
