@@ -69,6 +69,7 @@ class RolesController extends CrudController
             // 'email' => 'required|email|unique:permissionss,email',
             'name' => 'required|string',
             'description' => 'nullable|string',
+            'is_active' => 'sometimes|boolean',
             'permissions' => 'array',
         ]);
     }
@@ -85,6 +86,7 @@ class RolesController extends CrudController
             // 'email' => 'required|email|unique:permissionss,email,' . $model->id,
             'name' => 'required|string',
             'description' => 'nullable|string',
+            'is_active' => 'sometimes|boolean',
             'permissions' => 'array',
         ]);
     }
@@ -101,6 +103,11 @@ class RolesController extends CrudController
         }
 
         $validatedData['company_id'] = $company->id;
+
+        // Un rol nuevo nace activo salvo que se indique lo contrario.
+        if (!array_key_exists('is_active', $validatedData)) {
+            $validatedData['is_active'] = true;
+        }
 
         return $validatedData;
     }

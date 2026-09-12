@@ -1,0 +1,27 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * La tabla roles nunca tuvo columna de estado, pero el listado y el selector
+     * de roles pintan un chip Activo/Inactivo a partir de is_active. Al no existir
+     * el campo, todos los roles se mostraban como "Inactivo".
+     */
+    public function up(): void
+    {
+        Schema::table('roles', function (Blueprint $table) {
+            $table->boolean('is_active')->default(true)->after('is_system');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('roles', function (Blueprint $table) {
+            $table->dropColumn('is_active');
+        });
+    }
+};

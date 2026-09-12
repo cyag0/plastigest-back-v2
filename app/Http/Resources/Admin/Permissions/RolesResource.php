@@ -21,12 +21,15 @@ class RolesResource extends Resources
             'name' => $resource->name,
             'description' => $resource->description,
             'company_id' => $resource->company_id,
+            // El listado y el selector de roles pintan el chip Activo/Inactivo con
+            // este campo, así que va siempre y no solo en show/edit.
+            'is_active' => $resource->is_active ?? true,
         ];
 
         // Campos adicionales según el contexto
         if ($editing) {
             // Datos completos para show/edit
-            $item['is_active'] = $resource->is_active ?? true;
+            $item['is_system'] = (bool) $resource->is_system;
             $item['created_at'] = $resource->created_at?->toISOString();
             $item['updated_at'] = $resource->updated_at?->toISOString();
         }

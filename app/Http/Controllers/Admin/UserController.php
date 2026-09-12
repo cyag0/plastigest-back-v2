@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UserResource;
+use App\Models\Admin\Location;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Utils\AppUploadUtil;
@@ -244,27 +245,8 @@ class UserController extends CrudController
             $user->roles()->sync($request->role_ids);
         }
 
-        // Sincronizar empresas. Si no se enviaron company_ids, asociar el
-        // usuario a la empresa actual (CurrentCompany) por defecto.
-        if ($request->has('company_ids') && is_array($request->company_ids)) {
-            $user->companies()->sync($request->company_ids);
-        } else {
-            $company = CurrentCompany::get();
-            if ($company) {
-                $user->companies()->syncWithoutDetaching([$company->id]);
-            }
-        }
-
-        // Sincronizar sucursales+rol
-        if ($request->has('location_roles') && is_array($request->location_roles)) {
-            $sync = [];
-            foreach ($request->location_roles as $lr) {
-                if (!empty($lr['location_id'])) {
-                    $sync[$lr['location_id']] = ['role_id' => $lr['role_id'] ?? null];
-                }
-            }
-            $user->locationRoles()->sync($sync);
-        }
+        $locationIds = $this->syncLocationRoles($user, $request);
+        $this->syncCompanies($user, $request, $locationIds);
 
         $relations = $this->getShowRelations();
         if (!empty($relations)) {
@@ -282,24 +264,87 @@ class UserController extends CrudController
             $user->roles()->sync($request->role_ids);
         }
 
-        if ($request->has('company_ids')) {
-            $user->companies()->sync($request->company_ids);
-        }
-
-        // Sincronizar sucursales+rol
-        if ($request->has('location_roles')) {
-            $sync = [];
-            foreach ((array) $request->location_roles as $lr) {
-                if (!empty($lr['location_id'])) {
-                    $sync[$lr['location_id']] = ['role_id' => $lr['role_id'] ?? null];
-                }
-            }
-            $user->locationRoles()->sync($sync);
-        }
+        $locationIds = $this->syncLocationRoles($user, $request);
+        $this->syncCompanies($user, $request, $locationIds);
 
         $relations = $this->getShowRelations();
         if (!empty($relations)) {
             $user->load($relations);
+        }
+    }
+
+    /**
+     * Sincroniza la tabla user_location_roles y devuelve los IDs de sucursal
+     * con los que quedó el usuario.
+     *
+     * Si la petición no trae location_roles no se toca nada: se devuelven las
+     * sucursales que ya tenía para que el cálculo de empresas siga siendo correcto.
+     *
+     * @return int[]
+     */
+    private function syncLocationRoles(Model $user, Request $request): array
+    {
+        if (!$request->has('location_roles')) {
+            return $user->locationRoles()->pluck('locations.id')->all();
+        }
+
+        $sync = [];
+        foreach ((array) $request->input('location_roles', []) as $lr) {
+            if (empty($lr['location_id'])) {
+                continue;
+            }
+
+            // role_id puede llegar como "" desde multipart/form-data; la FK
+            // solo acepta un ID válido o NULL.
+            $roleId = $lr['role_id'] ?? null;
+
+            $sync[(int) $lr['location_id']] = [
+                'role_id' => ($roleId === null || $roleId === '') ? null : (int) $roleId,
+            ];
+        }
+
+        $user->locationRoles()->sync($sync);
+
+        return array_keys($sync);
+    }
+
+    /**
+     * Sincroniza las empresas del usuario.
+     *
+     * Con company_ids explícitos manda la petición. Sin ellos, el usuario debe
+     * pertenecer como mínimo a las empresas de las sucursales que se le asignaron:
+     * antes solo se usaba la empresa del header X-Company-ID, así que un usuario
+     * creado sin ese contexto —o asignado a una sucursal de otra empresa— quedaba
+     * sin fila en user_company y luego no podía entrar a ninguna sucursal.
+     *
+     * @param int[] $locationIds
+     */
+    private function syncCompanies(Model $user, Request $request, array $locationIds): void
+    {
+        if ($request->has('company_ids') && is_array($request->company_ids)) {
+            $user->companies()->sync($request->company_ids);
+            return;
+        }
+
+        $companyIds = [];
+
+        if (!empty($locationIds)) {
+            $companyIds = Location::whereIn('id', $locationIds)
+                ->pluck('company_id')
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+        }
+
+        if ($currentCompanyId = CurrentCompany::id()) {
+            $companyIds[] = $currentCompanyId;
+        }
+
+        $companyIds = array_values(array_unique($companyIds));
+
+        if (!empty($companyIds)) {
+            $user->companies()->syncWithoutDetaching($companyIds);
         }
     }
 

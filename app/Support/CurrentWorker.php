@@ -151,8 +151,8 @@ class CurrentWorker
         }
 
         return DB::table('permissions')
-            ->join('role_permissions', 'permissions.id', '=', 'role_permissions.permission_id')
-            ->whereIn('role_permissions.role_id', $roleIds)
+            ->join('rol_permission', 'permissions.id', '=', 'rol_permission.permission_id')
+            ->whereIn('rol_permission.role_id', $roleIds)
             ->pluck('permissions.name')
             ->unique()
             ->values()

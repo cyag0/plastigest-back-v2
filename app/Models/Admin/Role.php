@@ -16,7 +16,13 @@ class Role extends Model
         'name',
         'description',
         'is_system',
+        'is_active',
         'company_id',
+    ];
+
+    protected $casts = [
+        'is_system' => 'boolean',
+        'is_active' => 'boolean',
     ];
 
     protected $dates = [
