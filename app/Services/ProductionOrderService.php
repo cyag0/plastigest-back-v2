@@ -28,7 +28,10 @@ use RuntimeException;
  */
 class ProductionOrderService
 {
-    public function __construct(private readonly MovementService $movementService) {}
+    public function __construct(
+        private readonly MovementService $movementService,
+        private readonly ProductionPackagingService $packagingService,
+    ) {}
 
     /**
      * Crea una orden en estado DRAFT sin afectar inventario.
@@ -148,15 +151,21 @@ class ProductionOrderService
     /**
      * Cancela la producción y revierte el impacto en stock.
      * Si está en DRAFT, simplemente la marca cancelada.
-     * Si está en COMPLETED, invierte movimientos y marca ajustes como cancelados.
+     * Si ya afectó inventario (completada, en empaque o empacada), deshace
+     * primero el empaque y después los movimientos de producción y las mermas.
      */
     public function cancel(ProductionOrder $order): ProductionOrder
     {
         $order->assertCanTransitionTo(ProductionOrderStatus::CANCELLED);
 
         return DB::transaction(function () use ($order) {
-            if ($order->status === ProductionOrderStatus::COMPLETED) {
+            if ($order->status->isProduced()) {
                 $locationId = (int) $order->location_id;
+
+                // Revertir primero el empaque: devuelve el granel y el material
+                // de empaque, y retira el producto terminado. Tiene que ir antes
+                // de revertir los outputs para que el granel exista al restarlo.
+                $this->packagingService->revertAll($order);
 
                 // Revertir outputs (decrementar)
                 foreach ($order->outputs()->get() as $output) {
@@ -386,8 +395,9 @@ class ProductionOrderService
         $formulas = Formula::query()
             ->when($companyId, fn($q) => $q->where('company_id', $companyId))
             ->where('is_active', true)
+            ->with(['outputs.product:id,name,code,unit_id', 'outputs.unit:id,name,abbreviation'])
             ->orderBy('name')
-            ->get(['id', 'name', 'product_id', 'version']);
+            ->get(['id', 'name', 'version']);
 
         $units = Unit::query()
             ->orderBy('name')

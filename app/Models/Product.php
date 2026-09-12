@@ -24,13 +24,20 @@ class Product extends Model
         'unit_id',
         'supplier_id',
         'product_type',
+        'inventory_type_id',
         'for_sale',
+        'requires_packaging',
+        'packaging_source_product_id',
+        'packaging_source_quantity',
+        'packaging_source_unit_id',
     ];
 
     protected $casts = [
         'purchase_price' => 'decimal:2',
         'sale_price' => 'decimal:2',
         'for_sale' => 'boolean',
+        'requires_packaging' => 'boolean',
+        'packaging_source_quantity' => 'decimal:4',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
@@ -112,6 +119,40 @@ class Product extends Model
         return $this->belongsToMany(Product::class, 'product_ingredients', 'ingredient_id', 'product_id')
             ->withPivot(['quantity', 'notes'])
             ->withTimestamps();
+    }
+
+    /**
+     * Material de empaque que consume cada unidad de este producto al empacarse
+     * (frasco, tapa, etiqueta). Se descuenta en el paso de empaque de producción.
+     */
+    public function packagingMaterials()
+    {
+        return $this->hasMany(ProductPackagingMaterial::class, 'product_id')->orderBy('sort_order');
+    }
+
+    /**
+     * Granel del que se empaca este producto: la salida de la fórmula que se
+     * consume al empacar ("Dulce de coco granel" → "Dulce de coco 250 g").
+     */
+    public function packagingSourceProduct()
+    {
+        return $this->belongsTo(Product::class, 'packaging_source_product_id');
+    }
+
+    /**
+     * Unidad en la que se expresa `packaging_source_quantity`.
+     */
+    public function packagingSourceUnit()
+    {
+        return $this->belongsTo(Unit::class, 'packaging_source_unit_id');
+    }
+
+    /**
+     * Productos terminados que se empacan a partir de este granel.
+     */
+    public function packagedProducts()
+    {
+        return $this->hasMany(Product::class, 'packaging_source_product_id');
     }
 
     /**

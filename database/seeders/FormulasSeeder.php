@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\Admin\Company;
 use App\Models\Operations\Formula;
 use App\Models\Operations\FormulaItem;
+use App\Models\Operations\FormulaOutput;
 use App\Models\Product;
 use App\Models\Unit;
 use Illuminate\Database\Seeder;
@@ -16,9 +17,9 @@ use Illuminate\Support\Facades\DB;
  * Produce "Agua de Coco 1 Litro" a partir de "Coco Entero". Sirve como plantilla
  * para que el cliente capture el resto de sus fórmulas desde la app.
  *
- * El rendimiento (cantidad producida al ejecutar la fórmula una vez) vive en la
- * FÓRMULA (`expected_output_quantity`); su unidad la resuelve el frontend desde
- * la unidad del producto objetivo.
+ * La fórmula es el proceso: los insumos van en `formula_items` y los resultados
+ * en `formula_outputs`. Una misma corrida puede entregar varios productos (de
+ * un lote de cocos salen agua, pulpa y fibra); aquí sólo se siembra uno.
  */
 class FormulasSeeder extends Seeder
 {
@@ -48,12 +49,10 @@ class FormulasSeeder extends Seeder
 
         $formula = Formula::create([
             'company_id' => $company->id,
-            'product_id' => $aguaDeCoco->id,
             'name' => 'Producción de Agua de Coco 1 Litro',
             'description' => 'Fórmula de ejemplo: rinde ~1 L de agua de coco a partir de coco entero (≈0.73 L por coco).',
             'version' => 1,
             'is_active' => true,
-            'expected_output_quantity' => 1,
             'created_by' => $userId,
             'updated_by' => $userId,
         ]);
@@ -65,6 +64,15 @@ class FormulasSeeder extends Seeder
             'expected_quantity' => 1.4,
             'sort_order' => 0,
             'notes' => 'Se requieren ~1.4 cocos enteros para obtener 1 L de agua.',
+        ]);
+
+        FormulaOutput::create([
+            'formula_id' => $formula->id,
+            'product_id' => $aguaDeCoco->id,
+            'unit_id' => $aguaDeCoco->unit_id ?? $pieza->id,
+            'expected_quantity' => 1,
+            'is_primary' => true,
+            'sort_order' => 0,
         ]);
 
         $this->command->info('✅ Creada 1 fórmula de ejemplo: Producción de Agua de Coco 1 Litro');

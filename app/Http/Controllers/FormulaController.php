@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\PrunesEmptyRows;
 use App\Http\Resources\FormulaResource;
 use App\Models\Operations\Formula;
 use App\Services\FormulaService;
@@ -13,6 +14,8 @@ use Illuminate\Support\Facades\Auth;
 
 class FormulaController extends CrudController
 {
+    use PrunesEmptyRows;
+
     protected string $resource = FormulaResource::class;
     protected string $model = Formula::class;
     protected ?string $permissionPrefix = 'formulas';
@@ -22,18 +25,37 @@ class FormulaController extends CrudController
 
     protected function indexRelations(): array
     {
-        return ['product.mainImage', 'product.unit', 'items.product', 'items.unit'];
+        return [
+            'items.product',
+            'items.unit',
+            'outputs.product.mainImage',
+            'outputs.product.unit',
+            'outputs.unit',
+        ];
     }
 
     protected function getShowRelations(): array
     {
-        return ['product', 'items.product', 'items.unit', 'createdBy', 'updatedBy'];
+        return [
+            'items.product',
+            'items.unit',
+            'outputs.product.mainImage',
+            'outputs.product.unit',
+            'outputs.unit',
+            'createdBy',
+            'updatedBy',
+        ];
     }
 
     protected function handleQuery($query, array $params)
     {
+        // El producto puede participar como insumo o como resultado.
         if (isset($params['product_id'])) {
-            $query->where('product_id', $params['product_id']);
+            $query->byProduct((int) $params['product_id']);
+        }
+        // Sólo las fórmulas que PRODUCEN el producto (para el paso de empaque).
+        if (isset($params['produces_product_id'])) {
+            $query->producing((int) $params['produces_product_id']);
         }
         if (isset($params['is_active'])) {
             $query->where('is_active', filter_var($params['is_active'], FILTER_VALIDATE_BOOLEAN));
@@ -43,7 +65,8 @@ class FormulaController extends CrudController
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
                     ->orWhere('description', 'like', "%{$search}%")
-                    ->orWhereHas('product', fn($qq) => $qq->where('name', 'like', "%{$search}%"));
+                    ->orWhereHas('outputs.product', fn($qq) => $qq->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('items.product', fn($qq) => $qq->where('name', 'like', "%{$search}%"));
             });
         }
     }
@@ -57,34 +80,72 @@ class FormulaController extends CrudController
 
     protected function validateStoreData(Request $request): array
     {
+        $this->pruneEmptyRows($request, 'items', 'product_id');
+        $this->pruneEmptyRows($request, 'outputs', 'product_id');
+
         return $request->validate([
             'name' => 'required|string|max:255',
-            'product_id' => 'required|exists:products,id',
             'description' => 'nullable|string',
             'is_active' => 'nullable|boolean',
             'notes' => 'nullable|string',
-            'expected_output_quantity' => 'nullable|numeric|min:0',
-            'items' => 'nullable|array',
-            'items.*.product_id' => 'required_with:items|exists:products,id',
-            'items.*.unit_id' => 'required_with:items|exists:units,id',
-            'items.*.expected_quantity' => 'required_with:items|numeric|min:0',
+
+            // Ingredientes que consume el proceso.
+            'items' => 'required|array|min:1',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.unit_id' => 'required|exists:units,id',
+            'items.*.expected_quantity' => 'required|numeric|min:0',
             'items.*.notes' => 'nullable|string',
+
+            // Productos que entrega el proceso.
+            'outputs' => 'required_without:product_id|array|min:1',
+            'outputs.*.product_id' => 'required|exists:products,id',
+            'outputs.*.unit_id' => 'required|exists:units,id',
+            'outputs.*.expected_quantity' => 'required|numeric|min:0',
+            'outputs.*.is_primary' => 'nullable|boolean',
+            'outputs.*.notes' => 'nullable|string',
+
+            // Formato viejo (un solo producto objetivo). Se acepta mientras la
+            // app se actualiza: FormulaService lo guarda como salida principal.
+            'product_id' => 'nullable|exists:products,id',
+            'expected_output_quantity' => 'nullable|numeric|min:0',
+        ], [
+            'outputs.required_without' => 'Agrega al menos un producto resultante.',
+            'outputs.min' => 'Agrega al menos un producto resultante.',
+            'items.required' => 'Agrega al menos un ingrediente.',
+            'items.min' => 'Agrega al menos un ingrediente.',
         ]);
     }
 
     protected function validateUpdateData(Request $request, Model $model): array
     {
+        $this->pruneEmptyRows($request, 'items', 'product_id');
+        $this->pruneEmptyRows($request, 'outputs', 'product_id');
+
         return $request->validate([
             'name' => 'sometimes|string|max:255',
             'description' => 'nullable|string',
             'is_active' => 'nullable|boolean',
             'notes' => 'nullable|string',
-            'expected_output_quantity' => 'nullable|numeric|min:0',
-            'items' => 'nullable|array',
-            'items.*.product_id' => 'required_with:items|exists:products,id',
-            'items.*.unit_id' => 'required_with:items|exists:units,id',
-            'items.*.expected_quantity' => 'required_with:items|numeric|min:0',
+
+            'items' => 'sometimes|array|min:1',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.unit_id' => 'required|exists:units,id',
+            'items.*.expected_quantity' => 'required|numeric|min:0',
             'items.*.notes' => 'nullable|string',
+
+            'outputs' => 'sometimes|array|min:1',
+            'outputs.*.product_id' => 'required|exists:products,id',
+            'outputs.*.unit_id' => 'required|exists:units,id',
+            'outputs.*.expected_quantity' => 'required|numeric|min:0',
+            'outputs.*.is_primary' => 'nullable|boolean',
+            'outputs.*.notes' => 'nullable|string',
+
+            // Formato viejo, ver validateStoreData.
+            'product_id' => 'nullable|exists:products,id',
+            'expected_output_quantity' => 'nullable|numeric|min:0',
+        ], [
+            'outputs.min' => 'Agrega al menos un producto resultante.',
+            'items.min' => 'Agrega al menos un ingrediente.',
         ]);
     }
 
@@ -116,7 +177,7 @@ class FormulaController extends CrudController
         if (!CurrentWorker::hasPermission('formulas_create')) {
             return $this->forbiddenResponse('clonar fórmulas');
         }
-        $formula = Formula::findOrFail($id);
+        $formula = Formula::with(['items', 'outputs'])->findOrFail($id);
         $newName = $request->input('name');
         $clone = $this->formulaService->clone($formula, $newName);
         return response()->json([

@@ -218,6 +218,12 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('{id}/complete', [ProductionOrderController::class, 'complete']);
                 Route::post('{id}/cancel', [ProductionOrderController::class, 'cancel']);
                 Route::get('{id}/variance', [ProductionOrderController::class, 'variance']);
+
+                // Empaque: paso posterior, sólo disponible con la producción ya completada
+                Route::get('{id}/packaging', [ProductionOrderController::class, 'packagingPlan']);
+                Route::post('{id}/packaging', [ProductionOrderController::class, 'pack']);
+                Route::post('{id}/packaging/finish', [ProductionOrderController::class, 'finishPackaging']);
+                Route::delete('{id}/packaging/{packagingId}', [ProductionOrderController::class, 'revertPackaging']);
             });
             Route::apiResource('production-orders', ProductionOrderController::class);
 

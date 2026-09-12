@@ -56,8 +56,16 @@ class ProductResource extends Resources
             'unit_id' => $this->unit_id,
             'supplier_id' => $this->supplier_id,
             'product_type' => $this->product_type,
+            'inventory_type_id' => $this->inventory_type_id,
             'is_active' => $currentLocationActive,
             'for_sale' => $this->for_sale,
+            // Receta de empaque: de qué granel sale y cuánto lleva cada unidad.
+            'requires_packaging' => (bool) $this->requires_packaging,
+            'packaging_source_product_id' => $this->packaging_source_product_id,
+            'packaging_source_quantity' => $this->packaging_source_quantity !== null
+                ? (float) $this->packaging_source_quantity
+                : null,
+            'packaging_source_unit_id' => $this->packaging_source_unit_id,
             'current_stock' => (float) $currentStock ?? 0,
             'reserved_stock' => (float) $reservedStock ?? 0,
             'available_stock' => ((float) $currentStock ?? 0) - ((float) $reservedStock ?? 0),
@@ -84,6 +92,47 @@ class ProductResource extends Resources
                 'name' => $this->unit?->name,
                 'abbreviation' => $this->unit?->abbreviation,
                 'unit_type' => $this->unit?->unit_type,
+            ];
+        }
+
+        if ($this->relationLoaded('inventoryType') && $this->inventoryType) {
+            $item['inventory_type'] = [
+                'id' => $this->inventoryType->id,
+                'code' => $this->inventoryType->code,
+                'slug' => $this->inventoryType->slug,
+                'name' => $this->inventoryType->name,
+                'is_producible' => (bool) $this->inventoryType->is_producible,
+                'is_consumable' => (bool) $this->inventoryType->is_consumable,
+                'is_sellable' => (bool) $this->inventoryType->is_sellable,
+                'is_purchasable' => (bool) $this->inventoryType->is_purchasable,
+            ];
+        }
+
+        // Va antes del corte de `$editing`: el formulario necesita la receta
+        // para editarla y la vista de detalle para mostrarla.
+        if ($this->relationLoaded('packagingMaterials')) {
+            $item['packaging_materials'] = $this->packagingMaterials->map(function ($material) {
+                return [
+                    'id' => $material->id,
+                    'material_product_id' => $material->material_product_id,
+                    'material_name' => $material->material?->name,
+                    'material_code' => $material->material?->code,
+                    'unit_id' => $material->unit_id,
+                    'unit_name' => $material->unit?->name,
+                    'unit_abbreviation' => $material->unit?->abbreviation,
+                    'quantity' => (float) $material->quantity,
+                    'sort_order' => $material->sort_order,
+                    'notes' => $material->notes,
+                ];
+            })->values();
+        }
+
+        if ($this->relationLoaded('packagingSourceProduct') && $this->packagingSourceProduct) {
+            $item['packaging_source_product'] = [
+                'id' => $this->packagingSourceProduct->id,
+                'name' => $this->packagingSourceProduct->name,
+                'code' => $this->packagingSourceProduct->code,
+                'unit_id' => $this->packagingSourceProduct->unit_id,
             ];
         }
 

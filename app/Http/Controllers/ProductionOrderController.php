@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Enums\ProductionOrderStatus;
 use App\Http\Resources\ProductionOrderResource;
 use App\Models\Operations\ProductionOrder;
+use App\Models\Operations\ProductionOrderPackaging;
 use App\Models\User;
 use App\Services\ProductionOrderService;
+use App\Services\ProductionPackagingService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
@@ -23,7 +25,10 @@ class ProductionOrderController extends CrudController
     protected ?string $permissionPrefix = 'production_orders';
     protected string $dateColumn = 'production_date';
 
-    public function __construct(private readonly ProductionOrderService $service) {}
+    public function __construct(
+        private readonly ProductionOrderService $service,
+        private readonly ProductionPackagingService $packagingService,
+    ) {}
 
     protected function indexRelations(): array
     {
@@ -48,6 +53,12 @@ class ProductionOrderController extends CrudController
             'outputs.unit',
             'wastes.product',
             'wastes.unit',
+            'packagings.product',
+            'packagings.unit',
+            'packagings.sourceProduct',
+            'packagings.sourceUnit',
+            'packagings.materials.product',
+            'packagings.materials.unit',
             'createdBy',
             'updatedBy',
         ];
@@ -274,5 +285,130 @@ class ProductionOrderController extends CrudController
         $order = ProductionOrder::with($this->getShowRelations())->findOrFail($id);
         $report = $this->service->getVarianceReport($order);
         return response()->json(['success' => true, 'data' => $report]);
+    }
+
+    /**
+     * GET /production-orders/{id}/packaging
+     *
+     * Plan de empaque: qué se puede empacar de cada salida de la orden, cuánto
+     * granel queda y qué material haría falta.
+     */
+    public function packagingPlan(int $id)
+    {
+        if (!CurrentWorker::hasPermission('production_orders_read')) {
+            return $this->forbiddenResponse('ver el empaque de esta producción');
+        }
+
+        $order = ProductionOrder::with(['outputs.product', 'outputs.unit'])->findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->packagingService->getPlan($order),
+        ]);
+    }
+
+    /**
+     * POST /production-orders/{id}/packaging
+     *
+     * Registra empaques. Sólo se permite cuando la producción ya se completó:
+     * antes de eso el granel no existe en inventario.
+     */
+    public function pack(Request $request, int $id)
+    {
+        if (!CurrentWorker::hasPermission('production_orders_update')) {
+            return $this->forbiddenResponse('empacar esta producción');
+        }
+
+        $data = $request->validate([
+            'packagings' => 'required|array|min:1',
+            'packagings.*.product_id' => 'required|exists:products,id',
+            'packagings.*.quantity' => 'required|numeric|min:0.0001',
+            'packagings.*.unit_id' => 'nullable|exists:units,id',
+            // Permiten sobrescribir la receta del producto en un empaque puntual.
+            'packagings.*.source_product_id' => 'nullable|exists:products,id',
+            'packagings.*.source_unit_id' => 'nullable|exists:units,id',
+            'packagings.*.source_quantity_per_unit' => 'nullable|numeric|min:0',
+            'packagings.*.materials' => 'nullable|array',
+            'packagings.*.materials.*.product_id' => 'required_with:packagings.*.materials|exists:products,id',
+            'packagings.*.materials.*.unit_id' => 'required_with:packagings.*.materials|exists:units,id',
+            'packagings.*.materials.*.quantity' => 'required_with:packagings.*.materials|numeric|min:0',
+            'packagings.*.notes' => 'nullable|string',
+        ], [
+            'packagings.required' => 'Indica al menos un producto a empacar.',
+        ]);
+
+        try {
+            $order = ProductionOrder::findOrFail($id);
+            $order = $this->packagingService->pack($order, $data['packagings']);
+
+            return response()->json([
+                'success' => true,
+                'message' => "Empaque registrado en la producción {$order->folio}",
+                'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No se pudo registrar el empaque',
+                'error' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    /**
+     * DELETE /production-orders/{id}/packaging/{packagingId}
+     */
+    public function revertPackaging(int $id, int $packagingId)
+    {
+        if (!CurrentWorker::hasPermission('production_orders_update')) {
+            return $this->forbiddenResponse('revertir el empaque de esta producción');
+        }
+
+        try {
+            $order = ProductionOrder::findOrFail($id);
+            $packaging = ProductionOrderPackaging::with('materials')->findOrFail($packagingId);
+            $order = $this->packagingService->revert($order, $packaging);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Empaque revertido y stock devuelto',
+                'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No se pudo revertir el empaque',
+                'error' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    /**
+     * POST /production-orders/{id}/packaging/finish
+     *
+     * Cierra el empaque: la orden queda como empacada y ya no admite más.
+     */
+    public function finishPackaging(int $id)
+    {
+        if (!CurrentWorker::hasPermission('production_orders_update')) {
+            return $this->forbiddenResponse('cerrar el empaque de esta producción');
+        }
+
+        try {
+            $order = ProductionOrder::findOrFail($id);
+            $order = $this->packagingService->finish($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => "Empaque de la producción {$order->folio} cerrado",
+                'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No se pudo cerrar el empaque',
+                'error' => $e->getMessage(),
+            ], 422);
+        }
     }
 }

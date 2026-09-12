@@ -37,6 +37,7 @@ class ProductionOrder extends Model
         'total_produced_quantity',
         'waste_percentage',
         'completed_at',
+        'packed_at',
         'cancelled_at',
         'created_by',
         'updated_by',
@@ -45,6 +46,7 @@ class ProductionOrder extends Model
     protected $casts = [
         'production_date' => 'date',
         'completed_at' => 'datetime',
+        'packed_at' => 'datetime',
         'cancelled_at' => 'datetime',
         'total_consumed_quantity' => 'decimal:3',
         'total_produced_quantity' => 'decimal:3',
@@ -137,6 +139,12 @@ class ProductionOrder extends Model
     {
         return $this->hasMany(InventoryAdjustmentDetail::class, 'reference_id')
             ->where('reference_type', 'production_order');
+    }
+
+    /** Operaciones de empaque registradas después de completar la producción. */
+    public function packagings(): HasMany
+    {
+        return $this->hasMany(ProductionOrderPackaging::class)->orderBy('sort_order');
     }
 
     public function scopeByCompany(Builder $query, ?int $companyId): Builder

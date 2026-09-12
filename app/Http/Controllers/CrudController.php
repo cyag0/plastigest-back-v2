@@ -325,6 +325,13 @@ abstract class CrudController extends Controller
             // Procesar después de crear (para relaciones adicionales, etc.)
             $this->afterStore($model, $request);
 
+            // afterStore es justo donde se escriben las relaciones (imágenes,
+            // ingredientes, material de empaque…), así que hay que releerlas:
+            // las cargadas arriba son de antes y saldrían vacías.
+            if (!empty($relations)) {
+                $model->load($relations);
+            }
+
             // Retornar el recurso creado
             return new $this->resource($model, ['editing' => true]);
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -423,6 +430,12 @@ abstract class CrudController extends Controller
 
             // Procesar después de actualizar
             $this->afterUpdate($model, $request);
+
+            // Igual que en store: afterUpdate reescribe las relaciones, así que
+            // se releen para no devolver el estado anterior.
+            if (!empty($relations)) {
+                $model->load($relations);
+            }
 
             // Retornar el recurso actualizado
             return new $this->resource($model, ['editing' => true]);

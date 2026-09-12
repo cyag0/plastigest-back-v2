@@ -68,6 +68,24 @@ class InventoryType extends Model
     ];
 
     /**
+     * Vuelta al enum anterior. `products.product_type` sigue vivo (lo leen el
+     * POS, compras y los reportes), así que al guardar un producto se rellena a
+     * partir de su tipo de inventario.
+     *
+     * Los tipos nuevos caen en el valor viejo más cercano: el material de
+     * empaque es materia prima porque se compra y se consume, y el granel es
+     * procesado porque sale de una fórmula.
+     */
+    const CODE_TO_LEGACY_TYPE = [
+        self::RAW_MATERIAL => 'raw_material',
+        self::PACKAGING_MATERIAL => 'raw_material',
+        self::SEMI_FINISHED => 'processed',
+        self::FINISHED_PRODUCT => 'processed',
+        self::MERCHANDISE => 'commercial',
+        self::SUPPLY => 'commercial',
+    ];
+
+    /**
      * Banderas de comportamiento que se pueden usar como filtro de productos.
      */
     const BEHAVIOR_FLAGS = [
@@ -159,5 +177,20 @@ class InventoryType extends Model
         $code = self::LEGACY_TYPE_MAP[$legacyType] ?? $legacyType;
 
         return static::idForCode($code, $companyId);
+    }
+
+    /**
+     * Valor del enum anterior que le corresponde a un tipo. Los tipos propios
+     * de una empresa caen en 'commercial', que es el default histórico.
+     */
+    public static function legacyTypeForId(?int $inventoryTypeId): ?string
+    {
+        if (!$inventoryTypeId) {
+            return null;
+        }
+
+        $code = static::whereKey($inventoryTypeId)->value('code');
+
+        return $code ? (self::CODE_TO_LEGACY_TYPE[$code] ?? 'commercial') : null;
     }
 }

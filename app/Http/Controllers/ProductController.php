@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\ProductResource;
+use App\Models\InventoryType;
 use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\Movement;
@@ -26,6 +27,8 @@ use Picqer\Barcode\BarcodeGeneratorPNG;
 
 class ProductController extends CrudController
 {
+    use \App\Http\Controllers\Concerns\PrunesEmptyRows;
+
     /**
      * El resource que se usará para retornar en cada petición
      */
@@ -49,6 +52,7 @@ class ProductController extends CrudController
             'mainImage',
             'locations',
             'unit',
+            'inventoryType',
             'activePackages'
         ];
     }
@@ -64,7 +68,12 @@ class ProductController extends CrudController
             'supplier',
             'locations',
             'unit',
+            'inventoryType',
             'productIngredients.ingredient',
+            'packagingMaterials.material',
+            'packagingMaterials.unit',
+            'packagingSourceProduct',
+            'packagingSourceUnit',
             'mainImage',
             'images' => function ($query) {
                 $query->orderBy('sort_order');
@@ -206,6 +215,39 @@ class ProductController extends CrudController
                 $q->whereIn('slug', $slugs);
             });
         }
+
+        // Filtrar por código del tipo (raw_material, packaging_material, ...).
+        // Lo usa el selector de material de empaque del formulario de productos.
+        if (!empty($params['inventory_type_code'])) {
+            $codes = (array) $params['inventory_type_code'];
+
+            $query->whereHas('inventoryType', function ($q) use ($codes) {
+                $q->whereIn('code', $codes);
+            });
+        }
+
+        // Filtrar por comportamiento del tipo: ?is_consumable=1 para los
+        // ingredientes de una fórmula, ?is_producible=1 para sus resultados.
+        // Los selectores de la app ya mandaban estas banderas.
+        foreach (InventoryType::BEHAVIOR_FLAGS as $flag) {
+            if (!isset($params[$flag]) || $params[$flag] === '') {
+                continue;
+            }
+
+            $value = filter_var($params[$flag], FILTER_VALIDATE_BOOLEAN);
+            $query->whereHas('inventoryType', fn($q) => $q->where($flag, $value));
+        }
+
+        // Productos que se empacan a partir de un granel dado. Es lo que
+        // necesita el paso de empaque para saber qué puede salir de cada output.
+        if (!empty($params['packaging_source_product_id'])) {
+            $query->where('packaging_source_product_id', (int) $params['packaging_source_product_id'])
+                ->where('requires_packaging', true);
+        }
+
+        if (isset($params['requires_packaging']) && $params['requires_packaging'] !== '') {
+            $query->where('requires_packaging', filter_var($params['requires_packaging'], FILTER_VALIDATE_BOOLEAN));
+        }
     }
 
     /**
@@ -221,6 +263,14 @@ class ProductController extends CrudController
             $request->merge(['for_sale' => $request->boolean('for_sale')]);
         }
 
+        if ($request->has('requires_packaging')) {
+            $request->merge(['requires_packaging' => $request->boolean('requires_packaging')]);
+        }
+
+        $this->fillLegacyProductType($request);
+        $this->pruneEmptyRows($request, 'ingredients', 'ingredient_id');
+        $this->pruneEmptyRows($request, 'packaging_materials', 'material_product_id');
+
         $rules = [
             'name' => 'required|string|max:150',
             'description' => 'nullable|string',
@@ -230,9 +280,20 @@ class ProductController extends CrudController
             'category_id' => 'nullable|exists:categories,id',
             'unit_id' => 'nullable|exists:units,id',
             'supplier_id' => 'nullable|exists:suppliers,id',
+            'inventory_type_id' => 'nullable|exists:inventory_types,id',
             'product_type' => 'required|in:raw_material,processed,commercial',
             'is_active' => 'boolean',
             'for_sale' => 'boolean',
+            // Receta de empaque: de qué granel sale y qué material consume.
+            'requires_packaging' => 'nullable|boolean',
+            'packaging_source_product_id' => 'nullable|exists:products,id',
+            'packaging_source_quantity' => 'nullable|numeric|min:0',
+            'packaging_source_unit_id' => 'nullable|exists:units,id',
+            'packaging_materials' => 'nullable|array',
+            'packaging_materials.*.material_product_id' => 'required_with:packaging_materials|exists:products,id',
+            'packaging_materials.*.unit_id' => 'required_with:packaging_materials|exists:units,id',
+            'packaging_materials.*.quantity' => 'required_with:packaging_materials|numeric|min:0.0001',
+            'packaging_materials.*.notes' => 'nullable|string|max:500',
             'product_images.*' => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:5120', // 5MB max
             // Campos para manejo de activación en sucursales
             'activate_in_all_locations' => 'nullable|boolean',
@@ -271,6 +332,14 @@ class ProductController extends CrudController
             $request->merge(['for_sale' => $request->boolean('for_sale')]);
         }
 
+        if ($request->has('requires_packaging')) {
+            $request->merge(['requires_packaging' => $request->boolean('requires_packaging')]);
+        }
+
+        $this->fillLegacyProductType($request);
+        $this->pruneEmptyRows($request, 'ingredients', 'ingredient_id');
+        $this->pruneEmptyRows($request, 'packaging_materials', 'material_product_id');
+
         return $request->validate([
             'name' => 'nullable|string|max:150',
             'description' => 'nullable|string',
@@ -281,9 +350,20 @@ class ProductController extends CrudController
             'category_id' => 'nullable',
             'unit_id' => 'nullable|exists:units,id',
             'supplier_id' => 'nullable|exists:suppliers,id',
+            'inventory_type_id' => 'nullable|exists:inventory_types,id',
             'product_type' => 'nullable|in:raw_material,processed,commercial',
             'is_active' => 'nullable|boolean',
             'for_sale' => 'nullable|boolean',
+            // Receta de empaque: ver validateStoreData.
+            'requires_packaging' => 'nullable|boolean',
+            'packaging_source_product_id' => 'nullable|exists:products,id',
+            'packaging_source_quantity' => 'nullable|numeric|min:0',
+            'packaging_source_unit_id' => 'nullable|exists:units,id',
+            'packaging_materials' => 'nullable|array',
+            'packaging_materials.*.material_product_id' => 'required_with:packaging_materials|exists:products,id',
+            'packaging_materials.*.unit_id' => 'required_with:packaging_materials|exists:units,id',
+            'packaging_materials.*.quantity' => 'required_with:packaging_materials|numeric|min:0.0001',
+            'packaging_materials.*.notes' => 'nullable|string|max:500',
             'product_images.*' => 'nullable', // 5MB max
             // Campos para manejo de activación en sucursales
             'activate_in_all_locations' => 'nullable|boolean',
@@ -298,6 +378,27 @@ class ProductController extends CrudController
             'ingredients.*.quantity' => 'required_with:ingredients|numeric|min:0.0001',
             'ingredients.*.notes' => 'nullable|string|max:500',
         ]);
+    }
+
+    /**
+     * Rellena `product_type` a partir del tipo de inventario.
+     *
+     * El formulario de la app ya sólo manda `inventory_type_id`, pero
+     * `products.product_type` sigue siendo obligatorio y lo leen el POS,
+     * compras y los reportes. Se mantienen sincronizados hasta que el enum
+     * viejo desaparezca del todo.
+     */
+    private function fillLegacyProductType(Request $request): void
+    {
+        if (!$request->filled('inventory_type_id')) {
+            return;
+        }
+
+        $legacyType = InventoryType::legacyTypeForId((int) $request->input('inventory_type_id'));
+
+        if ($legacyType) {
+            $request->merge(['product_type' => $legacyType]);
+        }
     }
 
     /**
@@ -319,6 +420,7 @@ class ProductController extends CrudController
         unset($validatedData['activate_in_current_location']);
         unset($validatedData['current_location_id']);
         unset($validatedData['ingredients']); // Los ingredientes se procesan por separado
+        unset($validatedData['packaging_materials']); // El material de empaque también
 
         // Remover campos del pivot table (se procesan después)
         unset($validatedData['minimum_stock']);
@@ -340,6 +442,7 @@ class ProductController extends CrudController
         unset($validatedData['activate_in_current_location']);
         unset($validatedData['current_location_id']);
         unset($validatedData['ingredients']); // Los ingredientes se procesan por separado
+        unset($validatedData['packaging_materials']); // El material de empaque también
 
         // Remover campos del pivot table (se procesan después)
         unset($validatedData['current_stock']);
@@ -366,6 +469,9 @@ class ProductController extends CrudController
         // Manejar ingredientes para productos procesados
         $this->handleProductIngredients($model, $request, false);
 
+        // Manejar el material de empaque que consume cada unidad
+        $this->handleProductPackagingMaterials($model, $request, false);
+
         // Manejar activación en sucursales (en creación, current_stock parte en 0)
         $this->handleLocationActivation($model, $request, false);
     }
@@ -381,6 +487,9 @@ class ProductController extends CrudController
 
         // Manejar ingredientes para productos procesados
         $this->handleProductIngredients($model, $request, true);
+
+        // Manejar el material de empaque que consume cada unidad
+        $this->handleProductPackagingMaterials($model, $request, true);
 
         // Manejar activación en sucursales (en actualización NUNCA se toca current_stock)
         $this->handleLocationActivation($model, $request, true);
@@ -863,6 +972,55 @@ class ProductController extends CrudController
                     ]);
                 }
             }
+        }
+    }
+
+    /**
+     * Sincroniza el material de empaque que consume una unidad del producto.
+     *
+     * Igual que con los ingredientes: en actualización sólo se reemplaza si el
+     * campo viene en la petición, para que un guardado parcial no borre la
+     * receta de empaque ya capturada.
+     */
+    private function handleProductPackagingMaterials(Model $product, Request $request, bool $isUpdate = false): void
+    {
+        // Una lista vacía no viaja en un FormData, así que no se puede
+        // distinguir "borré todo el material" de "no mandé el campo" sólo por
+        // `packaging_materials`. El switch `requires_packaging` sí viaja
+        // siempre que el formulario trae la sección de empaque, y es lo que se
+        // usa como señal: con él presente, sin filas significa lista vacía.
+        $formIncludesPackaging = $request->has('packaging_materials')
+            || $request->has('requires_packaging');
+
+        if ($isUpdate && !$formIncludesPackaging) {
+            return;
+        }
+
+        $materials = $request->input('packaging_materials', []);
+
+        $product->packagingMaterials()->delete();
+
+        foreach (array_values($materials) as $index => $material) {
+            $materialId = (int) ($material['material_product_id'] ?? 0);
+            $quantity = (float) ($material['quantity'] ?? 0);
+
+            if (!$materialId || $quantity <= 0) {
+                continue;
+            }
+
+            // Un producto no puede ser su propio material de empaque.
+            if ($materialId === (int) $product->id) {
+                continue;
+            }
+
+            $product->packagingMaterials()->create([
+                'material_product_id' => $materialId,
+                'unit_id' => (int) ($material['unit_id'] ?? 0)
+                    ?: (int) Product::whereKey($materialId)->value('unit_id'),
+                'quantity' => $quantity,
+                'sort_order' => $index,
+                'notes' => $material['notes'] ?? null,
+            ]);
         }
     }
 
