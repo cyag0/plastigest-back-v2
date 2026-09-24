@@ -58,10 +58,6 @@ class MovementDetail extends Model
         return $this->belongsTo(Unit::class);
     }
 
-    public function kardexRecords(): HasMany
-    {
-        return $this->hasMany(ProductKardex::class);
-    }
 
     // Scopes
     public function scopeByProduct($query, $productId)

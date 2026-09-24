@@ -6,6 +6,8 @@ use App\Models\PurchaseV2;
 use App\Models\PurchaseDetailV2;
 use App\Services\CashMovementService;
 use App\Services\MovementService;
+use App\Enums\StockLedgerReason;
+use App\Support\StockContext;
 use App\Services\TaskService;
 use App\Notifications\NotificationEngine;
 use App\Support\CurrentCompany;
@@ -393,7 +395,8 @@ class PurchaseV2Controller extends Controller
                     $detail->product_id,
                     $detail->unit_id,
                     $detail->quantity_received,
-                    $detail->package_id
+                    $detail->package_id,
+                    StockContext::for(StockLedgerReason::PURCHASE, $purchase)
                 );
             }
 

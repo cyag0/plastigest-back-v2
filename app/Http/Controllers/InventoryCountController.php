@@ -8,6 +8,8 @@ use App\Http\Resources\InventoryCountResource;
 use App\Models\InventoryAdjustmentDetail;
 use App\Models\InventoryCount;
 use App\Models\Product;
+use App\Enums\StockLedgerReason;
+use App\Support\StockContext;
 use App\Models\Task;
 use App\Services\FirebaseService;
 use App\Services\MovementService;
@@ -232,10 +234,12 @@ class InventoryCountController extends CrudController
                         continue;
                     }
 
+                    $countContext = StockContext::for(StockLedgerReason::COUNT, $inventoryCount, 'Diferencia de conteo físico');
+
                     if ($direction === 'in') {
-                        $movementService->increment((int) $detail->location_id, (int) $detail->product_id, $unitId, $quantity);
+                        $movementService->increment((int) $detail->location_id, (int) $detail->product_id, $unitId, $quantity, null, $countContext);
                     } else {
-                        $movementService->decrement((int) $detail->location_id, (int) $detail->product_id, $unitId, $quantity);
+                        $movementService->decrement((int) $detail->location_id, (int) $detail->product_id, $unitId, $quantity, null, $countContext);
                     }
 
                     $newStock = (float) (DB::table('product_location')

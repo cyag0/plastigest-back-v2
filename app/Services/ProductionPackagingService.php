@@ -3,10 +3,12 @@
 namespace App\Services;
 
 use App\Enums\ProductionOrderStatus;
+use App\Enums\StockLedgerReason;
 use App\Models\Operations\ProductionOrder;
 use App\Models\Operations\ProductionOrderPackaging;
 use App\Models\Operations\ProductionOrderPackagingMaterial;
 use App\Models\Product;
+use App\Support\StockContext;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -143,7 +145,9 @@ class ProductionPackagingService
                         $locationId,
                         (int) $sourceProductId,
                         (int) $sourceUnitId,
-                        $sourceTotal
+                        $sourceTotal,
+                        null,
+                        StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel consumido al empacar')
                     );
                 }
 
@@ -158,7 +162,9 @@ class ProductionPackagingService
                         $locationId,
                         (int) $material['product_id'],
                         (int) $material['unit_id'],
-                        $materialQty
+                        $materialQty,
+                        null,
+                        StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Material de empaque')
                     );
 
                     ProductionOrderPackagingMaterial::create([
@@ -174,7 +180,9 @@ class ProductionPackagingService
                     $locationId,
                     (int) $product->id,
                     (int) $packaging->unit_id,
-                    $quantity
+                    $quantity,
+                    null,
+                    StockContext::for(StockLedgerReason::PACKAGING_OUTPUT, $order)
                 );
             }
 
@@ -265,7 +273,9 @@ class ProductionPackagingService
             $locationId,
             (int) $packaging->product_id,
             (int) $packaging->unit_id,
-            (float) $packaging->quantity
+            (float) $packaging->quantity,
+            null,
+            StockContext::for(StockLedgerReason::PACKAGING_OUTPUT, $order, 'Reversa del empaque')
         );
 
         if ($packaging->source_product_id && (float) $packaging->source_quantity > 0) {
@@ -273,7 +283,9 @@ class ProductionPackagingService
                 $locationId,
                 (int) $packaging->source_product_id,
                 (int) $packaging->source_unit_id,
-                (float) $packaging->source_quantity
+                (float) $packaging->source_quantity,
+                null,
+                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel devuelto al revertir el empaque')
             );
         }
 
@@ -282,7 +294,9 @@ class ProductionPackagingService
                 $locationId,
                 (int) $material->product_id,
                 (int) $material->unit_id,
-                (float) $material->quantity
+                (float) $material->quantity,
+                null,
+                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Material devuelto al revertir el empaque')
             );
         }
     }

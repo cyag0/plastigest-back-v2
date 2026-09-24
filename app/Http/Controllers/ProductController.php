@@ -9,7 +9,8 @@ use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\Movement;
 use App\Models\MovementDetail;
-use App\Models\ProductKardex;
+use App\Models\StockLedgerEntry;
+use App\Enums\StockLedgerReason;
 use App\Constants\Files;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -890,26 +891,23 @@ class ProductController extends CrudController
                 'notes' => $request->notes,
             ]);
 
-            // Registrar en kardex
-            ProductKardex::create([
+            // Dejar el asiento en el libro mayor de existencias. Este flujo
+            // escribe product_location directo en vez de pasar por
+            // MovementService, así que el renglón se registra aquí a mano.
+            StockLedgerEntry::create([
                 'company_id' => $product->company_id,
                 'location_id' => $locationId,
                 'product_id' => $id,
-                'movement_id' => $movement->id,
-                'movement_detail_id' => $movementDetail->id,
-                'operation_type' => 'entry',
-                'operation_reason' => 'stock_adjustment',
+                'direction' => StockLedgerEntry::DIRECTION_IN,
+                'reason' => StockLedgerReason::INITIAL,
                 'quantity' => $quantity,
-                'unit_cost' => $unitCost,
-                'total_cost' => $quantity * $unitCost,
                 'previous_stock' => $previousStock,
                 'new_stock' => $previousStock + $quantity,
-                'running_average_cost' => $unitCost,
-                'document_number' => $movement->document_number,
-                'batch_number' => $request->batch_number,
-                'expiry_date' => $request->expiry_date,
+                'unit_cost' => $unitCost,
+                'reference_type' => Movement::class,
+                'reference_id' => $movement->id,
                 'user_id' => Auth::id(),
-                'operation_date' => now()
+                'notes' => $request->reason ?: 'Existencia inicial',
             ]);
 
             DB::commit();

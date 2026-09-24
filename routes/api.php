@@ -14,6 +14,7 @@ use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductionOrderController;
 use App\Http\Controllers\FormulaController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\ProductMovementController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
@@ -169,6 +170,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Rutas adicionales para imágenes de productos
             Route::prefix('products/{product}')->group(function () {
+                // Trazabilidad: todo lo que ha pasado con las existencias del producto
+                Route::get('movements', [ProductMovementController::class, 'index']);
                 Route::get('images', [ProductController::class, 'getProductImages']);
                 Route::delete('images/{image}', [ProductController::class, 'deleteProductImage']);
                 Route::patch('images/order', [ProductController::class, 'updateImageOrder']);
@@ -302,7 +305,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
                 // Reports
                 Route::get('reports/inventory', [InventoryController::class, 'getInventoryReport']);
-                Route::get('reports/kardex', [InventoryController::class, 'getKardexReport']);
                 Route::get('reports/dashboard', [InventoryController::class, 'getDashboardStats']);
             });
             Route::apiResource('customers', CustomerController::class);

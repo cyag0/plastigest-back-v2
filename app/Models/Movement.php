@@ -63,10 +63,6 @@ class Movement extends Model
         return $this->hasMany(MovementDetail::class);
     }
 
-    public function kardexRecords(): HasMany
-    {
-        return $this->hasMany(ProductKardex::class);
-    }
 
     // Scopes
     public function scopeByCompany($query, $companyId)

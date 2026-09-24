@@ -7,6 +7,8 @@ use App\Enums\AdjustmentReasonCode;
 use App\Http\Resources\InventoryAdjustmentDetailResource;
 use App\Models\InventoryAdjustmentDetail;
 use App\Models\Product;
+use App\Enums\StockLedgerReason;
+use App\Support\StockContext;
 use App\Models\Unit;
 use App\Services\MovementService;
 use App\Support\CurrentCompany;
@@ -155,10 +157,16 @@ class InventoryAdjustmentController extends Controller
                     $direction = (string) $item['direction'];
                     $previousStock = $this->getCurrentStock((int) $product->id, $locationId);
 
+                    $adjustmentContext = StockContext::for(
+                        StockLedgerReason::ADJUSTMENT,
+                        null,
+                        'Ajuste: ' . (string) ($item['reason_code'] ?? 'other')
+                    );
+
                     if ($direction === 'in') {
-                        $this->movementService->increment($locationId, (int) $product->id, (int) $product->unit_id, $quantityInBase);
+                        $this->movementService->increment($locationId, (int) $product->id, (int) $product->unit_id, $quantityInBase, null, $adjustmentContext);
                     } else {
-                        $this->movementService->decrement($locationId, (int) $product->id, (int) $product->unit_id, $quantityInBase);
+                        $this->movementService->decrement($locationId, (int) $product->id, (int) $product->unit_id, $quantityInBase, null, $adjustmentContext);
                     }
 
                     $newStock = $this->getCurrentStock((int) $product->id, $locationId);
@@ -234,10 +242,12 @@ class InventoryAdjustmentController extends Controller
             DB::transaction(function () use ($detail, $validated, $companyId): void {
                 // Revertir impacto anterior
                 $oldProduct = Product::findOrFail((int) $detail->product_id);
+                $revertContext = StockContext::for(StockLedgerReason::ADJUSTMENT, $detail, 'Reversa del ajuste al editarlo');
+
                 if ($detail->direction === 'in') {
-                    $this->movementService->decrement((int) $detail->location_id, (int) $detail->product_id, (int) $oldProduct->unit_id, (float) $detail->quantity);
+                    $this->movementService->decrement((int) $detail->location_id, (int) $detail->product_id, (int) $oldProduct->unit_id, (float) $detail->quantity, null, $revertContext);
                 } else {
-                    $this->movementService->increment((int) $detail->location_id, (int) $detail->product_id, (int) $oldProduct->unit_id, (float) $detail->quantity);
+                    $this->movementService->increment((int) $detail->location_id, (int) $detail->product_id, (int) $oldProduct->unit_id, (float) $detail->quantity, null, $revertContext);
                 }
 
                 $newLocationId = (int) ($validated['location_id'] ?? $detail->location_id);
@@ -254,10 +264,12 @@ class InventoryAdjustmentController extends Controller
 
                 $previousStock = $this->getCurrentStock($newProductId, $newLocationId);
 
+                $applyContext = StockContext::for(StockLedgerReason::ADJUSTMENT, $detail, 'Ajuste editado');
+
                 if ($newDirection === 'in') {
-                    $this->movementService->increment($newLocationId, $newProductId, (int) $product->unit_id, $quantityInBase);
+                    $this->movementService->increment($newLocationId, $newProductId, (int) $product->unit_id, $quantityInBase, null, $applyContext);
                 } else {
-                    $this->movementService->decrement($newLocationId, $newProductId, (int) $product->unit_id, $quantityInBase);
+                    $this->movementService->decrement($newLocationId, $newProductId, (int) $product->unit_id, $quantityInBase, null, $applyContext);
                 }
 
                 $newStock = $this->getCurrentStock($newProductId, $newLocationId);
@@ -306,10 +318,12 @@ class InventoryAdjustmentController extends Controller
 
             DB::transaction(function () use ($detail): void {
                 $product = Product::findOrFail((int) $detail->product_id);
+                $deleteContext = StockContext::for(StockLedgerReason::ADJUSTMENT, $detail, 'Ajuste eliminado');
+
                 if ($detail->direction === 'in') {
-                    $this->movementService->decrement((int) $detail->location_id, (int) $detail->product_id, (int) $product->unit_id, (float) $detail->quantity);
+                    $this->movementService->decrement((int) $detail->location_id, (int) $detail->product_id, (int) $product->unit_id, (float) $detail->quantity, null, $deleteContext);
                 } else {
-                    $this->movementService->increment((int) $detail->location_id, (int) $detail->product_id, (int) $product->unit_id, (float) $detail->quantity);
+                    $this->movementService->increment((int) $detail->location_id, (int) $detail->product_id, (int) $product->unit_id, (float) $detail->quantity, null, $deleteContext);
                 }
                 $detail->delete();
             });

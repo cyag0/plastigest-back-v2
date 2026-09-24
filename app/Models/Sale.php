@@ -12,6 +12,8 @@ use App\Models\Admin\Company;
 use App\Models\Admin\Customer;
 use App\Models\Admin\Location;
 use App\Services\MovementService;
+use App\Enums\StockLedgerReason;
+use App\Support\StockContext;
 use Illuminate\Support\Facades\DB;
 use Exception;
 
@@ -279,7 +281,8 @@ class Sale extends Model
                     $detail->product_id,
                     $detail->unit_id, // Unidad en la que se vendió
                     $detail->quantity,
-                    $detail->package_id // Package si se vendió como paquete
+                    $detail->package_id, // Package si se vendió como paquete
+                    StockContext::for(StockLedgerReason::SALE, $this)
                 );
             } catch (Exception $e) {
                 // Personalizar el mensaje de error con el nombre del producto
@@ -312,7 +315,8 @@ class Sale extends Model
                 $detail->product_id,
                 $detail->unit_id, // Unidad en la que se vendió
                 $detail->quantity,
-                $detail->package_id // Package si se vendió como paquete
+                $detail->package_id, // Package si se vendió como paquete
+                StockContext::for(StockLedgerReason::SALE_RETURN, $this, 'Reversa de la venta')
             );
         }
     }

@@ -4,12 +4,14 @@ namespace App\Services;
 
 use App\Enums\AdjustmentReasonCode;
 use App\Enums\ProductionOrderStatus;
+use App\Enums\StockLedgerReason;
 use App\Models\InventoryAdjustmentDetail;
 use App\Models\Operations\Formula;
 use App\Models\Operations\ProductionOrder;
 use App\Models\Operations\ProductionOrderConsumption;
 use App\Models\Operations\ProductionOrderOutput;
 use App\Models\Product;
+use App\Support\StockContext;
 use App\Models\Unit;
 use App\Models\User;
 use App\Support\CurrentCompany;
@@ -117,7 +119,9 @@ class ProductionOrderService
                     $locationId,
                     (int) $consumption->product_id,
                     (int) $consumption->unit_id,
-                    (float) $consumption->quantity
+                    (float) $consumption->quantity,
+                    null,
+                    StockContext::for(StockLedgerReason::PRODUCTION_CONSUMPTION, $order)
                 );
             }
 
@@ -127,7 +131,9 @@ class ProductionOrderService
                     $locationId,
                     (int) $output->product_id,
                     (int) $output->unit_id,
-                    (float) $output->quantity
+                    (float) $output->quantity,
+                    null,
+                    StockContext::for(StockLedgerReason::PRODUCTION_OUTPUT, $order)
                 );
             }
 
@@ -173,7 +179,9 @@ class ProductionOrderService
                         $locationId,
                         (int) $output->product_id,
                         (int) $output->unit_id,
-                        (float) $output->quantity
+                        (float) $output->quantity,
+                        null,
+                        StockContext::for(StockLedgerReason::PRODUCTION_OUTPUT, $order, 'Cancelación de la orden')
                     );
                 }
 
@@ -183,7 +191,9 @@ class ProductionOrderService
                         $locationId,
                         (int) $consumption->product_id,
                         (int) $consumption->unit_id,
-                        (float) $consumption->quantity
+                        (float) $consumption->quantity,
+                        null,
+                        StockContext::for(StockLedgerReason::PRODUCTION_CONSUMPTION, $order, 'Cancelación de la orden')
                     );
                 }
 
@@ -194,7 +204,9 @@ class ProductionOrderService
                         (int) $waste->location_id,
                         (int) $waste->product_id,
                         (int) $waste->unit_id,
-                        (float) $waste->quantity
+                        (float) $waste->quantity,
+                        null,
+                        StockContext::for(StockLedgerReason::ADJUSTMENT, $order, 'Reversa de merma por cancelación')
                     );
 
                     $waste->update([
@@ -502,7 +514,14 @@ class ProductionOrderService
             ->value('current_stock') ?? 0;
 
         // Descontar stock
-        $this->movementService->decrement((int) $order->location_id, $productId, $unitId, $quantity);
+        $this->movementService->decrement(
+            (int) $order->location_id,
+            $productId,
+            $unitId,
+            $quantity,
+            null,
+            StockContext::for(StockLedgerReason::ADJUSTMENT, $order, 'Merma de producción')
+        );
 
         $newStock = DB::table('product_location')
             ->where('product_id', $productId)

@@ -5,7 +5,6 @@ namespace App\Services;
 use App\Models\Product;
 use App\Models\Movement;
 use App\Models\MovementDetail;
-use App\Models\ProductKardex;
 use App\Models\InventoryTransfer;
 use App\Models\InventoryTransferDetail;
 use App\Models\Admin\Location;
@@ -112,7 +111,6 @@ class InventoryService
         );
 
         // Create kardex record
-        $this->createKardexRecord($movement, $movementDetail, $quantity);
 
         return $movementDetail;
     }
@@ -298,15 +296,10 @@ class InventoryService
             return $stockRecord->current_stock ?? 0;
         }
 
-        // If no record exists, calculate from kardex
-        $lastKardex = ProductKardex::where('product_id', $productId)
-            ->where('location_id', $locationId)
-            ->where('company_id', $companyId)
-            ->orderBy('operation_date', 'desc')
-            ->orderBy('id', 'desc')
-            ->first();
-
-        return $lastKardex ? $lastKardex->new_stock : 0;
+        // Sin fila en product_location no hay existencia: esa tabla es la
+        // fuente de verdad del stock. Antes se caía a un kardex que nunca
+        // existió, así que este camino siempre devolvía 0 de todos modos.
+        return 0;
     }
 
     /**
@@ -328,39 +321,6 @@ class InventoryService
     }
 
     /**
-     * Create kardex record
-     */
-    private function createKardexRecord(Movement $movement, MovementDetail $detail, float $quantity): ProductKardex
-    {
-        return ProductKardex::create([
-            'company_id' => $movement->company_id,
-            'location_id' => $movement->location_id,
-            'product_id' => $detail->product_id,
-            'movement_id' => $movement->id,
-            'movement_detail_id' => $detail->id,
-            'operation_type' => $movement->movement_type,
-            'operation_reason' => $movement->movement_reason,
-            'quantity' => abs($quantity),
-            'unit_cost' => $detail->unit_cost,
-            'total_cost' => abs($quantity) * $detail->unit_cost,
-            'previous_stock' => $detail->previous_stock,
-            'new_stock' => $detail->new_stock,
-            'running_average_cost' => $this->calculateNewAverageCost(
-                $detail->product_id,
-                $movement->location_id,
-                $movement->company_id,
-                $detail->unit_cost,
-                $detail->new_stock
-            ),
-            'document_number' => $movement->document_number,
-            'batch_number' => $detail->batch_number,
-            'expiry_date' => $detail->expiry_date,
-            'user_id' => $movement->user_id,
-            'operation_date' => $movement->movement_date
-        ]);
-    }
-
-    /**
      * Calculate new average cost using weighted average method
      */
     private function calculateNewAverageCost(int $productId, int $locationId, int $companyId, float $unitCost, float $newStock): float
@@ -369,22 +329,24 @@ class InventoryService
             return 0;
         }
 
-        // Get the last average cost
-        $lastKardex = ProductKardex::where('product_id', $productId)
+        // El costo promedio vive en product_location, que es lo que se va
+        // actualizando movimiento a movimiento. Antes se leía de un kardex
+        // inexistente y el promedio nunca se ponderaba.
+        $current = DB::table('product_location')
+            ->where('product_id', $productId)
             ->where('location_id', $locationId)
-            ->where('company_id', $companyId)
-            ->orderBy('operation_date', 'desc')
-            ->orderBy('id', 'desc')
             ->first();
 
-        if (!$lastKardex) {
+        if (!$current) {
             return $unitCost;
         }
 
-        // If it's an entry, calculate weighted average
-        // If it's an exit or adjustment, maintain the previous average
-        $previousStock = $lastKardex->previous_stock;
-        $previousAverageCost = $lastKardex->running_average_cost;
+        $previousStock = (float) ($current->current_stock ?? 0);
+        $previousAverageCost = (float) ($current->average_cost ?? 0);
+
+        if ($previousAverageCost <= 0) {
+            return $unitCost;
+        }
 
         if ($newStock > $previousStock) { // Entry
             $previousValue = $previousStock * $previousAverageCost;
@@ -461,32 +423,4 @@ class InventoryService
         return $query->orderBy('p.name')->get()->toArray();
     }
 
-    /**
-     * Get kardex report for a product
-     */
-    public function getKardexReport(int $productId, int $locationId, int $companyId, array $filters = []): array
-    {
-        $query = ProductKardex::with(['product', 'movement', 'user'])
-            ->where('product_id', $productId)
-            ->where('location_id', $locationId)
-            ->where('company_id', $companyId);
-
-        // Apply date filters
-        if (!empty($filters['start_date'])) {
-            $query->where('operation_date', '>=', $filters['start_date']);
-        }
-
-        if (!empty($filters['end_date'])) {
-            $query->where('operation_date', '<=', $filters['end_date']);
-        }
-
-        if (!empty($filters['operation_type'])) {
-            $query->where('operation_type', $filters['operation_type']);
-        }
-
-        return $query->orderBy('operation_date')
-            ->orderBy('id')
-            ->get()
-            ->toArray();
-    }
 }

@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Services\InventoryService;
 use App\Models\Movement;
 use App\Models\InventoryTransfer;
-use App\Models\ProductKardex;
 use App\Models\Product;
 use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
@@ -385,45 +384,6 @@ class InventoryController extends Controller
         return response()->json([
             'success' => true,
             'data' => $report
-        ]);
-    }
-
-    /**
-     * Get kardex report for a product
-     */
-    public function getKardexReport(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('reports_view')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'product_id' => 'required|exists:products,id',
-            'location_id' => 'required|exists:locations,id',
-            'company_id' => 'required|exists:companies,id',
-            'start_date' => 'nullable|date',
-            'end_date' => 'nullable|date|after_or_equal:start_date',
-            'operation_type' => 'nullable|in:entry,exit,adjustment'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $kardex = $this->inventoryService->getKardexReport(
-            $request->product_id,
-            $request->location_id,
-            $request->company_id,
-            $request->only(['start_date', 'end_date', 'operation_type'])
-        );
-
-        return response()->json([
-            'success' => true,
-            'data' => $kardex
         ]);
     }
 

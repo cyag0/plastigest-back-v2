@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\InventoryTransfer;
 use App\Enums\TransferStatus;
+use App\Enums\StockLedgerReason;
+use App\Support\StockContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Exception;
@@ -184,7 +186,12 @@ class TransferService
                     $detail->product_id,
                     $detail->unit_id,
                     (float) $detail->quantity_shipped,
-                    $detail->package_id
+                    $detail->package_id,
+                    new StockContext(
+                        reason: StockLedgerReason::TRANSFER_OUT,
+                        reference: $transfer,
+                        counterpartLocationId: $transfer->to_location_id ? (int) $transfer->to_location_id : null,
+                    )
                 );
             }
 
@@ -279,7 +286,12 @@ class TransferService
                     $detail->product_id,
                     $detail->unit_id,
                     $quantityReceived,
-                    $detail->package_id
+                    $detail->package_id,
+                    new StockContext(
+                        reason: StockLedgerReason::TRANSFER_IN,
+                        reference: $transfer,
+                        counterpartLocationId: $transfer->from_location_id ? (int) $transfer->from_location_id : null,
+                    )
                 );
             }
 

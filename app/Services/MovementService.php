@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\Product;
 use App\Models\ProductPackage;
+use App\Models\StockLedgerEntry;
+use App\Support\StockContext;
 use App\Models\Unit;
 use Illuminate\Support\Facades\DB;
 use Exception;
@@ -24,10 +26,11 @@ class MovementService
      * @param int $unitId ID de la unidad en la que viene la cantidad
      * @param float $quantity Cantidad a incrementar (en la unidad especificada)
      * @param int|null $packageId ID del paquete (opcional)
+     * @param StockContext|null $context Por qué se mueve el stock (para la trazabilidad)
      * @return void
      * @throws Exception
      */
-    public function increment(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null): void
+    public function increment(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null, ?StockContext $context = null): void
     {
         DB::beginTransaction();
         try {
@@ -40,8 +43,23 @@ class MovementService
             // Convertir la cantidad a la unidad base del producto
             $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
 
+            // Se lee bloqueando la fila: el asiento del libro mayor tiene que
+            // registrar el stock exacto de antes y después de ESTE cambio, y sin
+            // el bloqueo dos movimientos simultáneos se pisarían los saldos.
+            $previousStock = $this->lockCurrentStock($locationId, $productId);
+
             // Incrementar el stock
             $this->incrementStock($locationId, $productId, $quantityInProductUnit);
+
+            $this->recordLedgerEntry(
+                $locationId,
+                $productId,
+                StockLedgerEntry::DIRECTION_IN,
+                $quantityInProductUnit,
+                $previousStock,
+                $previousStock + $quantityInProductUnit,
+                $context,
+            );
 
             DB::commit();
         } catch (Exception $e) {
@@ -58,10 +76,11 @@ class MovementService
      * @param int $unitId ID de la unidad en la que viene la cantidad
      * @param float $quantity Cantidad a decrementar (en la unidad especificada)
      * @param int|null $packageId ID del paquete (opcional)
+     * @param StockContext|null $context Por qué se mueve el stock (para la trazabilidad)
      * @return void
      * @throws Exception
      */
-    public function decrement(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null): void
+    public function decrement(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null, ?StockContext $context = null): void
     {
         DB::beginTransaction();
         try {
@@ -73,21 +92,94 @@ class MovementService
 
             // Convertir la cantidad a la unidad base del producto
             $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
-            Log::info("Cantidad en unidad de producto para decrementar: {$quantityInProductUnit}");
+
+            // Mismo motivo que en increment(): se bloquea la fila antes de leer
+            // el saldo para que el asiento no mienta bajo concurrencia.
+            $previousStock = $this->lockCurrentStock($locationId, $productId);
 
             // Validar que hay suficiente stock
             $this->validateStock($locationId, $productId, $quantityInProductUnit);
-            Log::info("Stock validado para el producto ID {$productId} en la ubicación ID {$locationId}");
 
             // Decrementar el stock
             $this->decrementStock($locationId, $productId, $quantityInProductUnit);
-            Log::info("Stock decremented for product ID {$productId} in location ID {$locationId}");
+
+            $this->recordLedgerEntry(
+                $locationId,
+                $productId,
+                StockLedgerEntry::DIRECTION_OUT,
+                $quantityInProductUnit,
+                $previousStock,
+                $previousStock - $quantityInProductUnit,
+                $context,
+            );
 
             DB::commit();
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
         }
+    }
+
+    /**
+     * Stock actual de un producto en una sucursal, bloqueando la fila hasta el
+     * fin de la transacción. Devuelve 0 si el producto todavía no tiene fila.
+     */
+    protected function lockCurrentStock(int $locationId, int $productId): float
+    {
+        $stock = DB::table('product_location')
+            ->where('location_id', $locationId)
+            ->where('product_id', $productId)
+            ->lockForUpdate()
+            ->value('current_stock');
+
+        return (float) ($stock ?? 0);
+    }
+
+    /**
+     * Deja constancia del cambio en el libro mayor de existencias.
+     *
+     * Se hace aquí, y no en cada flujo, porque increment() y decrement() son el
+     * único paso obligado de todo cambio de stock: registrarlo en los llamadores
+     * era justamente lo que dejaba sin rastro a ventas, compras y empaque.
+     */
+    protected function recordLedgerEntry(
+        int $locationId,
+        int $productId,
+        string $direction,
+        float $quantity,
+        float $previousStock,
+        float $newStock,
+        ?StockContext $context,
+    ): void {
+        $context ??= new StockContext();
+
+        $companyId = Product::whereKey($productId)->value('company_id');
+
+        if (!$companyId) {
+            // Sin empresa no se puede clasificar el asiento. No se aborta el
+            // movimiento por esto: el stock ya es correcto y perder el renglón
+            // es preferible a tumbar una venta.
+            Log::warning("No se registró el movimiento en el libro mayor: el producto ID {$productId} no tiene empresa.");
+
+            return;
+        }
+
+        StockLedgerEntry::create([
+            'company_id' => $companyId,
+            'location_id' => $locationId,
+            'product_id' => $productId,
+            'direction' => $direction,
+            'reason' => $context->reason,
+            'quantity' => round($quantity, 4),
+            'previous_stock' => round($previousStock, 4),
+            'new_stock' => round($newStock, 4),
+            'unit_cost' => $context->unitCost,
+            'reference_type' => $context->reference ? $context->reference::class : null,
+            'reference_id' => $context->reference?->getKey(),
+            'counterpart_location_id' => $context->counterpartLocationId,
+            'user_id' => $context->resolvedUserId(),
+            'notes' => $context->notes,
+        ]);
     }
 
     /**

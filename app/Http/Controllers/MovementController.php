@@ -10,6 +10,8 @@ use App\Models\Transfer;
 use App\Models\User;
 use App\Utils\AppUploadUtil;
 use App\Services\MovementService;
+use App\Enums\StockLedgerReason;
+use App\Support\StockContext;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
@@ -544,7 +546,13 @@ class MovementController extends CrudController
                         (int) $movement->location_origin_id,
                         (int) $detail->product_id,
                         (int) ($detail->unit_id ?? $detail->product?->unit_id),
-                        $toShip
+                        $toShip,
+                        null,
+                        new StockContext(
+                            reason: StockLedgerReason::TRANSFER_OUT,
+                            reference: $movement,
+                            counterpartLocationId: $movement->location_destination_id ? (int) $movement->location_destination_id : null,
+                        )
                     );
                 }
 
@@ -667,7 +675,13 @@ class MovementController extends CrudController
                         (int) $movement->location_destination_id,
                         (int) $detail->product_id,
                         (int) ($detail->unit_id ?? $detail->product?->unit_id),
-                        $received
+                        $received,
+                        null,
+                        new StockContext(
+                            reason: StockLedgerReason::TRANSFER_IN,
+                            reference: $movement,
+                            counterpartLocationId: $movement->location_origin_id ? (int) $movement->location_origin_id : null,
+                        )
                     );
                 }
 
