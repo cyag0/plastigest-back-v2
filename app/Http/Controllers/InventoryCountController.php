@@ -17,6 +17,7 @@ use App\Notifications\NotificationEngine;
 use App\Services\TaskService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
@@ -71,7 +72,11 @@ class InventoryCountController extends CrudController
         $location = CurrentLocation::get();
         $locationId = $location ? $location->id : (isset($params['location_id']) ? $params['location_id'] : null);
 
-        if (isset($params['location_id'])) {
+        // Un usuario básico solo ve los inventarios de su sucursal; antes, si la
+        // app no mandaba location_id, se listaban los de todas.
+        if (!CurrentWorker::canAccessAllLocations()) {
+            $query->where('location_id', CurrentLocation::id());
+        } elseif (isset($params['location_id'])) {
             $query->where('location_id', $locationId);
         }
 

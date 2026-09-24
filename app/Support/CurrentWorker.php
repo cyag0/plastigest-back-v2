@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Admin\Role;
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
@@ -69,6 +70,51 @@ class CurrentWorker
         return $user->roles()
             ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
             ->exists();
+    }
+
+    /**
+     * El usuario puede ver y operar cualquier sucursal de la empresa.
+     *
+     * Mismo criterio que el selector de sucursales (LocationController): quien
+     * tiene locations_list es administrador. Se busca en todos sus roles —los
+     * directos y los de cualquier sucursal—, no solo en el de la sucursal
+     * actual, porque esto se usa justamente para decidir si puede estar en ella.
+     */
+    public static function canAccessAllLocations(?Authenticatable $user = null): bool
+    {
+        $user ??= Auth::user();
+        if (!$user) {
+            return false;
+        }
+
+        $roleIds = DB::table('user_location_roles')
+            ->where('user_id', $user->getAuthIdentifier())
+            ->whereNotNull('role_id')
+            ->pluck('role_id')
+            ->merge($user->roles()->pluck('roles.id'))
+            ->unique();
+
+        return $roleIds->isNotEmpty() && Role::whereIn('id', $roleIds)
+            ->whereHas('permissions', fn($q) => $q->where('name', 'locations_list'))
+            ->exists();
+    }
+
+    /**
+     * El usuario está asignado a la sucursal, o es administrador.
+     */
+    public static function canAccessLocation(int $locationId, ?Authenticatable $user = null): bool
+    {
+        $user ??= Auth::user();
+        if (!$user) {
+            return false;
+        }
+
+        $assigned = DB::table('user_location_roles')
+            ->where('user_id', $user->getAuthIdentifier())
+            ->where('location_id', $locationId)
+            ->exists();
+
+        return $assigned || self::canAccessAllLocations($user);
     }
 
     /**

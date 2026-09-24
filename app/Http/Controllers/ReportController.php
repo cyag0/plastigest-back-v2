@@ -32,7 +32,7 @@ class ReportController extends Controller
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
 
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $period = $request->get('period', 'month');
         $dateRange = $this->getDateRange($period);
 
@@ -404,7 +404,7 @@ class ReportController extends Controller
         $locationId = CurrentLocation::id();
 
         // Determinar el scope (location o general)
-        $scope = $request->get('scope', 'location'); // 'location' o 'general'
+        $scope = $this->resolveScope($request); // 'location' o 'general'
 
         // Determinar el período
         $period = $request->get('period', 'month'); // 'today', 'week', 'month'
@@ -509,7 +509,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $limit = $request->get('limit', 10);
 
         $movements = Movement::with(['location', 'user', 'details'])
@@ -561,7 +561,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $period = $request->get('period', 'month');
 
         $dateRange = $this->getDateRange($period);
@@ -599,7 +599,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $period = $request->get('period', 'month');
         $limit = $request->get('limit', 5);
 
@@ -641,7 +641,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $period = $request->get('period', 'month'); // 'today', 'week', 'month'
 
         $groupBy = $this->getSalesTrendGrouping($period);
@@ -706,7 +706,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $limit = $request->get('limit', 5);
 
         $lowStock = DB::table('product_location')
@@ -746,7 +746,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
         $period = $request->get('period', 'month');
 
         $dateRange = $this->getDateRange($period);
@@ -898,7 +898,7 @@ class ReportController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = CurrentLocation::id();
-        $scope = $request->get('scope', 'location');
+        $scope = $this->resolveScope($request);
 
         // Total de productos activos. El estatus "activo" vive en el pivote
         // product_location (columna `active`), no en la tabla products.
@@ -1234,5 +1234,21 @@ class ReportController extends Controller
                 'avg_processing_time_hours' => round($avgProcessingTime ?? 0, 1),
             ]
         ]);
+    }
+
+    /**
+     * 'general' agrega todas las sucursales de la empresa; solo los
+     * administradores pueden pedirlo. A un usuario básico se le limita a su
+     * sucursal aunque la app mande scope=general.
+     */
+    private function resolveScope(Request $request): string
+    {
+        $scope = $request->get('scope', 'location');
+
+        if ($scope === 'general' && !CurrentWorker::canAccessAllLocations()) {
+            return 'location';
+        }
+
+        return $scope;
     }
 }

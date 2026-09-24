@@ -47,7 +47,10 @@ class InventoryAdjustmentController extends Controller
                 'unit',
             ])->where('company_id', $companyId);
 
-            if ($request->filled('location_id')) {
+            // Un usuario básico solo ve los ajustes de su sucursal.
+            if (!CurrentWorker::canAccessAllLocations()) {
+                $query->where('location_id', CurrentLocation::id());
+            } elseif ($request->filled('location_id')) {
                 $query->where('location_id', (int) $request->input('location_id'));
             }
 
