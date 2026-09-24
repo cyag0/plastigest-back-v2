@@ -153,7 +153,9 @@ class InventoryAdjustmentController extends Controller
 
                     $this->assertCompatibleUnit($product, $unit->id, $companyId);
 
-                    $quantityInBase = $this->toBaseQuantity((float) $item['quantity'], $unit);
+                    // Todo se guarda en la unidad del producto: así lo leen
+                    // update() y destroy() al revertir el ajuste.
+                    $quantityInProductUnit = $this->movementService->quantityInProductUnit((int) $product->id, (int) $unit->id, (float) $item['quantity']);
                     $direction = (string) $item['direction'];
                     $previousStock = $this->getCurrentStock((int) $product->id, $locationId);
 
@@ -164,9 +166,9 @@ class InventoryAdjustmentController extends Controller
                     );
 
                     if ($direction === 'in') {
-                        $this->movementService->increment($locationId, (int) $product->id, (int) $product->unit_id, $quantityInBase, null, $adjustmentContext);
+                        $this->movementService->increment($locationId, (int) $product->id, (int) $product->unit_id, $quantityInProductUnit, null, $adjustmentContext);
                     } else {
-                        $this->movementService->decrement($locationId, (int) $product->id, (int) $product->unit_id, $quantityInBase, null, $adjustmentContext);
+                        $this->movementService->decrement($locationId, (int) $product->id, (int) $product->unit_id, $quantityInProductUnit, null, $adjustmentContext);
                     }
 
                     $newStock = $this->getCurrentStock((int) $product->id, $locationId);
@@ -177,8 +179,8 @@ class InventoryAdjustmentController extends Controller
                         'created_by' => $createdBy,
                         'product_id' => (int) $product->id,
                         'direction' => $direction,
-                        'quantity' => $quantityInBase,
-                        'unit_id' => (int) $unit->id,
+                        'quantity' => $quantityInProductUnit,
+                        'unit_id' => (int) $product->unit_id,
                         'previous_stock' => $previousStock,
                         'new_stock' => $newStock,
                         'reason_code' => AdjustmentReasonCode::from((string) $item['reason_code']),
@@ -260,16 +262,16 @@ class InventoryAdjustmentController extends Controller
                 $this->assertCompatibleUnit($product, $unit->id, $companyId);
 
                 $inputQuantity = isset($validated['quantity']) ? (float) $validated['quantity'] : (float) $detail->quantity;
-                $quantityInBase = $this->toBaseQuantity($inputQuantity, $unit);
+                $quantityInProductUnit = $this->movementService->quantityInProductUnit($newProductId, (int) $unit->id, $inputQuantity);
 
                 $previousStock = $this->getCurrentStock($newProductId, $newLocationId);
 
                 $applyContext = StockContext::for(StockLedgerReason::ADJUSTMENT, $detail, 'Ajuste editado');
 
                 if ($newDirection === 'in') {
-                    $this->movementService->increment($newLocationId, $newProductId, (int) $product->unit_id, $quantityInBase, null, $applyContext);
+                    $this->movementService->increment($newLocationId, $newProductId, (int) $product->unit_id, $quantityInProductUnit, null, $applyContext);
                 } else {
-                    $this->movementService->decrement($newLocationId, $newProductId, (int) $product->unit_id, $quantityInBase, null, $applyContext);
+                    $this->movementService->decrement($newLocationId, $newProductId, (int) $product->unit_id, $quantityInProductUnit, null, $applyContext);
                 }
 
                 $newStock = $this->getCurrentStock($newProductId, $newLocationId);
@@ -278,8 +280,8 @@ class InventoryAdjustmentController extends Controller
                     'location_id' => $newLocationId,
                     'product_id' => $newProductId,
                     'direction' => $newDirection,
-                    'quantity' => $quantityInBase,
-                    'unit_id' => $newUnitId,
+                    'quantity' => $quantityInProductUnit,
+                    'unit_id' => (int) $product->unit_id,
                     'previous_stock' => $previousStock,
                     'new_stock' => $newStock,
                     'reason_code' => isset($validated['reason_code'])
@@ -360,12 +362,6 @@ class InventoryAdjustmentController extends Controller
         if (!$isAllowed) {
             throw new \RuntimeException('La unidad seleccionada no es compatible con el producto.');
         }
-    }
-
-    private function toBaseQuantity(float $inputQuantity, Unit $unit): float
-    {
-        $factor = (float) ($unit->factor_to_base ?? 1);
-        return $inputQuantity * $factor;
     }
 
     private function getCurrentStock(int $productId, int $locationId): float
