@@ -424,7 +424,7 @@ class InventoryTransferController extends Controller
                 ], 422);
             }
 
-            $transfer->cancel('Cancelada por el usuario');
+            $transfer = $this->transferService->cancel($transfer, 'Cancelada por el usuario');
 
             try {
                 $this->taskService->cancelRelatedTasks(

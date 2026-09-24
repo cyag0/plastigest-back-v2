@@ -114,6 +114,11 @@ class TransferService
                 $endedStep = 3;
             }
 
+            // Si la mercancía ya salió del origen, vuelve a su stock.
+            if ($currentStatus === TransferStatus::IN_TRANSIT->value) {
+                $this->returnShippedStock($transfer, 'Traspaso rechazado en tránsito');
+            }
+
             $transfer->status = TransferStatus::REJECTED;
             $content['current_step'] = 4;
             $content['flow_state'] = 'failed';
@@ -148,6 +153,51 @@ class TransferService
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
+        }
+    }
+
+    /**
+     * Cancelar transferencia. Si ya estaba en tránsito, lo enviado vuelve al
+     * stock del origen; antes se cancelaba sin devolverlo y esas existencias
+     * desaparecían.
+     */
+    public function cancel(InventoryTransfer $transfer, string $reason): InventoryTransfer
+    {
+        return DB::transaction(function () use ($transfer, $reason) {
+            if ($transfer->status === TransferStatus::IN_TRANSIT) {
+                $this->returnShippedStock($transfer, 'Traspaso cancelado en tránsito');
+            }
+
+            $transfer->cancel($reason);
+
+            return $transfer;
+        });
+    }
+
+    /**
+     * Devuelve al origen lo que se descontó al enviar.
+     */
+    protected function returnShippedStock(InventoryTransfer $transfer, string $notes): void
+    {
+        foreach ($transfer->details()->get() as $detail) {
+            $quantity = (float) ($detail->quantity_shipped ?? 0);
+            if ($quantity <= 0) {
+                continue;
+            }
+
+            $this->movementService->increment(
+                (int) $transfer->from_location_id,
+                (int) $detail->product_id,
+                (int) $detail->unit_id,
+                $quantity,
+                $detail->package_id,
+                new StockContext(
+                    reason: StockLedgerReason::TRANSFER_IN,
+                    reference: $transfer,
+                    notes: $notes,
+                    counterpartLocationId: $transfer->to_location_id ? (int) $transfer->to_location_id : null,
+                )
+            );
         }
     }
 
