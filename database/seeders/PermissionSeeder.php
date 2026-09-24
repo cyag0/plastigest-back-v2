@@ -36,6 +36,7 @@ class PermissionSeeder extends Seeder
             [Resources::SUPPLIERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::UNITS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::CATEGORIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::INVENTORY_TYPES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::PRODUCTS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
 
             // Operaciones
@@ -55,7 +56,8 @@ class PermissionSeeder extends Seeder
             [Resources::CASH_MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
 
             // Reportes y Dashboard
-            [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT]],
+            // El CRUD lo usa SalesReportController (reportes de venta / corte).
+            [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT, Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::DASHBOARD, [Actions::VIEW]],
             [Resources::SETTINGS, [Actions::READ, Actions::UPDATE, Actions::MANAGE]],
         ];
