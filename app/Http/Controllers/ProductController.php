@@ -252,6 +252,33 @@ class ProductController extends CrudController
     }
 
     /**
+     * Crear el producto y todo lo que cuelga de él de forma atómica.
+     *
+     * CrudController::store crea el producto y después corre afterStore
+     * (imágenes, ingredientes, material de empaque, activación en sucursales).
+     * Si algo de eso fallaba, el producto ya estaba guardado pero la app
+     * recibía un error; al reintentar, el código ya existía y el alta parecía
+     * imposible aunque los datos estuvieran completos. store() atrapa las
+     * excepciones y responde, así que se decide por el código de respuesta.
+     */
+    public function store(Request $request)
+    {
+        DB::beginTransaction();
+
+        try {
+            $response = parent::store($request);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            throw $e;
+        }
+
+        $failed = $response instanceof JsonResponse && $response->getStatusCode() >= 400;
+        $failed ? DB::rollBack() : DB::commit();
+
+        return $response;
+    }
+
+    /**
      * Validación para store
      */
     protected function validateStoreData(Request $request): array
@@ -415,6 +442,11 @@ class ProductController extends CrudController
         if (!$companyId && current_company_id()) {
             $companyId = current_company_id();
         }
+
+        // Se calculaba pero nunca se asignaba: sin company_id en el cuerpo el
+        // INSERT fallaba, y si llegaba como arreglo (company_id[]) se intentaba
+        // guardar el arreglo tal cual.
+        $validatedData['company_id'] = $companyId;
 
         // Remover campos que no van a la base de datos (se procesan después de crear)
         unset($validatedData['activate_in_all_locations']);
