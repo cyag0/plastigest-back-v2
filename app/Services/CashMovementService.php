@@ -70,6 +70,51 @@ class CashMovementService
     }
 
     /**
+     * Revierte en caja lo cobrado de una venta que se cancela.
+     *
+     * Se registra un egreso por cada método de pago con el que entró dinero,
+     * fechado el día de la cancelación: así el corte de ese día refleja la
+     * devolución y los cortes ya cerrados no cambian. Antes la venta se
+     * cancelaba y su ingreso seguía contando en caja.
+     */
+    public static function reverseSale(Sale $sale): void
+    {
+        $collected = CashMovement::query()
+            ->where('source_type', 'sale')
+            ->where('source_id', $sale->id)
+            ->where('type', 'income')
+            ->selectRaw('payment_method, SUM(amount) AS total')
+            ->groupBy('payment_method')
+            ->get();
+
+        $concept = 'Cancelación de venta #' . $sale->id;
+        if (!empty($sale->sale_number)) {
+            $concept .= " ({$sale->sale_number})";
+        }
+
+        foreach ($collected as $row) {
+            if ((float) $row->total <= 0) {
+                continue;
+            }
+
+            CashMovement::create([
+                'company_id'     => $sale->company_id,
+                'location_id'    => $sale->location_id,
+                'user_id'        => Auth::id() ?? $sale->user_id,
+                'type'           => 'expense',
+                'amount'         => (float) $row->total,
+                'concept'        => $concept,
+                'payment_method' => $row->payment_method,
+                'source_type'    => 'sale_cancellation',
+                'source_id'      => $sale->id,
+                'source_url'     => '/(tabs)/home/sales/' . $sale->id,
+                'notes'          => null,
+                'movement_date'  => now()->toDateString(),
+            ]);
+        }
+    }
+
+    /**
      * Crea un movimiento de caja de tipo egreso a partir de una compra recibida.
      *
      * @param Purchase $purchase Compra recibida

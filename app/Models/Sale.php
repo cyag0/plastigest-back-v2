@@ -12,6 +12,7 @@ use App\Models\Admin\Company;
 use App\Models\Admin\Customer;
 use App\Models\Admin\Location;
 use App\Services\MovementService;
+use App\Services\CashMovementService;
 use App\Enums\StockLedgerReason;
 use App\Support\StockContext;
 use Illuminate\Support\Facades\DB;
@@ -245,6 +246,9 @@ class Sale extends Model
             if ($this->status === SaleStatus::CLOSED) {
                 $this->revertStock();
             }
+            // Devolver en caja lo cobrado. Va dentro de la transacción: si no
+            // se puede registrar, la venta no se cancela a medias.
+            CashMovementService::reverseSale($this);
             $this->status = $newStatus;
             $this->save();
             DB::commit();
