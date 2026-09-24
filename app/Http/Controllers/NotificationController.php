@@ -203,6 +203,15 @@ class NotificationController extends CrudController
             $user = Auth::user();
             $company = CurrentCompany::get();
 
+            // Antes de elegir empresa (pantalla de selección) no hay contexto:
+            // el contador es 0, no un 500.
+            if (!$company) {
+                return response()->json([
+                    'success' => true,
+                    'data' => ['count' => 0],
+                ]);
+            }
+
             $count = Notification::where('user_id', $user->id)
                 ->where('company_id', $company->id)
                 ->inApp()
