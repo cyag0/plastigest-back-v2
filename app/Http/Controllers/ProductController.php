@@ -768,14 +768,17 @@ class ProductController extends CrudController
                 if ($isUpdate && $pivotExists) {
                     // En actualización, el stock es intocable: solo refrescar
                     // active/minimum_stock/maximum_stock si fueron enviados.
+                    // Un campo vacío llega como null (ConvertEmptyStringsToNull)
+                    // y el default de input() solo aplica si falta la llave: por
+                    // eso `?? 0`, las columnas no aceptan NULL.
                     $updateData = [];
                     $updateData['active'] = $isActive;
 
                     if ($request->has('minimum_stock')) {
-                        $updateData['minimum_stock'] = $request->input('minimum_stock', 0);
+                        $updateData['minimum_stock'] = $request->input('minimum_stock') ?? 0;
                     }
                     if ($request->has('maximum_stock')) {
-                        $updateData['maximum_stock'] = $request->input('maximum_stock', 0);
+                        $updateData['maximum_stock'] = $request->input('maximum_stock') ?? 0;
                     }
                     $updateData['updated_at'] = now();
 
@@ -788,8 +791,8 @@ class ProductController extends CrudController
                     $product->locations()->syncWithoutDetaching([
                         $location->id => [
                             'active' => $isActive,
-                            'minimum_stock' => $request->input('minimum_stock', 0),
-                            'maximum_stock' => $request->input('maximum_stock', 0),
+                            'minimum_stock' => $request->input('minimum_stock') ?? 0,
+                            'maximum_stock' => $request->input('maximum_stock') ?? 0,
                             'current_stock' => 0,
                             'updated_at' => now(),
                             'created_at' => now(),
