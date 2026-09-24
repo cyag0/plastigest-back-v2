@@ -171,31 +171,32 @@ class ProductionOrderController extends CrudController
             $data['created_by'] = Auth::id();
             $data['updated_by'] = Auth::id();
 
-            // Si se pide afectar stock, creamos y completamos en una sola
-            // transacción: si el stock es insuficiente, se revierte TODO y no
-            // queda una orden en borrador huérfana.
-            if (request()->boolean('affect_stock')) {
-                try {
-                    $order = DB::transaction(function () use ($data) {
-                        $draft = $this->service->createDraft($data);
-                        return $this->service->complete($draft);
-                    });
-                } catch (\Illuminate\Validation\ValidationException $e) {
-                    throw $e;
-                } catch (\Throwable $e) {
-                    // Exponemos el detalle (p. ej. "Stock insuficiente para …")
-                    // como error de validación 422, no como 500.
-                    throw \Illuminate\Validation\ValidationException::withMessages([
-                        'stock' => [$e->getMessage()],
-                    ]);
-                }
-            } else {
-                $order = $this->service->createDraft($data);
-            }
+            $save = fn() => $this->service->createDraft($data);
         } else {
             $id = request()->route('id') ?? request()->route('production_order');
             $order = ProductionOrder::findOrFail((int) $id);
-            $order = $this->service->updateDraft($order, $data);
+            $save = fn() => $this->service->updateDraft($order, $data);
+        }
+
+        // Si se pide afectar stock, guardamos y completamos en una sola
+        // transacción: si el stock es insuficiente, se revierte TODO y no
+        // queda una orden en borrador huérfana. Aplica también al editar un
+        // borrador; antes la edición ignoraba affect_stock y la orden se
+        // quedaba en borrador aunque el botón dijera "Registrar Producción".
+        if (!request()->boolean('affect_stock')) {
+            return $save()->load($this->getShowRelations());
+        }
+
+        try {
+            $order = DB::transaction(fn() => $this->service->complete($save()));
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // Exponemos el detalle (p. ej. "Stock insuficiente para …")
+            // como error de validación 422, no como 500.
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'stock' => [$e->getMessage()],
+            ]);
         }
 
         return $order->load($this->getShowRelations());

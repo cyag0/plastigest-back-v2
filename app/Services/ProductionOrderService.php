@@ -413,7 +413,7 @@ class ProductionOrderService
 
         $units = Unit::query()
             ->orderBy('name')
-            ->get(['id', 'name', 'unit_type', 'factor_to_base', 'base_unit_id']);
+            ->get(['id', 'name', 'unit_type', 'factor_to_base']);
 
         $responsibles = User::query()
             ->where('is_active', true)

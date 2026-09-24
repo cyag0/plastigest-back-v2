@@ -78,7 +78,12 @@ class ProductionOrderResource extends Resources
             })->values();
         }
 
-        if ($resource->relationLoaded('wastes')) {
+        if ($status === ProductionOrderStatus::DRAFT) {
+            // Un borrador todavía no generó ajustes de inventario: sus mermas
+            // viven sólo en la columna JSON. Sin esto la relación sale vacía y
+            // al editar el borrador se perdían.
+            $item['wastes'] = array_values($resource->getAttribute('wastes') ?? []);
+        } elseif ($resource->relationLoaded('wastes')) {
             // getRelation() bypasses attribute casts — needed because 'wastes' is also
             // a JSON column on the model, and getAttribute() would return the array cast
             // instead of the Eloquent Collection.
