@@ -35,6 +35,23 @@ class TransferService
             }
             $content = $this->normalizeWorkflowProgress($content);
 
+            // Las cantidades que ajusta quien aprueba se aplican al detalle.
+            // Antes solo quedaban en content.step_1.items y el paso de envío
+            // seguía proponiendo la cantidad original solicitada.
+            foreach ($data['items'] ?? [] as $item) {
+                if (!isset($item['detail_id'], $item['quantity_requested'])) {
+                    continue;
+                }
+
+                $detail = $transfer->details()->find((int) $item['detail_id']);
+                if (!$detail) {
+                    throw new Exception("Detalle de transferencia no encontrado");
+                }
+
+                $detail->quantity_requested = (float) $item['quantity_requested'];
+                $detail->save();
+            }
+
             $transfer->status = TransferStatus::APPROVED;
             $content['current_step'] = 2;
             $content['flow_state'] = 'in_progress';
@@ -179,6 +196,12 @@ class TransferService
 
                 $totalCost += (float) $detail->quantity_shipped * (float) ($detail->unit_cost ?? 0);
 
+                // Un renglón aprobado en 0 no mueve stock (y un decrement de 0
+                // no afecta filas, lo que se leería como fallo).
+                if ((float) $detail->quantity_shipped <= 0) {
+                    continue;
+                }
+
                 // Usar MovementService para decrementar stock
                 // MovementService maneja la conversión de paquetes automáticamente
                 $this->movementService->decrement(
@@ -278,6 +301,10 @@ class TransferService
                 }
 
                 $detail->save();
+
+                if ($quantityReceived <= 0) {
+                    continue;
+                }
 
                 // Usar MovementService para incrementar stock en destino
                 // MovementService maneja la conversión de paquetes automáticamente

@@ -460,6 +460,13 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        // Quien aprueba puede ajustar la cantidad de cada renglón.
+        $request->validate([
+            'items' => 'nullable|array',
+            'items.*.detail_id' => 'required_with:items|integer',
+            'items.*.quantity_requested' => 'required_with:items|numeric|min:0',
+        ]);
+
         try {
             $transfer = InventoryTransfer::findOrFail($id);
 
