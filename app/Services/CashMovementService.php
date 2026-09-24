@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\CashMovement;
+use App\Models\Expense;
 use App\Models\Purchase;
 use App\Models\PurchaseV2;
 use App\Models\Sale;
@@ -171,7 +172,9 @@ class CashMovementService
     {
         $total = (float) ($purchase->total ?? 0);
 
-        if ($total <= 0) {
+        // Si la compra no se pagó con dinero de la caja (la pagó el dueño o se
+        // hizo desde el banco) no debe salir del corte.
+        if ($total <= 0 || $purchase->paid_from_cash === false) {
             return;
         }
 
@@ -204,5 +207,49 @@ class CashMovementService
                 'error'       => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Deja la caja alineada con un gasto: borra su egreso anterior y, si el
+     * gasto se pagó con dinero de la caja, registra uno nuevo con el monto,
+     * método y fecha actuales. Se llama al crear y al editar.
+     *
+     * Antes los gastos no tocaban la caja y el corte no los reflejaba.
+     */
+    public static function syncExpense(Expense $expense): void
+    {
+        self::removeExpense($expense);
+
+        if (!$expense->paid_from_cash || (float) $expense->amount <= 0) {
+            return;
+        }
+
+        CashMovement::create([
+            'company_id'     => $expense->company_id,
+            'location_id'    => $expense->location_id,
+            'user_id'        => Auth::id() ?? $expense->user_id,
+            'type'           => 'expense',
+            'amount'         => (float) $expense->amount,
+            'concept'        => 'Gasto: ' . \Illuminate\Support\Str::limit((string) $expense->description, 200),
+            'payment_method' => self::mapPaymentMethod($expense->payment_method),
+            'source_type'    => 'expense',
+            'source_id'      => $expense->id,
+            'source_url'     => '/(tabs)/home/expenses/' . $expense->id,
+            'notes'          => null,
+            'movement_date'  => $expense->expense_date
+                ? $expense->expense_date->toDateString()
+                : now()->toDateString(),
+        ]);
+    }
+
+    /**
+     * Quita de la caja el egreso de un gasto (al eliminarlo o antes de
+     * volver a registrarlo).
+     */
+    public static function removeExpense(Expense $expense): void
+    {
+        CashMovement::where('source_type', 'expense')
+            ->where('source_id', $expense->id)
+            ->delete();
     }
 }

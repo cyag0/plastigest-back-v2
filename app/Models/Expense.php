@@ -19,12 +19,14 @@ class Expense extends Model
         'category',
         'amount',
         'payment_method',
+        'paid_from_cash',
         'description',
         'expense_date',
         'receipt_image',
     ];
 
     protected $casts = [
+        'paid_from_cash' => 'boolean',
         'expense_date' => 'date',
         'amount' => 'decimal:2',
     ];

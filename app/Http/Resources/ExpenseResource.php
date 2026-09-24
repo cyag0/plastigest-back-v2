@@ -24,6 +24,7 @@ class ExpenseResource extends JsonResource
             'amount' => (float) $this->amount,
             'payment_method' => $this->payment_method,
             'payment_method_label' => $this->payment_method_label,
+            'paid_from_cash' => (bool) ($this->paid_from_cash ?? true),
             'description' => $this->description,
             'expense_date' => $this->expense_date->format('Y-m-d'),
             'receipt_image' => $this->receipt_image ? asset('storage/' . $this->receipt_image) : null,

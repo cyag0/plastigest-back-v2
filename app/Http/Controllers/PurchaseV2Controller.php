@@ -39,12 +39,18 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        // Llega como "true"/"false" (FormData) o 1/0; boolean() acepta todos.
+        if ($request->filled('paid_from_cash')) {
+            $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
+        }
+
         try {
             $validated = $request->validate([
                 'purchase_id' => 'nullable|exists:purchases,id',
                 'supplier_id' => 'nullable|exists:suppliers,id',
                 'notes' => 'nullable|string',
                 'payment_method' => 'nullable|in:cash,card,transfer,other',
+                'paid_from_cash' => 'nullable|boolean',
                 'items' => 'nullable|array',
                 'items.*.id' => 'required_with:items|string',
                 'items.*.product_id' => 'required_with:items|integer|exists:products,id',
@@ -80,6 +86,7 @@ class PurchaseV2Controller extends Controller
                     'status' => PurchaseV2::STATUS_DRAFT,
                     'notes' => $validated['notes'] ?? null,
                     'payment_method' => $validated['payment_method'] ?? null,
+                    'paid_from_cash' => $validated['paid_from_cash'] ?? true,
                     'user_id' => $userId,
                 ]);
             } else {
@@ -88,6 +95,7 @@ class PurchaseV2Controller extends Controller
                     'supplier_id' => $validated['supplier_id'] ?? $purchase->supplier_id,
                     'notes' => $validated['notes'] ?? $purchase->notes,
                     'payment_method' => $validated['payment_method'] ?? $purchase->payment_method,
+                    'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
                 ]);
             }
 
@@ -227,6 +235,8 @@ class PurchaseV2Controller extends Controller
                         'document_number' => $purchase->document_number,
                         'status' => $purchase->status,
                         'total' => $purchase->total,
+                        'payment_method' => $purchase->payment_method,
+                        'paid_from_cash' => (bool) ($purchase->paid_from_cash ?? true),
                         'company_id' => $purchase->company_id,
                         'location_id' => $purchase->location_id,
                         'details' => $purchase->details->map(function ($detail) {
@@ -280,11 +290,19 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        // Llega como "true"/"false" (FormData) o 1/0; boolean() acepta todos.
+        if ($request->filled('paid_from_cash')) {
+            $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
+        }
+
         try {
             $validated = $request->validate([
                 'expected_delivery_date' => 'nullable|date|after_or_equal:today',
                 'document_number' => 'nullable|string|max:255',
                 'payment_method' => 'nullable|in:cash,card,transfer,other',
+                // ¿El dinero salió de la caja? Si no, al recibir no se registra
+                // egreso en el corte.
+                'paid_from_cash' => 'nullable|boolean',
             ]);
 
             $purchase = PurchaseV2::draft()->findOrFail($id);
@@ -303,6 +321,7 @@ class PurchaseV2Controller extends Controller
                 'expected_delivery_date' => $validated['expected_delivery_date'] ?? null,
                 'document_number' => $validated['document_number'] ?? null,
                 'payment_method' => $validated['payment_method'] ?? $purchase->payment_method ?? 'other',
+                'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
             ]);
 
             return response()->json([

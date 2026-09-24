@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\DB;
+use App\Services\CashMovementService;
 use App\Http\Resources\ExpenseResource;
 use App\Models\Expense;
 use App\Support\CurrentCompany;
@@ -82,12 +84,18 @@ class ExpenseController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        // Llega como "true"/"false" (FormData) o 1/0; boolean() acepta todos.
+        if ($request->filled('paid_from_cash')) {
+            $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
+        }
+
         $validator = Validator::make($request->all(), [
             'category' => 'required|string|in:' . implode(',', array_keys(Expense::getCategories())),
             'amount' => 'required|numeric|min:0.01',
             'payment_method' => 'required|string|in:' . implode(',', array_keys(Expense::getPaymentMethods())),
             'description' => 'required|string|max:1000',
             'expense_date' => 'required|date',
+            'paid_from_cash' => 'nullable|boolean',
             'receipt_image' => 'nullable|image|max:5120', // 5MB max
         ]);
 
@@ -108,6 +116,10 @@ class ExpenseController extends Controller
         }
 
         $data = $validator->validated();
+        // Vacío = no se indicó: se queda el default (pagado con dinero de caja).
+        if (array_key_exists('paid_from_cash', $data) && $data['paid_from_cash'] === null) {
+            unset($data['paid_from_cash']);
+        }
         $data['company_id'] = $companyId;
         $data['location_id'] = $locationId;
         $data['user_id'] = Auth::id();
@@ -118,7 +130,11 @@ class ExpenseController extends Controller
                 ->store('expenses/receipts', 'public');
         }
 
-        $expense = Expense::create($data);
+        $expense = DB::transaction(function () use ($data) {
+            $expense = Expense::create($data);
+            CashMovementService::syncExpense($expense);
+            return $expense;
+        });
         $expense->load(['user', 'location']);
 
         return new ExpenseResource($expense);
@@ -155,12 +171,18 @@ class ExpenseController extends Controller
 
         $expense = Expense::where('company_id', $companyId)->findOrFail($id);
 
+        // Llega como "true"/"false" (FormData) o 1/0; boolean() acepta todos.
+        if ($request->filled('paid_from_cash')) {
+            $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
+        }
+
         $validator = Validator::make($request->all(), [
             'category' => 'sometimes|string|in:' . implode(',', array_keys(Expense::getCategories())),
             'amount' => 'sometimes|numeric|min:0.01',
             'payment_method' => 'sometimes|string|in:' . implode(',', array_keys(Expense::getPaymentMethods())),
             'description' => 'sometimes|string|max:1000',
             'expense_date' => 'sometimes|date',
+            'paid_from_cash' => 'nullable|boolean',
             'receipt_image' => 'nullable|image|max:5120',
         ]);
 
@@ -172,6 +194,9 @@ class ExpenseController extends Controller
         }
 
         $data = $validator->validated();
+        if (array_key_exists('paid_from_cash', $data) && $data['paid_from_cash'] === null) {
+            unset($data['paid_from_cash']);
+        }
 
         // Manejar nueva imagen de recibo
         if ($request->hasFile('receipt_image')) {
@@ -183,7 +208,10 @@ class ExpenseController extends Controller
                 ->store('expenses/receipts', 'public');
         }
 
-        $expense->update($data);
+        DB::transaction(function () use ($expense, $data) {
+            $expense->update($data);
+            CashMovementService::syncExpense($expense->fresh());
+        });
         $expense->load(['user', 'location']);
 
         return new ExpenseResource($expense);
@@ -207,7 +235,10 @@ class ExpenseController extends Controller
             Storage::disk('public')->delete($expense->receipt_image);
         }
 
-        $expense->delete();
+        DB::transaction(function () use ($expense) {
+            CashMovementService::removeExpense($expense);
+            $expense->delete();
+        });
 
         return response()->json([
             'message' => 'Gasto eliminado correctamente'

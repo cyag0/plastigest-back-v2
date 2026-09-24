@@ -25,6 +25,7 @@ class PurchaseV2 extends Model
         'status',
         'total',
         'payment_method',
+        'paid_from_cash',
         'notes',
         'metadata',
         'document_number',
@@ -33,6 +34,7 @@ class PurchaseV2 extends Model
     ];
 
     protected $casts = [
+        'paid_from_cash' => 'boolean',
         'purchase_date' => 'date',
         'expected_delivery_date' => 'date',
         'delivery_date' => 'date',

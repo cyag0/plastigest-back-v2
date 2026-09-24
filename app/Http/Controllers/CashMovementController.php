@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Resources\CashMovementResource;
+use App\Models\CashClosing;
 use App\Models\CashMovement;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -211,25 +212,41 @@ class CashMovementController extends CrudController
             $date = $request->input('date');
             $dateQuery = (clone $baseQuery)->whereDate('movement_date', $date);
 
-            // Saldo de apertura: neto de TODOS los movimientos ANTERIORES a la fecha.
-            // (balance_actual incluye el día, por eso no sirve como apertura)
-            $openingQuery = (clone $baseQuery)->whereDate('movement_date', '<', $date);
+            // Saldo de apertura = efectivo que había en la caja al iniciar el día.
+            //
+            // Parte del último corte anterior a la fecha (su conteo físico, o el
+            // efectivo esperado si no se contó) y le suma el efectivo que entró y
+            // salió desde entonces. Antes se sumaba TODO el historial de todos los
+            // métodos: una compra grande dejaba un saldo negativo que se
+            // arrastraba para siempre entre cortes, aunque el cajero contara bien.
+            //
+            // Tarjeta y transferencia no están en la caja: se reportan como
+            // totales del día y no arrastran saldo.
+            $lastClosing = CashClosing::query()
+                ->where('company_id', $companyId)
+                ->when($locationId, fn ($q) => $q->where('location_id', $locationId))
+                ->whereDate('closing_date', '<', $date)
+                ->orderByDesc('closing_date')
+                ->orderByDesc('id')
+                ->first();
 
-            $openingBalance = (float) ((clone $openingQuery)->selectRaw("
+            $sinceQuery = (clone $baseQuery)
+                ->where('payment_method', 'cash')
+                ->whereDate('movement_date', '<', $date);
+
+            $cashBase = 0.0;
+            if ($lastClosing) {
+                $cashBase = (float) ($lastClosing->physical_count ?? $lastClosing->total_cash ?? 0);
+                $sinceQuery->whereDate('movement_date', '>', $lastClosing->closing_date);
+            }
+
+            $cashSince = (float) ((clone $sinceQuery)->selectRaw("
                 SUM(CASE WHEN type IN ('income', 'adjustment') THEN amount ELSE 0 END)
                 - SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS balance
             ")->value('balance') ?? 0);
 
-            // Saldo de apertura por método de pago (para el efectivo esperado en caja)
-            $openingByMethod = (clone $openingQuery)
-                ->selectRaw("
-                    payment_method,
-                    SUM(CASE WHEN type IN ('income', 'adjustment') THEN amount ELSE 0 END)
-                    - SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS balance
-                ")
-                ->groupBy('payment_method')
-                ->get()
-                ->mapWithKeys(fn ($row) => [$row->payment_method => (float) $row->balance]);
+            $openingBalance = round($cashBase + $cashSince, 2);
+            $openingByMethod = ['cash' => $openingBalance];
 
             $dateTotals = (clone $dateQuery)->selectRaw("
                 SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS date_income,
@@ -259,6 +276,14 @@ class CashMovementController extends CrudController
                 'date_count'        => (int)   ($dateTotals->date_count ?? 0),
                 'by_payment_method' => $dateByMethod,
                 'opening_by_method' => $openingByMethod,
+                // De dónde salió la apertura, para mostrarlo en el corte.
+                'opening_source'    => $lastClosing ? [
+                    'closing_id'   => $lastClosing->id,
+                    'closing_date' => $lastClosing->closing_date instanceof \DateTimeInterface
+                        ? $lastClosing->closing_date->format('Y-m-d')
+                        : (string) $lastClosing->closing_date,
+                    'counted'      => $lastClosing->physical_count !== null,
+                ] : null,
             ];
         }
 
