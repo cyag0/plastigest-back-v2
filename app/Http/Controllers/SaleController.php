@@ -373,6 +373,12 @@ class SaleController extends CrudController
                 $query->where('sale_date', '<=', $endDate);
             }
 
+            // Los totales son de ventas vigentes: una venta cancelada no es
+            // dinero vendido. Antes se sumaba, y "Ventas hoy" en Inicio incluía
+            // las canceladas. El desglose por estado sí usa todas.
+            $allQuery = clone $query;
+            $query->where('status', '!=', SaleStatus::CANCELLED->value);
+
             // Estadísticas generales
             $totalSales = (clone $query)->count();
             $totalAmount = (clone $query)->sum('total');
@@ -387,7 +393,7 @@ class SaleController extends CrudController
                 ->sum('total');
 
             // Ventas por estado
-            $byStatus = (clone $query)
+            $byStatus = (clone $allQuery)
                 ->select('status', DB::raw('COUNT(*) as count'), DB::raw('SUM(total) as total'))
                 ->groupBy('status')
                 ->get()
@@ -486,7 +492,7 @@ class SaleController extends CrudController
                 ->where('status', 'closed')
                 ->count();
 
-            $cancelledCount = (clone $query)
+            $cancelledCount = (clone $allQuery)
                 ->where('status', 'cancelled')
                 ->count();
 
