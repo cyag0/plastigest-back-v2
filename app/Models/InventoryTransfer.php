@@ -271,9 +271,20 @@ class InventoryTransfer extends Model
             throw new Exception("Esta transferencia no puede ser cancelada");
         }
 
+        // La tabla no tiene columnas rejection_reason ni cancelled_at: el
+        // detalle del flujo vive en `content`, igual que el rechazo. Antes se
+        // escribían esas columnas y toda cancelación fallaba con error de SQL.
+        $content = is_array($this->content) ? $this->content : [];
+        $content['flow_state'] = 'cancelled';
+        $content['cancellation'] = [
+            'reason' => $reason,
+            'cancelled_at' => now()->toISOString(),
+            'cancelled_by' => \Illuminate\Support\Facades\Auth::id(),
+            'from_status' => $this->status->value,
+        ];
+
         $this->status = TransferStatus::CANCELLED;
-        $this->rejection_reason = $reason;
-        $this->cancelled_at = now();
+        $this->content = $content;
 
         return $this->save();
     }

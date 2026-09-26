@@ -89,12 +89,13 @@ class InventoryTransferResource extends JsonResource
             'approved_at' => data_get($this->content, 'step_1.approved_at'),
             'shipped_at' => data_get($this->content, 'step_2.shipped_at'),
             'received_at' => data_get($this->content, 'step_3.received_at'),
-            'cancelled_at' => null,
+            'cancelled_at' => data_get($this->content, 'cancellation.cancelled_at'),
 
             // Totales y notas
             'total_cost' => (float) $this->total_cost,
             'notes' => $this->notes,
-            'rejection_reason' => data_get($this->content, 'step_1.reason'),
+            'rejection_reason' => data_get($this->content, 'step_1.reason')
+                ?? data_get($this->content, 'cancellation.reason'),
 
             // Diferencias
             'total_differences' => $this->total_differences,
