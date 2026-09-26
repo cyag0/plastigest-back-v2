@@ -38,38 +38,60 @@ class CurrentWorker
 
     /**
      * Verificar si el usuario actual tiene un permiso en la sucursal actual.
-     * Fallback a roles directos del usuario si no hay rol de sucursal.
      */
     public static function hasPermission(string $permissionName): bool
     {
-        $user = Auth::user();
-        if (!$user) {
+        $roleIds = self::roleIdsForCurrentLocation();
+        if (empty($roleIds)) {
             return false;
         }
 
-        // 1. Verificar por rol de sucursal actual
+        return Role::whereIn('id', $roleIds)
+            ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
+            ->exists();
+    }
+
+    /**
+     * Roles que aplican al usuario en la sucursal actual:
+     * - el rol que tiene asignado en esa sucursal;
+     * - si no tiene asignación ahí pero es administrador (puede entrar a
+     *   cualquier sucursal), los roles de sus demás sucursales: si no, podía
+     *   entrar a la sucursal pero todo le respondía 403;
+     * - siempre, sus roles directos (users_roles).
+     *
+     * @return int[]
+     */
+    private static function roleIdsForCurrentLocation(): array
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return [];
+        }
+
+        $roleIds = [];
         $locationId = CurrentLocation::id();
+
         if ($locationId) {
-            $entry = DB::table('user_location_roles')
+            $roleId = DB::table('user_location_roles')
                 ->where('user_id', $user->id)
                 ->where('location_id', $locationId)
-                ->first();
+                ->value('role_id');
 
-            if ($entry && $entry->role_id) {
-                $hasIt = Role::where('id', $entry->role_id)
-                    ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
-                    ->exists();
-
-                if ($hasIt) {
-                    return true;
-                }
+            if ($roleId) {
+                $roleIds[] = (int) $roleId;
+            } elseif (self::canAccessAllLocations($user)) {
+                $roleIds = DB::table('user_location_roles')
+                    ->where('user_id', $user->id)
+                    ->whereNotNull('role_id')
+                    ->pluck('role_id')
+                    ->map(fn($id) => (int) $id)
+                    ->all();
             }
         }
 
-        // 2. Fallback: roles directos del usuario (tabla users_roles)
-        return $user->roles()
-            ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
-            ->exists();
+        $directRoleIds = $user->roles()->pluck('roles.id')->map(fn($id) => (int) $id)->all();
+
+        return array_values(array_unique(array_merge($roleIds, $directRoleIds)));
     }
 
     /**
@@ -170,27 +192,7 @@ class CurrentWorker
      */
     public static function permissions(): array
     {
-        $user = Auth::user();
-        if (!$user) {
-            return [];
-        }
-
-        $roleIds = [];
-
-        $locationId = CurrentLocation::id();
-        if ($locationId) {
-            $entry = DB::table('user_location_roles')
-                ->where('user_id', $user->id)
-                ->where('location_id', $locationId)
-                ->first();
-
-            if ($entry && $entry->role_id) {
-                $roleIds[] = (int) $entry->role_id;
-            }
-        }
-
-        $directRoleIds = $user->roles()->pluck('roles.id')->toArray();
-        $roleIds = array_unique(array_merge($roleIds, $directRoleIds));
+        $roleIds = self::roleIdsForCurrentLocation();
 
         if (empty($roleIds)) {
             return [];
