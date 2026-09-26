@@ -2,321 +2,23 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\InventoryService;
-use App\Models\Movement;
-use App\Models\InventoryTransfer;
-use App\Models\Product;
 use App\Support\CurrentWorker;
-use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Validator;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\Validator;
 
+/**
+ * Consulta puntual de existencias.
+ *
+ * Lo demás que vivía aquí (movimientos, transferencias y reportes sobre la
+ * tabla movements) era del sistema anterior: la app usa inventory-transfers,
+ * los ajustes y el libro mayor de existencias.
+ */
 class InventoryController extends Controller
 {
-    protected InventoryService $inventoryService;
-
-    public function __construct(InventoryService $inventoryService)
-    {
-        $this->inventoryService = $inventoryService;
-    }
-
     /**
-     * Process inventory movement (entry, exit, adjustment)
-     */
-    public function processMovement(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('inventory_manage')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'company_id' => 'required|exists:companies,id',
-            'location_id' => 'required|exists:locations,id',
-            'movement_type' => 'required|in:entry,exit,adjustment',
-            'movement_reason' => 'required|string|max:100',
-            'document_number' => 'nullable|string|max:100',
-            'movement_date' => 'nullable|date',
-            'notes' => 'nullable|string',
-            'products' => 'required|array|min:1',
-            'products.*.product_id' => 'required|exists:products,id',
-            'products.*.quantity' => 'required|numeric|min:0.001',
-            'products.*.unit_cost' => 'nullable|numeric|min:0',
-            'products.*.batch_number' => 'nullable|string|max:50',
-            'products.*.expiry_date' => 'nullable|date',
-            'products.*.notes' => 'nullable|string'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        try {
-            $movement = $this->inventoryService->processMovement($request->all());
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Movement processed successfully',
-                'data' => $movement
-            ], 201);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error processing movement: ' . $e->getMessage()
-            ], 400);
-        }
-    }
-
-    /**
-     * Get movements list
-     */
-    public function getMovements(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('inventory_list')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $query = Movement::with(['details.product', 'location', 'user']);
-
-        // Apply filters
-        if ($request->has('company_id')) {
-            $query->byCompany($request->company_id);
-        }
-
-        if ($request->has('location_id')) {
-            $query->byLocation($request->location_id);
-        }
-
-        if ($request->has('movement_type')) {
-            $query->byType($request->movement_type);
-        }
-
-        if ($request->has('start_date')) {
-            $query->where('movement_date', '>=', $request->start_date);
-        }
-
-        if ($request->has('end_date')) {
-            $query->where('movement_date', '<=', $request->end_date);
-        }
-
-        $movements = $query->orderBy('movement_date', 'desc')
-            ->paginate($request->get('per_page', 15));
-
-        return response()->json([
-            'success' => true,
-            'data' => $movements
-        ]);
-    }
-
-    /**
-     * Get specific movement
-     */
-    public function getMovement(int $id): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('inventory_read')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $movement = Movement::with(['details.product', 'location', 'user'])
-            ->findOrFail($id);
-
-        return response()->json([
-            'success' => true,
-            'data' => $movement
-        ]);
-    }
-
-    /**
-     * Create inventory transfer
-     */
-    public function createTransfer(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('transfers_create')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'company_id' => 'required|exists:companies,id',
-            'origin_location_id' => 'required|exists:locations,id',
-            'destination_location_id' => 'required|exists:locations,id|different:origin_location_id',
-            'transfer_type' => 'nullable|in:internal,external',
-            'reason' => 'nullable|string',
-            'notes' => 'nullable|string',
-            'products' => 'required|array|min:1',
-            'products.*.product_id' => 'required|exists:products,id',
-            'products.*.quantity' => 'required|numeric|min:0.001',
-            'products.*.unit_cost' => 'nullable|numeric|min:0',
-            'products.*.notes' => 'nullable|string'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        try {
-            $transfer = $this->inventoryService->createTransfer($request->all());
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Transfer created successfully',
-                'data' => $transfer
-            ], 201);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error creating transfer: ' . $e->getMessage()
-            ], 400);
-        }
-    }
-
-    /**
-     * Approve transfer
-     */
-    public function approveTransfer(Request $request, int $id): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('transfers_update')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'approvals' => 'required|array',
-            'approvals.*' => 'numeric|min:0'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        try {
-            $transfer = $this->inventoryService->approveTransfer($id, $request->approvals);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Transfer approved successfully',
-                'data' => $transfer
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error approving transfer: ' . $e->getMessage()
-            ], 400);
-        }
-    }
-
-    /**
-     * Confirm transfer
-     */
-    public function confirmTransfer(Request $request, int $id): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('transfers_update')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'confirmations' => 'required|array',
-            'confirmations.*' => 'numeric|min:0'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        try {
-            $transfer = $this->inventoryService->confirmTransfer($id, $request->confirmations);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Transfer confirmed successfully',
-                'data' => $transfer
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error confirming transfer: ' . $e->getMessage()
-            ], 400);
-        }
-    }
-
-    /**
-     * Get transfers list
-     */
-    public function getTransfers(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('transfers_list')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $query = InventoryTransfer::with(['details.product', 'originLocation', 'destinationLocation', 'requestedBy']);
-
-        // Apply filters
-        if ($request->has('company_id')) {
-            $query->byCompany($request->company_id);
-        }
-
-        if ($request->has('status')) {
-            $query->byStatus($request->status);
-        }
-
-        if ($request->has('origin_location_id')) {
-            $query->where('origin_location_id', $request->origin_location_id);
-        }
-
-        if ($request->has('destination_location_id')) {
-            $query->where('destination_location_id', $request->destination_location_id);
-        }
-
-        $transfers = $query->orderBy('requested_date', 'desc')
-            ->paginate($request->get('per_page', 15));
-
-        return response()->json([
-            'success' => true,
-            'data' => $transfers
-        ]);
-    }
-
-    /**
-     * Get specific transfer
-     */
-    public function getTransfer(int $id): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('transfers_read')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $transfer = InventoryTransfer::with([
-            'details.product',
-            'originLocation',
-            'destinationLocation',
-            'requestedBy',
-            'approvedBy',
-            'confirmedBy'
-        ])->findOrFail($id);
-
-        return response()->json([
-            'success' => true,
-            'data' => $transfer
-        ]);
-    }
-
-    /**
-     * Get current stock for a product at a location
+     * Existencia de un producto en una sucursal (GET inventory/stock/current).
      */
     public function getCurrentStock(Request $request): JsonResponse
     {
@@ -327,150 +29,32 @@ class InventoryController extends Controller
         $validator = Validator::make($request->all(), [
             'product_id' => 'required|exists:products,id',
             'location_id' => 'required|exists:locations,id',
-            'company_id' => 'required|exists:companies,id'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $stock = $this->inventoryService->getCurrentStock(
-            $request->product_id,
-            $request->location_id,
-            $request->company_id
-        );
-
-        return response()->json([
-            'success' => true,
-            'data' => ['current_stock' => $stock]
-        ]);
-    }
-
-    /**
-     * Get inventory report for a location
-     */
-    public function getInventoryReport(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('reports_view')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'location_id' => 'required|exists:locations,id',
             'company_id' => 'required|exists:companies,id',
-            'category_id' => 'nullable|exists:categories,id',
-            'low_stock' => 'nullable|boolean',
-            'out_of_stock' => 'nullable|boolean'
         ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        $report = $this->inventoryService->getInventoryReport(
-            $request->location_id,
-            $request->company_id,
-            $request->only(['category_id', 'low_stock', 'out_of_stock'])
-        );
+        // location_id viene en la consulta: un usuario básico no debe poder
+        // ver la existencia de otra sucursal cambiándolo.
+        if (!CurrentWorker::canAccessLocation((int) $request->location_id)) {
+            return response()->json(['message' => 'No tienes acceso a esta sucursal.'], 403);
+        }
+
+        // product_location es la fuente de verdad del stock; sin fila, es 0.
+        $stock = (float) (DB::table('product_location')
+            ->where('product_id', $request->product_id)
+            ->where('location_id', $request->location_id)
+            ->value('current_stock') ?? 0);
 
         return response()->json([
             'success' => true,
-            'data' => $report
-        ]);
-    }
-
-    /**
-     * Get inventory dashboard statistics
-     */
-    public function getDashboardStats(Request $request): JsonResponse
-    {
-        if (!CurrentWorker::hasPermission('dashboard_view')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
-        $validator = Validator::make($request->all(), [
-            'company_id' => 'required|exists:companies,id',
-            'location_id' => 'nullable|exists:locations,id'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $companyId = $request->company_id;
-        $locationId = $request->location_id;
-
-        // Period: default to current month
-        $period = $request->get('period', 'month');
-        $dateRange = match ($period) {
-            'today' => [Carbon::today(), Carbon::now()],
-            'week'  => [Carbon::now()->startOfWeek(), Carbon::now()],
-            default => [Carbon::now()->startOfMonth(), Carbon::now()],
-        };
-
-        // El estado activo vive en product_location.active (por sucursal); la
-        // columna products.is_active ya no existe y esta consulta respondía 500.
-        // Total de productos activos (en la sucursal, o en alguna si no se filtra)
-        $totalProducts = Product::where('company_id', $companyId)
-            ->whereHas('locations', function ($q) use ($locationId) {
-                $q->where('product_location.active', true)
-                    ->when($locationId, fn($qq) => $qq->where('product_location.location_id', $locationId));
-            })
-            ->count();
-
-        // Total stock and inventory value from product_location
-        $stockQuery = DB::table('product_location')
-            ->join('products', 'product_location.product_id', '=', 'products.id')
-            ->where('products.company_id', $companyId)
-            ->where('product_location.active', true);
-
-        if ($locationId) {
-            $stockQuery->where('product_location.location_id', $locationId);
-        }
-
-        $totalStock = (clone $stockQuery)->sum('product_location.current_stock');
-
-        $inventoryValue = (clone $stockQuery)->sum(
-            DB::raw('product_location.current_stock * products.purchase_price')
-        );
-
-        // Products with stock below minimum
-        $lowStockProducts = (clone $stockQuery)
-            ->whereRaw('product_location.current_stock < product_location.minimum_stock')
-            ->whereRaw('product_location.minimum_stock > 0')
-            ->count();
-
-        // Movement count in period
-        $movementsQuery = Movement::where('company_id', $companyId)
-            ->whereBetween('movement_date', $dateRange);
-
-        if ($locationId) {
-            $movementsQuery->where('location_origin_id', $locationId);
-        }
-
-        $movementsCount = $movementsQuery->count();
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'total_products'     => $totalProducts,
-                'total_stock'        => round((float) $totalStock, 2),
-                'inventory_value'    => round((float) $inventoryValue, 2),
-                'movements_count'    => $movementsCount,
-                'low_stock_products' => $lowStockProducts,
-            ]
+            'data' => ['current_stock' => $stock],
         ]);
     }
 }

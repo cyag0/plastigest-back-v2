@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Models\Admin\Company;
+
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 
 use App\Models\Admin\Location;

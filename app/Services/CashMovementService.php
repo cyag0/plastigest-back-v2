@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\CashMovement;
 use App\Models\Expense;
-use App\Models\Purchase;
 use App\Models\PurchaseV2;
 use App\Models\Sale;
 use Illuminate\Support\Facades\Auth;
@@ -111,54 +110,6 @@ class CashMovementService
                 'source_url'     => '/(tabs)/home/sales/' . $sale->id,
                 'notes'          => null,
                 'movement_date'  => now()->toDateString(),
-            ]);
-        }
-    }
-
-    /**
-     * Crea un movimiento de caja de tipo egreso a partir de una compra recibida.
-     *
-     * @param Purchase $purchase Compra recibida
-     */
-    public static function fromPurchase(Purchase $purchase): void
-    {
-        $total = (float) ($purchase->total_cost ?? 0);
-
-        Log::info('CashMovementService: creando movimiento de compra', [
-            'purchase_id' => $purchase->id,
-            'total_cost'  => $total,
-        ]);
-
-        if ($total <= 0) {
-            return;
-        }
-
-        try {
-            $concept = 'Compra #' . $purchase->id;
-            $reference = $purchase->reference ?? ($purchase->content['document_number'] ?? null);
-            if ($reference) {
-                $concept .= " ({$reference})";
-            }
-
-            CashMovement::create([
-                'company_id'     => $purchase->company_id,
-                'location_id'    => $purchase->location_origin_id,
-                'user_id'        => Auth::id() ?? $purchase->user_id,
-                'type'           => 'expense',
-                'amount'         => $total,
-                'concept'        => $concept,
-                'payment_method' => self::mapPaymentMethod($purchase->payment_method ?? null),
-                'source_type'    => 'purchase',
-                'source_id'      => $purchase->id,
-                'source_url'     => '/(tabs)/home/purchases/' . $purchase->id,
-                'notes'          => null,
-                'movement_date'  => $purchase->movement_date ?? now()->toDateString(),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('CashMovementService: error al crear movimiento de compra', [
-                'purchase_id' => $purchase->id,
-                'total'       => $total,
-                'error'       => $e->getMessage(),
             ]);
         }
     }

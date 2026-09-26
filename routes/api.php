@@ -5,7 +5,6 @@ use App\Http\Controllers\Admin\CustomerController;
 use App\Http\Controllers\Admin\LocationController;
 use App\Http\Controllers\Admin\PermissionsController;
 use App\Http\Controllers\Admin\RolesController;
-use App\Http\Controllers\Admin\WorkerController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\CategoryController;
@@ -15,7 +14,6 @@ use App\Http\Controllers\ProductionOrderController;
 use App\Http\Controllers\FormulaController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ProductMovementController;
-use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
@@ -23,7 +21,6 @@ use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\CustomerNoteController;
 use App\Http\Controllers\InventoryTransferController;
 use App\Http\Controllers\InventoryAdjustmentController;
-use App\Http\Controllers\MovementController;
 use App\Http\Controllers\InventoryCountController;
 use App\Http\Controllers\InventoryCountDetailController;
 use Illuminate\Http\Request;
@@ -144,7 +141,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('users', UserController::class);
             Route::apiResource('companies', CompanyController::class);
             Route::apiResource('locations', LocationController::class);
-            Route::apiResource('workers', WorkerController::class);
             Route::apiResource('categories', CategoryController::class);
             Route::apiResource('inventory-types', InventoryTypeController::class);
             Route::apiResource('products', ProductController::class);
@@ -179,22 +175,6 @@ Route::middleware('auth:sanctum')->group(function () {
             });
             Route::apiResource("product-packages", ProductPackageController::class);
 
-
-            // Purchase Status Management Routes
-            Route::prefix('purchases')->group(function () {
-                Route::get('stats', [PurchaseController::class, 'purchaseStats']);
-                Route::get('products-list', [PurchaseController::class, 'getProductsList']);
-                Route::post('{id}/advance', [PurchaseController::class, 'advance']);
-                Route::post('{id}/revert', [PurchaseController::class, 'revert']);
-                Route::post('{id}/transition', [PurchaseController::class, 'transitionTo']);
-                Route::get('status/info', [PurchaseController::class, 'statusInfo']);
-                Route::post('{id}/details', [PurchaseController::class, 'updateDetails']);
-                Route::post('{id}/start-order', [PurchaseController::class, 'startOrder']);
-                Route::post('{id}/receive', [PurchaseController::class, 'receivePurchase']);
-            });
-
-            // Purchase Management Routes
-            Route::apiResource('purchases', PurchaseController::class);
 
             // Purchase V2 Management Routes (New System with Real-time Draft Sync)
             Route::prefix('purchases-v2')->group(function () {
@@ -286,27 +266,8 @@ Route::middleware('auth:sanctum')->group(function () {
             // Adjustment Management Routes (Ajustes de inventario: mermas, extravíos, etc.)
             Route::apiResource('inventory-adjustments', InventoryAdjustmentController::class);
 
-            // Inventory Management Routes
-            Route::prefix('inventory')->group(function () {
-                // Movements
-                Route::post('movements', [InventoryController::class, 'processMovement']);
-                Route::get('movements', [InventoryController::class, 'getMovements']);
-                Route::get('movements/{id}', [InventoryController::class, 'getMovement']);
-
-                // Transfers
-                Route::post('transfers', [InventoryController::class, 'createTransfer']);
-                Route::get('transfers', [InventoryController::class, 'getTransfers']);
-                Route::get('transfers/{id}', [InventoryController::class, 'getTransfer']);
-                Route::patch('transfers/{id}/approve', [InventoryController::class, 'approveTransfer']);
-                Route::patch('transfers/{id}/confirm', [InventoryController::class, 'confirmTransfer']);
-
-                // Stock queries
-                Route::get('stock/current', [InventoryController::class, 'getCurrentStock']);
-
-                // Reports
-                Route::get('reports/inventory', [InventoryController::class, 'getInventoryReport']);
-                Route::get('reports/dashboard', [InventoryController::class, 'getDashboardStats']);
-            });
+            // Existencia puntual (la usa la tabla editable de la app)
+            Route::get('inventory/stock/current', [InventoryController::class, 'getCurrentStock']);
             Route::apiResource('customers', CustomerController::class);
 
             // Units routes
@@ -319,26 +280,6 @@ Route::middleware('auth:sanctum')->group(function () {
             // Rutas de notas de clientes
             Route::apiResource('customer-notes', CustomerNoteController::class);
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
-
-            // === NUEVO SISTEMA DE TRANSFERENCIAS BASADO EN MOVEMENTS ===
-            // Rutas para los 4 módulos del frontend
-            Route::get('movements/petitions', [MovementController::class, 'petitions']);
-            Route::get('movements/shipments', [MovementController::class, 'shipments']);
-            Route::get('movements/receipts', [MovementController::class, 'receipts']);
-            Route::get('movements/transfers', [MovementController::class, 'transfers']);
-
-
-
-            // Acciones de workflow de transferencias
-            Route::prefix('movements/{id}')->group(function () {
-                Route::post('approve', [MovementController::class, 'approve']);
-                Route::post('reject', [MovementController::class, 'reject']);
-                Route::post('ship', [MovementController::class, 'ship']);
-                Route::post('receive', [MovementController::class, 'receive']);
-            });
-
-            // CRUD de movimientos/transferencias
-            Route::apiResource('movements', MovementController::class);
 
             // === SALES REPORTS ===
             Route::apiResource('sales-reports', \App\Http\Controllers\SalesReportController::class);
@@ -355,16 +296,9 @@ Route::middleware('auth:sanctum')->group(function () {
             });
 
             Route::prefix('reports')->group(function () {
-                Route::get('dashboard', [App\Http\Controllers\ReportController::class, 'dashboard']);
+                // Los demás reportes (dashboard, tendencia, métodos de pago…) leían
+                // el esquema anterior y respondían 500; el dashboard vigente es reports-v2.
                 Route::get('inventory-stats', [App\Http\Controllers\ReportController::class, 'inventoryStats']);
-                Route::get('recent-movements', [App\Http\Controllers\ReportController::class, 'recentMovements']);
-                Route::get('movements-by-type', [App\Http\Controllers\ReportController::class, 'movementsByType']);
-                Route::get('top-products', [App\Http\Controllers\ReportController::class, 'topProducts']);
-                Route::get('sales-trend', [App\Http\Controllers\ReportController::class, 'salesTrend']);
-                Route::get('sales-by-location', [App\Http\Controllers\ReportController::class, 'salesByLocation']);
-                Route::get('low-stock-products', [App\Http\Controllers\ReportController::class, 'lowStockProducts']);
-                Route::get('payment-methods', [App\Http\Controllers\ReportController::class, 'paymentMethods']);
-                Route::get('transfer-stats', [App\Http\Controllers\ReportController::class, 'transferStats']);
             });
 
             Route::prefix('reports-v2')->group(function () {

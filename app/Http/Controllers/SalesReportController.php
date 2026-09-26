@@ -14,7 +14,6 @@ use Illuminate\Support\Facades\URL;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Models\Sale;
 use App\Models\SaleItem;
-use App\Models\Movement;
 use App\Models\Expense;
 
 class SalesReportController extends CrudController

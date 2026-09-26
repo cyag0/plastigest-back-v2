@@ -18,8 +18,6 @@ class StockLedgerEntryResource extends JsonResource
     private const REFERENCE_TYPES = [
         \App\Models\Sale::class => 'sale',
         \App\Models\PurchaseV2::class => 'purchase',
-        \App\Models\Purchase::class => 'purchase',
-        \App\Models\Movement::class => 'transfer',
         \App\Models\InventoryTransfer::class => 'transfer',
         \App\Models\InventoryCount::class => 'count',
         \App\Models\InventoryAdjustmentDetail::class => 'adjustment',

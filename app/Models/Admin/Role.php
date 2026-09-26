@@ -40,8 +40,4 @@ class Role extends Model
         return $this->belongsTo(Company::class);
     }
 
-    public function workers(): BelongsToMany
-    {
-        return $this->belongsToMany(Worker::class, 'worker_roles');
-    }
 }

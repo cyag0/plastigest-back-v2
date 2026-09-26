@@ -4,11 +4,8 @@ namespace App\Services;
 
 use App\Models\Task;
 use App\Models\User;
-use App\Models\Purchase;
 use App\Models\PurchaseV2;
 use App\Models\InventoryCount;
-use App\Models\Adjustment;
-use App\Models\Transfer;
 use App\Models\InventoryTransfer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -18,35 +15,6 @@ use InvalidArgumentException;
 class TaskService
 {
     public function __construct() {}
-
-    /**
-     * Create task from purchase confirmation
-     */
-    public function createFromPurchase(Purchase $purchase): Task
-    {
-        $task = Task::create([
-            'company_id' => $purchase->company_id,
-            'location_id' => $purchase->location_id,
-            'title' => "Recibir compra #{$purchase->id}",
-            'description' => "Recibir y verificar productos de la compra del proveedor {$purchase->supplier->name}",
-            'type' => 'receive_purchase',
-            'priority' => 'high',
-            'assigned_by' => $purchase->created_by,
-            'due_date' => $purchase->expected_delivery_date ?? now()->addDays(3),
-            'related_type' => Purchase::class,
-            'related_id' => $purchase->id,
-            'metadata' => [
-                'purchase_id' => $purchase->id,
-                'supplier_name' => $purchase->supplier->name,
-                'total' => $purchase->total,
-            ],
-        ]);
-
-        // Assign to location manager or warehouse workers
-        $this->autoAssignTask($task);
-
-        return $task;
-    }
 
     /**
      * Create task from inventory count discrepancies
@@ -74,89 +42,6 @@ class TaskService
                 'inventory_count_id' => $count->id,
                 'discrepancies' => $discrepancies,
                 'count_date' => $count->count_date,
-            ],
-        ]);
-
-        $this->autoAssignTask($task);
-
-        return $task;
-    }
-
-    /**
-     * Create task from adjustment (if requires review)
-     */
-    public function createFromAdjustment(Adjustment $adjustment): ?Task
-    {
-        // Only create task if adjustment is significant
-        $totalImpact = abs($adjustment->items()->sum('quantity'));
-
-        if ($totalImpact < 10) {
-            return null;
-        }
-
-        $task = Task::create([
-            'company_id' => $adjustment->company_id,
-            'location_id' => $adjustment->location_id,
-            'title' => "Revisar ajuste #{$adjustment->id}",
-            'description' => "Revisar y aprobar ajuste de inventario: {$adjustment->reason}",
-            'type' => 'adjustment_review',
-            'priority' => $totalImpact > 50 ? 'urgent' : 'medium',
-            'assigned_by' => $adjustment->created_by,
-            'due_date' => now()->addHours(24),
-            'related_type' => Adjustment::class,
-            'related_id' => $adjustment->id,
-            'metadata' => [
-                'adjustment_id' => $adjustment->id,
-                'reason' => $adjustment->reason,
-                'total_items' => $totalImpact,
-            ],
-        ]);
-
-        // Assign to manager for approval
-        $this->autoAssignToManager($task);
-
-        return $task;
-    }
-
-    /**
-     * Create task from transfer request
-     */
-    public function createFromTransfer(Transfer $transfer, string $action = 'approve'): Task
-    {
-        $titles = [
-            'approve' => "Aprobar transferencia #{$transfer->id}",
-            'send' => "Enviar transferencia #{$transfer->id}",
-            'receive' => "Recibir transferencia #{$transfer->id}",
-        ];
-
-        $descriptions = [
-            'approve' => "Revisar y aprobar transferencia de {$transfer->originLocation->name} a {$transfer->destinationLocation->name}",
-            'send' => "Preparar y enviar productos a {$transfer->destinationLocation->name}",
-            'receive' => "Recibir y verificar productos de {$transfer->originLocation->name}",
-        ];
-
-        $types = [
-            'approve' => 'approve_transfer',
-            'send' => 'send_transfer',
-            'receive' => 'receive_transfer',
-        ];
-
-        $task = Task::create([
-            'company_id' => $transfer->company_id,
-            'location_id' => $action === 'receive' ? $transfer->destination_location_id : $transfer->origin_location_id,
-            'title' => $titles[$action],
-            'description' => $descriptions[$action],
-            'type' => $types[$action],
-            'priority' => 'high',
-            'assigned_by' => $transfer->created_by,
-            'due_date' => now()->addDays($action === 'approve' ? 1 : 3),
-            'related_type' => Transfer::class,
-            'related_id' => $transfer->id,
-            'metadata' => [
-                'transfer_id' => $transfer->id,
-                'origin' => $transfer->originLocation->name,
-                'destination' => $transfer->destinationLocation->name,
-                'total_items' => $transfer->items()->count(),
             ],
         ]);
 
@@ -638,34 +523,6 @@ class TaskService
         }
 
         return $sent;
-    }
-
-    /**
-     * Notificar asignación de tarea de recepción de compra
-     */
-    public function notifyPurchaseTaskCreated(Task $task, Purchase $purchase): void
-    {
-        try {
-            // Notificar a usuarios con permiso de compras
-            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
-                'purchase'      => $purchase,
-                'supplier_name' => $purchase->supplier->name,
-                'sub_type'      => 'in_transit',
-                'products'      => $purchase->details->map(fn($d) => [
-                    'name'     => $d->product->name,
-                    'quantity' => $d->quantity,
-                ])->toArray(),
-            ]);
-
-            Log::info('Purchase task assignment notification sent', [
-                'task_id' => $task->id,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error notifying purchase task assignment', [
-                'task_id' => $task->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
     }
 
     /**
