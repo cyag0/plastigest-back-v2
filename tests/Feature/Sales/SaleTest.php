@@ -8,25 +8,20 @@ use App\Models\Sale;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
+use Tests\Concerns\CreatesTenant;
 use Tests\TestCase;
 
 class SaleTest extends TestCase
 {
-    use RefreshDatabase;
-
-    private User $user;
-    private Company $company;
-    private Location $location;
+    use RefreshDatabase, CreatesTenant;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->company  = Company::factory()->create();
-        $this->location = Location::factory()->create(['company_id' => $this->company->id]);
-        $this->user     = User::factory()->create();
-
-        Sanctum::actingAs($this->user, ['*']);
+        // Usuario asignado a la sucursal con todos los permisos: sin eso,
+        // SetCurrentLocation y los permisos responden 403.
+        $this->createTenant();
     }
 
     /**
@@ -34,10 +29,7 @@ class SaleTest extends TestCase
      */
     private function headers(): array
     {
-        return [
-            'X-Company-ID'  => $this->company->id,
-            'X-Location-ID' => $this->location->id,
-        ];
+        return $this->tenantHeaders();
     }
 
     // ─── Index ────────────────────────────────────────────────────────────────

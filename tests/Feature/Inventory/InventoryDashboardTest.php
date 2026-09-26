@@ -7,25 +7,18 @@ use App\Models\Admin\Location;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
+use Tests\Concerns\CreatesTenant;
 use Tests\TestCase;
 
 class InventoryDashboardTest extends TestCase
 {
-    use RefreshDatabase;
-
-    private User $user;
-    private Company $company;
-    private Location $location;
+    use RefreshDatabase, CreatesTenant;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->company  = Company::factory()->create();
-        $this->location = Location::factory()->create(['company_id' => $this->company->id]);
-        $this->user     = User::factory()->create();
-
-        Sanctum::actingAs($this->user, ['*']);
+        $this->createTenant();
     }
 
     // ─── Dashboard Stats ──────────────────────────────────────────────────────
@@ -102,8 +95,8 @@ class InventoryDashboardTest extends TestCase
 
     public function test_dashboard_stats_requires_authentication(): void
     {
-        // Reset auth state for this single test
-        $this->app->forgetInstance(\Illuminate\Auth\AuthManager::class);
+        // Sin sesión: forgetInstance no borraba al usuario de Sanctum::actingAs.
+        $this->app['auth']->forgetGuards();
 
         $response = $this->getJson(
             "/api/auth/admin/inventory/reports/dashboard?company_id={$this->company->id}"

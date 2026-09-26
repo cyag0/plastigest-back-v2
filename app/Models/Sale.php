@@ -25,6 +25,8 @@ use Exception;
  */
 class Sale extends Model
 {
+    use \Illuminate\Database\Eloquent\Factories\HasFactory;
+
     use SoftDeletes;
 
     /**

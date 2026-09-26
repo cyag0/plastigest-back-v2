@@ -14,6 +14,7 @@ use App\Support\CurrentCompany;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\Sanctum;
+use Tests\Concerns\CreatesTenant;
 use Tests\TestCase;
 
 /**
@@ -28,13 +29,12 @@ use Tests\TestCase;
  */
 class PdfTenantScopingTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, CreatesTenant;
 
     private Company $companyA;
     private Company $companyB;
     private Location $locationA;
     private Location $locationB;
-    private User $user;
 
     protected function setUp(): void
     {
@@ -45,7 +45,10 @@ class PdfTenantScopingTest extends TestCase
         $this->locationA = $this->makeLocation('A', $this->companyA->id);
         $this->locationB = $this->makeLocation('B', $this->companyB->id);
 
-        $this->user = User::factory()->create();
+        // Asignado a la sucursal de la empresa A con todos los permisos: sin
+        // eso todo responde 403 y no se prueba el aislamiento entre empresas.
+        $this->seed(\Database\Seeders\PermissionSeeder::class);
+        $this->user = $this->createUserWithRole($this->locationA);
         Sanctum::actingAs($this->user, ['*']);
     }
 

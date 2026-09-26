@@ -60,6 +60,7 @@ class SalesOrderStockServiceTest extends TestCase
             'email' => 'sucursal@example.com',
         ]);
 
+        $this->seed(\Database\Seeders\UnitsSeeder::class);
         $this->kilogram = Unit::query()->where('abbreviation', 'kg')->firstOrFail();
         $this->gram = Unit::query()->where('abbreviation', 'g')->firstOrFail();
 

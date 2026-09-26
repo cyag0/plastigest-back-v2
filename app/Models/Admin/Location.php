@@ -9,6 +9,14 @@ use Illuminate\Database\Eloquent\Model;
  */
 class Location extends Model
 {
+    use \Illuminate\Database\Eloquent\Factories\HasFactory;
+
+    /** Las factories viven en Database\Factories, sin la subcarpeta Admin. */
+    protected static function newFactory()
+    {
+        return \Database\Factories\LocationFactory::new();
+    }
+
 
     protected $fillable = [
         'name',

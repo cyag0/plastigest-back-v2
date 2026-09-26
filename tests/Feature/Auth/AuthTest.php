@@ -73,8 +73,9 @@ class AuthTest extends TestCase
         $response = $this->getJson('/api/auth/me');
 
         $response->assertStatus(200)
-            ->assertJsonPath('data.id', $user->id)
-            ->assertJsonPath('data.email', $user->email);
+            // /auth/me responde { user: ... }, que es lo que lee la app.
+            ->assertJsonPath('user.id', $user->id)
+            ->assertJsonPath('user.email', $user->email);
     }
 
     public function test_unauthenticated_user_cannot_fetch_profile(): void
@@ -119,7 +120,11 @@ class AuthTest extends TestCase
 
         $response->assertStatus(200);
 
-        // Verify the old token is revoked and new password works
+        // Verify the old token is revoked and new password works.
+        // Sanctum::actingAs deja el guard de Sanctum como default y login usa
+        // Auth::attempt (guard de sesión): se limpia como en una petición nueva.
+        $this->app['auth']->forgetGuards();
+        $this->app['auth']->shouldUse('web');
         $this->postJson('/api/auth/login', [
             'email'    => $user->email,
             'password' => 'new-password123',
