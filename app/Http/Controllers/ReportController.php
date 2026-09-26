@@ -7,6 +7,7 @@ use App\Models\PurchaseV2;
 use App\Models\Expense;
 use App\Models\CashMovement;
 use App\Models\InventoryTransfer;
+use App\Models\InventoryTransferDetail;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
@@ -574,6 +575,209 @@ class ReportController extends Controller
      * administradores pueden pedirlo. A un usuario básico se le limita a su
      * sucursal aunque la app mande scope=general.
      */
+    /**
+     * Get transfer statistics
+     */
+    public function transferStats(Request $request)
+    {
+        if (!CurrentWorker::hasPermission('reports_view')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $companyId = CurrentCompany::id();
+        $locationId = CurrentLocation::id();
+
+        // Determinar el período
+        $period = $request->get('period', 'month'); // 'today', 'week', 'month', 'year'
+        $dateRange = $this->getDateRange($period);
+
+        $baseQuery = InventoryTransfer::query()
+            ->where('company_id', $companyId)
+            ->whereBetween('created_at', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where(function ($q) use ($locationId) {
+                    $q->where('from_location_id', $locationId)
+                        ->orWhere('to_location_id', $locationId);
+                });
+            });
+
+        // Total de transferencias en el período
+        $totalTransfers = (clone $baseQuery)->count();
+
+        // Transferencias enviadas
+        $transfersSent = (clone $baseQuery)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where('from_location_id', $locationId);
+            }, function ($query) {
+                $query->whereNotNull('from_location_id');
+            })
+            ->count();
+
+        // Transferencias recibidas
+        $transfersReceived = (clone $baseQuery)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where('to_location_id', $locationId);
+            }, function ($query) {
+                $query->whereNotNull('to_location_id');
+            })
+            ->count();
+
+        // Transferencias por estado
+        $transfersByStatus = (clone $baseQuery)
+            ->select('status', DB::raw('count(*) as count'))
+            ->groupBy('status')
+            ->get()
+            ->mapWithKeys(function ($item) {
+                $status = $item->status;
+                if ($status instanceof \BackedEnum) {
+                    $status = $status->value;
+                }
+
+                return [(string) $status => (int) $item->count];
+            });
+
+        // Productos más transferidos
+        $topProducts = InventoryTransferDetail::query()
+            ->join('inventory_transfers', 'inventory_transfer_details.transfer_id', '=', 'inventory_transfers.id')
+            ->join('products', 'inventory_transfer_details.product_id', '=', 'products.id')
+            ->where('inventory_transfers.company_id', $companyId)
+            ->whereBetween('inventory_transfers.created_at', $dateRange)
+            ->when($locationId, function ($query) use ($locationId) {
+                $query->where(function ($q) use ($locationId) {
+                    $q->where('inventory_transfers.from_location_id', $locationId)
+                        ->orWhere('inventory_transfers.to_location_id', $locationId);
+                });
+            })
+            ->select(
+                'products.id',
+                'products.name',
+                'products.code',
+                DB::raw('SUM(COALESCE(inventory_transfer_details.quantity_shipped, inventory_transfer_details.quantity_requested, 0)) as total_quantity'),
+                DB::raw('COUNT(DISTINCT inventory_transfers.id) as transfer_count')
+            )
+            ->groupBy('products.id', 'products.name', 'products.code')
+            ->orderByDesc('total_quantity')
+            ->limit(10)
+            ->get();
+
+        // Ubicaciones con más transferencias
+        $originLocationCounts = (clone $baseQuery)
+            ->select(
+                'from_location_id as location_id',
+                DB::raw('COUNT(*) as transfer_count')
+            )
+            ->whereNotNull('from_location_id')
+            ->groupBy('from_location_id')
+            ->get();
+
+        $destinationLocationCounts = (clone $baseQuery)
+            ->select(
+                'to_location_id as location_id',
+                DB::raw('COUNT(*) as transfer_count')
+            )
+            ->whereNotNull('to_location_id')
+            ->groupBy('to_location_id')
+            ->get();
+
+        $locationTotals = collect();
+
+        foreach ($originLocationCounts as $row) {
+            $id = (int) $row->location_id;
+            $locationTotals[$id] = (int) ($locationTotals[$id] ?? 0) + (int) $row->transfer_count;
+        }
+
+        foreach ($destinationLocationCounts as $row) {
+            $id = (int) $row->location_id;
+            $locationTotals[$id] = (int) ($locationTotals[$id] ?? 0) + (int) $row->transfer_count;
+        }
+
+        $locationNames = DB::table('locations')
+            ->whereIn('id', $locationTotals->keys()->all())
+            ->pluck('name', 'id');
+
+        $topLocations = $locationTotals
+            ->map(function ($count, $locationId) use ($locationNames) {
+                return [
+                    'location_name' => $locationNames[$locationId] ?? ('Ubicación #' . $locationId),
+                    'transfer_count' => (int) $count,
+                ];
+            })
+            ->sortByDesc('transfer_count')
+            ->take(5)
+            ->values();
+
+        // Transferencias por período (últimos 7 días o 12 meses según el período)
+        if ($period === 'today' || $period === 'week') {
+            // Últimos 7 días
+            $transfersByPeriod = InventoryTransfer::query()
+                ->where('company_id', $companyId)
+                ->whereBetween('created_at', [now()->subDays(7), now()])
+                ->when($locationId, function ($query) use ($locationId) {
+                    $query->where(function ($q) use ($locationId) {
+                        $q->where('from_location_id', $locationId)
+                            ->orWhere('to_location_id', $locationId);
+                    });
+                })
+                ->select(
+                    DB::raw('DATE(created_at) as date'),
+                    DB::raw('COUNT(*) as count')
+                )
+                ->groupBy('date')
+                ->orderBy('date')
+                ->get();
+        } else {
+            // Últimos 12 meses
+            $transfersByPeriod = InventoryTransfer::query()
+                ->where('company_id', $companyId)
+                ->whereBetween('created_at', [now()->subMonths(12), now()])
+                ->when($locationId, function ($query) use ($locationId) {
+                    $query->where(function ($q) use ($locationId) {
+                        $q->where('from_location_id', $locationId)
+                            ->orWhere('to_location_id', $locationId);
+                    });
+                })
+                ->select(
+                    DB::raw('DATE_FORMAT(created_at, "%Y-%m") as month'),
+                    DB::raw('COUNT(*) as count')
+                )
+                ->groupBy('month')
+                ->orderBy('month')
+                ->get();
+        }
+
+        // Tiempo promedio de procesamiento (diferencia entre creación y recepción para completadas)
+        $completedTransfers = (clone $baseQuery)
+            ->where('status', 'completed')
+            ->get(['created_at', 'updated_at', 'content']);
+
+        $avgProcessingTime = $completedTransfers
+            ->map(function ($transfer) {
+                $receivedAt = data_get($transfer->content, 'step_3.received_at');
+                $endAt = $receivedAt ? Carbon::parse($receivedAt) : $transfer->updated_at;
+
+                if (!$transfer->created_at || !$endAt) {
+                    return null;
+                }
+
+                return max($transfer->created_at->diffInMinutes($endAt) / 60, 0);
+            })
+            ->reject(fn($value) => $value === null)
+            ->avg();
+
+        return response()->json([
+            'data' => [
+                'total_transfers' => $totalTransfers,
+                'transfers_sent' => $transfersSent,
+                'transfers_received' => $transfersReceived,
+                'transfers_by_status' => $transfersByStatus,
+                'top_products' => $topProducts,
+                'top_locations' => $topLocations,
+                'transfers_by_period' => $transfersByPeriod,
+                'avg_processing_time_hours' => round($avgProcessingTime ?? 0, 1),
+            ]
+        ]);
+    }
+
     private function resolveScope(Request $request): string
     {
         $scope = $request->get('scope', 'location');

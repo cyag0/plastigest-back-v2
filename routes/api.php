@@ -297,8 +297,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
             Route::prefix('reports')->group(function () {
                 // Los demás reportes (dashboard, tendencia, métodos de pago…) leían
-                // el esquema anterior y respondían 500; el dashboard vigente es reports-v2.
+                // el esquema anterior y respondían 500, y la app no los usa; el
+                // dashboard vigente es reports-v2.
                 Route::get('inventory-stats', [App\Http\Controllers\ReportController::class, 'inventoryStats']);
+                // Lo usa el menú de transferencias (TransferStats).
+                Route::get('transfer-stats', [App\Http\Controllers\ReportController::class, 'transferStats']);
             });
 
             Route::prefix('reports-v2')->group(function () {
