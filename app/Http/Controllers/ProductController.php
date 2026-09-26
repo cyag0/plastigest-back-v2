@@ -16,6 +16,7 @@ use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -279,6 +280,18 @@ class ProductController extends CrudController
     }
 
     /**
+     * Empresa del producto que se va a crear: la del cuerpo (company_id o
+     * company_id[]) o la empresa actual. Misma regla que processStoreData.
+     */
+    private function storeCompanyId(Request $request): ?int
+    {
+        $companyId = $request->input('company_id');
+        $companyId = is_array($companyId) ? reset($companyId) : $companyId;
+
+        return $companyId ? (int) $companyId : current_company_id();
+    }
+
+    /**
      * Validación para store
      */
     protected function validateStoreData(Request $request): array
@@ -302,7 +315,13 @@ class ProductController extends CrudController
         $rules = [
             'name' => 'required|string|max:150',
             'description' => 'nullable|string',
-            'code' => 'required|string|max:50|unique:products,code',
+            // Único dentro de la empresa, no en toda la base.
+            'code' => [
+                'required', 'string', 'max:50',
+                Rule::unique('products', 'code')->where(
+                    fn($q) => $q->where('company_id', $this->storeCompanyId($request))
+                ),
+            ],
             'purchase_price' => 'nullable|numeric|min:0',
             'sale_price' => 'nullable|numeric|min:0',
             'category_id' => 'nullable|exists:categories,id',
@@ -371,7 +390,12 @@ class ProductController extends CrudController
         return $request->validate([
             'name' => 'nullable|string|max:150',
             'description' => 'nullable|string',
-            'code' => 'nullable',
+            'code' => [
+                'nullable', 'string', 'max:50',
+                Rule::unique('products', 'code')
+                    ->where(fn($q) => $q->where('company_id', $model->company_id))
+                    ->ignore($model->id),
+            ],
             'purchase_price' => 'nullable|numeric|min:0',
             'sale_price' => 'nullable|numeric|min:0',
             'company_id' => 'nullable',
