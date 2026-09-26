@@ -6,6 +6,7 @@ use App\Models\Product;
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 use App\Models\Category;
+use App\Models\InventoryType;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
@@ -28,17 +29,19 @@ use Illuminate\Support\Facades\DB;
  * (Cocada horneada, Polvorín, Galleta, Harina, Azúcar, Contenedor Glad). Como un
  * product_package requiere un producto base, esas piezas base se crean aquí con
  * `for_sale = false` (solo existen para anclar su paquete).
+ *
+ * Es idempotente: crea o actualiza cada producto por (empresa, código) y
+ * conserva su id, su existencia y su historial. Antes borraba todos los
+ * productos con las llaves foráneas apagadas: fórmulas, producciones, ventas y
+ * el libro mayor quedaban apuntando a ids inexistentes, y el stock volvía a 0.
+ *
+ * También asigna el tipo de inventario (antes quedaba vacío y el producto no
+ * aparecía en las pantallas por tipo ni como insumo de producción).
  */
 class ProductsSeeder extends Seeder
 {
     public function run(): void
     {
-        DB::statement('SET FOREIGN_KEY_CHECKS=0;');
-        DB::table('product_packages')->delete();
-        DB::table('product_location')->whereIn('product_id', Product::pluck('id'))->delete();
-        Product::query()->delete();
-        DB::statement('SET FOREIGN_KEY_CHECKS=1;');
-
         $company = Company::where('name', 'Cocos Francisco')->first();
 
         if (!$company) {
@@ -195,6 +198,9 @@ class ProductsSeeder extends Seeder
             ['name' => 'Contenedor Glad', 'code' => 'LIM-CONT-GLAD', 'purchase' => 0, 'sale' => 0, 'category' => 'Limpieza', 'unit' => 'Pieza', 'type' => 'raw_material', 'supplier' => 'SAMS CLUB', 'for_sale' => false, 'description' => 'Pieza base; se compra por paquete.'],
         ];
 
+        $created = 0;
+        $updated = 0;
+
         foreach ($products as $data) {
             $category = $categoriesCollection->where('name', $data['category'])->first();
 
@@ -202,21 +208,39 @@ class ProductsSeeder extends Seeder
             $supplierName = $supplierLabel !== null ? ($supplierMap[$supplierLabel] ?? $supplierLabel) : null;
             $supplierId = $supplierName !== null ? ($suppliers[$supplierName] ?? null) : null;
 
-            $product = Product::create([
-                'name' => $data['name'],
-                'code' => $data['code'],
-                'purchase_price' => $data['purchase'] > 0 ? $data['purchase'] : null,
-                'sale_price' => $data['sale'] > 0 ? $data['sale'] : null,
-                'description' => $data['description'] ?? null,
-                'company_id' => $company->id,
-                'category_id' => $category?->id,
-                'supplier_id' => $supplierId,
-                'unit_id' => $units[$data['unit']] ?? null,
-                'product_type' => $data['type'] ?? 'commercial',
-                'for_sale' => $data['for_sale'] ?? true,
-            ]);
+            $typeCode = $this->inventoryTypeCode($data);
+            $inventoryTypeId = InventoryType::idForCode($typeCode, $company->id);
 
-            $productLocationRecords = $locations->map(fn($location) => [
+            $product = Product::updateOrCreate(
+                ['company_id' => $company->id, 'code' => $data['code']],
+                [
+                    'name' => $data['name'],
+                    'purchase_price' => $data['purchase'] > 0 ? $data['purchase'] : null,
+                    'sale_price' => $data['sale'] > 0 ? $data['sale'] : null,
+                    'description' => $data['description'] ?? null,
+                    'category_id' => $category?->id,
+                    'supplier_id' => $supplierId,
+                    'unit_id' => $units[$data['unit']] ?? null,
+                    'inventory_type_id' => $inventoryTypeId,
+                    // El enum viejo se mantiene sincronizado con el tipo, como en ProductController.
+                    'product_type' => InventoryType::CODE_TO_LEGACY_TYPE[$typeCode] ?? ($data['type'] ?? 'commercial'),
+                    'for_sale' => $data['for_sale'] ?? true,
+                ]
+            );
+
+            $product->wasRecentlyCreated ? $created++ : $updated++;
+
+            // Solo las sucursales que le falten: las existentes conservan su stock.
+            // (product_location no tiene llave única por producto+sucursal, así
+            // que se filtra aquí en vez de usar insertOrIgnore.)
+            $existingLocationIds = DB::table('product_location')
+                ->where('product_id', $product->id)
+                ->pluck('location_id')
+                ->all();
+
+            $productLocationRecords = $locations
+                ->reject(fn($location) => in_array($location->id, $existingLocationIds))
+                ->map(fn($location) => [
                 'product_id' => $product->id,
                 'location_id' => $location->id,
                 'current_stock' => 0,
@@ -227,12 +251,31 @@ class ProductsSeeder extends Seeder
                 'active' => true,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ])->toArray();
+            ])->values()->toArray();
 
-            DB::table('product_location')->insert($productLocationRecords);
+            if (!empty($productLocationRecords)) {
+                DB::table('product_location')->insert($productLocationRecords);
+            }
         }
 
-        $this->command->info('Creados ' . count($products) . ' productos de Cocos Francisco');
-        $this->command->info('Asignados a ' . $locations->count() . ' ubicaciones (' . (count($products) * $locations->count()) . ' registros en product_location)');
+        $this->command->info("Productos de Cocos Francisco: {$created} creados, {$updated} actualizados");
+        $this->command->info('Presentes en ' . $locations->count() . ' ubicaciones (sin tocar el stock existente)');
+    }
+
+    /**
+     * Tipo de inventario de un producto del catálogo.
+     *
+     * Envases y PET se consumen al empacar; Limpieza es insumo que no entra en
+     * el producto; lo procesado sale de producción; el resto es materia prima.
+     */
+    private function inventoryTypeCode(array $data): string
+    {
+        return match (true) {
+            $data['category'] === 'Envases y PET' => InventoryType::PACKAGING_MATERIAL,
+            $data['category'] === 'Limpieza' => InventoryType::SUPPLY,
+            ($data['type'] ?? null) === 'processed' => InventoryType::FINISHED_PRODUCT,
+            ($data['type'] ?? null) === 'raw_material' => InventoryType::RAW_MATERIAL,
+            default => InventoryType::MERCHANDISE,
+        };
     }
 }
