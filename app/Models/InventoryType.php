@@ -68,9 +68,9 @@ class InventoryType extends Model
     ];
 
     /**
-     * Vuelta al enum anterior. `products.product_type` sigue vivo (lo leen el
-     * POS, compras y los reportes), así que al guardar un producto se rellena a
-     * partir de su tipo de inventario.
+     * Vuelta al enum anterior. La columna products.product_type ya no existe;
+     * Product::getProductTypeAttribute lo calcula con este mapa para las
+     * versiones viejas de la app que todavía lo leen.
      *
      * Los tipos nuevos caen en el valor viejo más cercano: el material de
      * empaque es materia prima porque se compra y se consume, y el granel es

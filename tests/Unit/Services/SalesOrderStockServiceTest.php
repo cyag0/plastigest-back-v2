@@ -69,7 +69,7 @@ class SalesOrderStockServiceTest extends TestCase
             'unit_id' => $this->kilogram->id,
             'code' => 'FRIJOL-001',
             'name' => 'Frijol',
-            'product_type' => Product::PRODUCT_TYPE_COMMERCIAL,
+            'inventory_type_id' => \App\Models\InventoryType::idForCode(\App\Models\InventoryType::MERCHANDISE),
             'for_sale' => true,
         ]);
 

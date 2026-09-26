@@ -106,7 +106,6 @@ trait CreatesTenant
             'company_id' => $this->company->id,
             'unit_id' => $this->unitId($unit),
             'inventory_type_id' => InventoryType::idForCode($typeCode),
-            'product_type' => InventoryType::CODE_TO_LEGACY_TYPE[$typeCode] ?? 'commercial',
             'purchase_price' => 10,
             'sale_price' => 20,
             'for_sale' => true,

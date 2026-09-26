@@ -262,7 +262,7 @@ class PdfTenantScopingTest extends TestCase
             'sale_price'     => 20.00,
             'category_id'    => $category->id,
             'unit_id'        => $unit->id,
-            'product_type'   => Product::PRODUCT_TYPE_PROCESSED,
+            'inventory_type_id' => \App\Models\InventoryType::idForCode(\App\Models\InventoryType::FINISHED_PRODUCT),
             'for_sale'       => true,
         ]);
     }

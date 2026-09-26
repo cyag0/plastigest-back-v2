@@ -196,8 +196,14 @@ class ProductController extends CrudController
             });
         }
 
+        // Filtro del enum anterior (lo mandan versiones viejas de la app): se
+        // traduce a los tipos de inventario equivalentes.
         if (isset($params['product_type']) && is_array($params['product_type']) && count($params['product_type']) > 0) {
-            $query->whereIn('product_type', $params['product_type']);
+            $codes = array_keys(array_filter(
+                InventoryType::CODE_TO_LEGACY_TYPE,
+                fn($legacy) => in_array($legacy, $params['product_type'], true)
+            ));
+            $query->whereHas('inventoryType', fn($q) => $q->whereIn('code', $codes));
         }
 
         // Filtrar por tipo de inventario (uno o varios ids). Es el filtro que usa
@@ -306,7 +312,7 @@ class ProductController extends CrudController
             $request->merge(['requires_packaging' => $request->boolean('requires_packaging')]);
         }
 
-        $this->fillLegacyProductType($request);
+        $this->fillInventoryTypeFromLegacy($request);
         $this->pruneEmptyRows($request, 'ingredients', 'ingredient_id');
         $this->pruneEmptyRows($request, 'packaging_materials', 'material_product_id');
 
@@ -325,8 +331,9 @@ class ProductController extends CrudController
             'category_id' => 'nullable|exists:categories,id',
             'unit_id' => 'nullable|exists:units,id',
             'supplier_id' => 'nullable|exists:suppliers,id',
-            'inventory_type_id' => 'nullable|exists:inventory_types,id',
-            'product_type' => 'required|in:raw_material,processed,commercial',
+            // El tipo de inventario es obligatorio; versiones viejas de la app
+            // mandan product_type y fillInventoryTypeFromLegacy lo traduce.
+            'inventory_type_id' => 'required|exists:inventory_types,id',
             'is_active' => 'boolean',
             'for_sale' => 'boolean',
             // Receta de empaque: de qué granel sale y qué material consume.
@@ -381,7 +388,7 @@ class ProductController extends CrudController
             $request->merge(['requires_packaging' => $request->boolean('requires_packaging')]);
         }
 
-        $this->fillLegacyProductType($request);
+        $this->fillInventoryTypeFromLegacy($request);
         $this->pruneEmptyRows($request, 'ingredients', 'ingredient_id');
         $this->pruneEmptyRows($request, 'packaging_materials', 'material_product_id');
 
@@ -401,7 +408,7 @@ class ProductController extends CrudController
             'unit_id' => 'nullable|exists:units,id',
             'supplier_id' => 'nullable|exists:suppliers,id',
             'inventory_type_id' => 'nullable|exists:inventory_types,id',
-            'product_type' => 'nullable|in:raw_material,processed,commercial',
+
             'is_active' => 'nullable|boolean',
             'for_sale' => 'nullable|boolean',
             // Receta de empaque: ver validateStoreData.
@@ -431,23 +438,20 @@ class ProductController extends CrudController
     }
 
     /**
-     * Rellena `product_type` a partir del tipo de inventario.
-     *
-     * El formulario de la app ya sólo manda `inventory_type_id`, pero
-     * `products.product_type` sigue siendo obligatorio y lo leen el POS,
-     * compras y los reportes. Se mantienen sincronizados hasta que el enum
-     * viejo desaparezca del todo.
+     * Versiones viejas de la app mandan `product_type` (enum anterior) en lugar
+     * de `inventory_type_id`: se traduce al tipo equivalente. La columna
+     * product_type ya no existe.
      */
-    private function fillLegacyProductType(Request $request): void
+    private function fillInventoryTypeFromLegacy(Request $request): void
     {
-        if (!$request->filled('inventory_type_id')) {
+        if ($request->filled('inventory_type_id') || !$request->filled('product_type')) {
             return;
         }
 
-        $legacyType = InventoryType::legacyTypeForId((int) $request->input('inventory_type_id'));
+        $typeId = InventoryType::idForLegacyType((string) $request->input('product_type'), current_company_id());
 
-        if ($legacyType) {
-            $request->merge(['product_type' => $legacyType]);
+        if ($typeId) {
+            $request->merge(['inventory_type_id' => $typeId]);
         }
     }
 
@@ -548,36 +552,6 @@ class ProductController extends CrudController
 
         // Manejar activación en sucursales (en actualización NUNCA se toca current_stock)
         $this->handleLocationActivation($model, $request, true);
-    }
-
-    /**
-     * Obtener materias primas disponibles para ingredientes
-     */
-    public function getRawMaterials(Request $request)
-    {
-        $query = Product::where('product_type', 'raw_material')
-            ->where('is_active', true);
-
-        // Filtrar por empresa actual o especificada
-        $companyId = $request->input('company_id') ?? current_company_id();
-        if ($companyId) {
-            $query->where('company_id', $companyId);
-        }
-
-        // Búsqueda por nombre o código
-        if ($request->has('search')) {
-            $search = $request->input('search');
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', '%' . $search . '%')
-                    ->orWhere('code', 'like', '%' . $search . '%');
-            });
-        }
-
-        $rawMaterials = $query->select('id', 'name', 'code', 'description')
-            ->orderBy('name')
-            ->get();
-
-        return response()->json($rawMaterials);
     }
 
     /**
@@ -873,8 +847,8 @@ class ProductController extends CrudController
      */
     private function handleProductIngredients(Model $product, Request $request, bool $isUpdate = false): void
     {
-        // Solo procesar ingredientes para productos procesados
-        if ($product->product_type !== 'processed') {
+        // Solo los productos que se producen llevan ingredientes.
+        if (!$product->inventoryType?->is_producible) {
             return;
         }
 
@@ -892,9 +866,9 @@ class ProductController extends CrudController
         // Agregar nuevos ingredientes
         foreach ($ingredients as $ingredientData) {
             if (!empty($ingredientData['ingredient_id']) && !empty($ingredientData['quantity'])) {
-                // Validar que el ingrediente sea de tipo raw_material
-                $ingredient = Product::find($ingredientData['ingredient_id']);
-                if ($ingredient && $ingredient->product_type === 'raw_material') {
+                // El ingrediente tiene que ser de un tipo que se consume en producción.
+                $ingredient = Product::with('inventoryType')->find($ingredientData['ingredient_id']);
+                if ($ingredient && $ingredient->inventoryType?->is_consumable) {
                     $product->productIngredients()->create([
                         'ingredient_id' => $ingredientData['ingredient_id'],
                         'quantity' => $ingredientData['quantity'],

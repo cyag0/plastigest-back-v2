@@ -23,7 +23,6 @@ class Product extends Model
         'category_id',
         'unit_id',
         'supplier_id',
-        'product_type',
         'inventory_type_id',
         'for_sale',
         'requires_packaging',
@@ -42,16 +41,18 @@ class Product extends Model
         'updated_at' => 'datetime',
     ];
 
-    // Constantes para product_type
-    const PRODUCT_TYPE_RAW_MATERIAL = 'raw_material';
-    const PRODUCT_TYPE_PROCESSED = 'processed';
-    const PRODUCT_TYPE_COMMERCIAL = 'commercial';
+    /**
+     * Tipo del enum anterior (raw_material | processed | commercial), calculado
+     * a partir del tipo de inventario. La columna products.product_type ya no
+     * existe; se sigue exponiendo para las versiones de la app instaladas que
+     * todavía lo leen.
+     */
+    public function getProductTypeAttribute(): string
+    {
+        $code = $this->inventoryType?->code;
 
-    const PRODUCT_TYPES = [
-        self::PRODUCT_TYPE_RAW_MATERIAL => 'Materia Prima',
-        self::PRODUCT_TYPE_PROCESSED => 'Producto Procesado',
-        self::PRODUCT_TYPE_COMMERCIAL => 'Producto Comercial',
-    ];
+        return InventoryType::CODE_TO_LEGACY_TYPE[$code] ?? 'commercial';
+    }
 
     /**
      * Get the company that owns the product.

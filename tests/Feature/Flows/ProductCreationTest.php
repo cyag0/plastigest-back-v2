@@ -47,7 +47,8 @@ class ProductCreationTest extends TestCase
 
         $product = Product::where('code', 'BOT-1L')->firstOrFail();
         $this->assertSame($this->company->id, (int) $product->company_id);
-        $this->assertSame('raw_material', $product->product_type, 'product_type se sincroniza con el tipo');
+        // product_type ya no es columna: se calcula del tipo para versiones viejas de la app.
+        $this->assertSame('raw_material', $product->product_type);
         $this->assertDatabaseHas('product_location', [
             'product_id' => $product->id,
             'location_id' => $this->location->id,
@@ -80,7 +81,7 @@ class ProductCreationTest extends TestCase
             'name' => 'Otra empresa',
             'code' => 'BOT-1L',
             'company_id' => $other->id,
-            'product_type' => 'commercial',
+            'inventory_type_id' => InventoryType::idForCode(InventoryType::MERCHANDISE),
         ]);
 
         $this->withHeaders($this->tenantHeaders())
@@ -98,5 +99,26 @@ class ProductCreationTest extends TestCase
             ->assertStatus(422);
 
         $this->assertDatabaseMissing('products', ['code' => 'BOT-1L']);
+    }
+
+    public function test_old_app_versions_can_still_send_product_type(): void
+    {
+        // Una app instalada de antes manda product_type y no inventory_type_id.
+        $payload = $this->payload(['product_type' => 'processed']);
+        unset($payload['inventory_type_id']);
+
+        $this->withHeaders($this->tenantHeaders())
+            ->post('/api/auth/admin/products', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.product_type', 'processed');
+
+        $product = Product::where('code', 'BOT-1L')->firstOrFail();
+        $this->assertSame(InventoryType::idForCode(InventoryType::FINISHED_PRODUCT), (int) $product->inventory_type_id);
+
+        // Y el filtro viejo por product_type sigue funcionando.
+        $codes = collect($this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/products?product_type[]=processed&per_page=50')
+            ->assertOk()->json('data'))->pluck('code');
+        $this->assertContains('BOT-1L', $codes->all());
     }
 }

@@ -399,10 +399,9 @@ class ProductionOrderService
 
         $products = Product::query()
             ->when($companyId, fn($q) => $q->where('company_id', $companyId))
-            ->whereIn('product_type', ['raw_material', 'processed', 'commercial'])
             ->with('unit')
             ->orderBy('name')
-            ->get(['id', 'name', 'code', 'product_type', 'unit_id']);
+            ->get(['id', 'name', 'code', 'inventory_type_id', 'unit_id']);
 
         $formulas = Formula::query()
             ->when($companyId, fn($q) => $q->where('company_id', $companyId))

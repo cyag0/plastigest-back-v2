@@ -222,8 +222,6 @@ class ProductsSeeder extends Seeder
                     'supplier_id' => $supplierId,
                     'unit_id' => $units[$data['unit']] ?? null,
                     'inventory_type_id' => $inventoryTypeId,
-                    // El enum viejo se mantiene sincronizado con el tipo, como en ProductController.
-                    'product_type' => InventoryType::CODE_TO_LEGACY_TYPE[$typeCode] ?? ($data['type'] ?? 'commercial'),
                     'for_sale' => $data['for_sale'] ?? true,
                 ]
             );
