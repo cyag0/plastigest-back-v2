@@ -420,16 +420,21 @@ class InventoryController extends Controller
             default => [Carbon::now()->startOfMonth(), Carbon::now()],
         };
 
-        // Total active products for the company
+        // El estado activo vive en product_location.active (por sucursal); la
+        // columna products.is_active ya no existe y esta consulta respondía 500.
+        // Total de productos activos (en la sucursal, o en alguna si no se filtra)
         $totalProducts = Product::where('company_id', $companyId)
-            ->where('is_active', true)
+            ->whereHas('locations', function ($q) use ($locationId) {
+                $q->where('product_location.active', true)
+                    ->when($locationId, fn($qq) => $qq->where('product_location.location_id', $locationId));
+            })
             ->count();
 
         // Total stock and inventory value from product_location
         $stockQuery = DB::table('product_location')
             ->join('products', 'product_location.product_id', '=', 'products.id')
             ->where('products.company_id', $companyId)
-            ->where('products.is_active', true);
+            ->where('product_location.active', true);
 
         if ($locationId) {
             $stockQuery->where('product_location.location_id', $locationId);
