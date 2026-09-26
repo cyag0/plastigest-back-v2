@@ -10,6 +10,24 @@ class WhatsAppService
     protected $whatsapp;
     protected $fromPhoneNumberId;
 
+    /** Hay credenciales de WhatsApp Cloud API configuradas. */
+    public static function isConfigured(): bool
+    {
+        return filled(config('services.whatsapp.access_token'))
+            && filled(config('services.whatsapp.phone_number_id'));
+    }
+
+    /**
+     * Número en formato internacional sin "+". Un número local de 10 dígitos
+     * se toma como celular de México (521 + número).
+     */
+    public static function formatPhoneNumber(string $phone): string
+    {
+        $phone = ltrim(preg_replace('/[^0-9+]/', '', $phone), '+');
+
+        return strlen($phone) === 10 ? '521' . $phone : $phone;
+    }
+
     public function __construct()
     {
         $this->fromPhoneNumberId = config('services.whatsapp.phone_number_id');
@@ -25,7 +43,7 @@ class WhatsAppService
      * Send purchase order details to supplier via WhatsApp
      *
      * @param string $phoneNumber Phone number in format: 51987654321 (without +)
-     * @param \App\Models\Purchase $purchase
+     * @param \App\Models\PurchaseV2 $purchase
      * @return bool
      */
     public function sendPurchaseOrder($phoneNumber, $purchase)
@@ -81,11 +99,11 @@ class WhatsAppService
             $productName = $detail->product->name ?? 'Producto';
             $quantity = number_format($detail->quantity, 2);
             $unit = $detail->unit->abbreviation ?? 'und';
-            $unitPrice = number_format($detail->unit_cost, 2);
-            $subtotal = number_format($detail->total_cost, 2);
+            $unitPrice = number_format($detail->unit_price, 2);
+            $subtotal = number_format($detail->total, 2);
 
             $message .= sprintf(
-                "• %s\n  %.2f %s x S/ %s = S/ %s\n",
+                "• %s\n  %.2f %s x $%s = $%s\n",
                 $productName,
                 $detail->quantity,
                 $unit,
@@ -95,7 +113,7 @@ class WhatsAppService
         }
 
         $message .= "```\n\n";
-        $message .= "💰 *TOTAL:* S/ " . number_format($purchase->total_cost, 2) . "\n\n";
+        $message .= "💰 *TOTAL:* $" . number_format($purchase->total, 2) . "\n\n";
 
         if ($purchase->notes) {
             $message .= "📝 *Notas:* {$purchase->notes}\n\n";

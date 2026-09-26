@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Purchase;
-use App\Models\Task;
-use App\Notifications\NotificationEngine;
+use App\Models\PurchaseV2;
+use App\Services\TaskService;
+use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -88,20 +88,25 @@ class WhatsAppWebhookController extends Controller
         ]);
 
         // Buscar compras pendientes del proveedor que envió el mensaje
-        $purchases = Purchase::whereHas('supplier', function ($query) use ($from) {
-            $formattedPhone = $this->formatPhoneNumber($from);
+        // Compras v2 ordenadas del proveedor. Antes se consultaban las compras
+        // del sistema anterior (tabla movements), que la app ya no crea: el
+        // webhook nunca encontraba nada.
+        $purchases = PurchaseV2::whereHas('supplier', function ($query) use ($from) {
+            $formattedPhone = WhatsAppService::formatPhoneNumber($from);
             // Buscar por los últimos 10 dígitos (número sin código de país)
             $lastDigits = substr($formattedPhone, -10);
-            $query->where('phone', 'like', '%' . $lastDigits . '%');
+            // Solo dígitos: en el catálogo el teléfono puede venir como
+            // "322 123 4567" o "(322) 123-4567" y no coincidía.
+            $query->whereRaw("REGEXP_REPLACE(phone, '[^0-9]', '') LIKE ?", ['%' . $lastDigits]);
         })
-            ->whereIn('status', ['ordered'])
+            ->where('status', PurchaseV2::STATUS_ORDERED)
             ->orderBy('created_at', 'desc')
             ->get();
 
         Log::info('Searching purchases for phone', [
             'from' => $from,
-            'formatted' => $this->formatPhoneNumber($from),
-            'last_digits' => substr($this->formatPhoneNumber($from), -10)
+            'formatted' => WhatsAppService::formatPhoneNumber($from),
+            'last_digits' => substr(WhatsAppService::formatPhoneNumber($from), -10)
         ]);
 
         if ($purchases->isEmpty()) {
@@ -111,9 +116,6 @@ class WhatsAppWebhookController extends Controller
 
         // Detectar palabras clave en el mensaje
         $messageTextLower = strtolower($messageText);
-
-        // Palabras clave para confirmar recepción
-        $receivedKeywords = ['recibido', 'entregado', 'llegó', 'llego', 'completado'];
 
         // Palabras clave para confirmar envío (más variaciones)
         $transitKeywords = [
@@ -138,60 +140,24 @@ class WhatsAppWebhookController extends Controller
 
         Log::info("compras", ['count' => $purchases->count()]);
 
-        foreach ($purchases as $purchase) {
-            // Limpiar espacios en blanco del status
-            /** @var \App\Models\Purchase $purchase */
-            $purchase = $purchase;
+        // Solo la compra más reciente. La recepción no se marca por WhatsApp:
+        // recibir en v2 requiere capturar cantidades y mover stock, así que se
+        // crea la tarea "Recibir compra" para hacerlo en la app.
+        $purchase = $purchases->first();
 
-            $currentStatus = $purchase->status->value;
+        foreach ($transitKeywords as $keyword) {
+            if (str_contains($messageTextLower, $keyword)) {
+                $purchase->appendStatusLog(PurchaseV2::STATUS_IN_TRANSIT, null);
+                $purchase->update(['status' => PurchaseV2::STATUS_IN_TRANSIT]);
 
-            Log::info('Evaluating purchase for status update', [
-                'purchase_id' => $purchase->id,
-                'current_status' => $currentStatus,
-            ]);
-
-            // Si está "ordered" y el mensaje indica que fue enviado
-            if ($currentStatus === 'ordered') {
-                Log::info("evaluando palabras de tránsito", [
-                    'transit_keywords' => $transitKeywords,
-                    'message_text' => $messageTextLower
+                Log::info('Purchase marked as in_transit via WhatsApp', [
+                    'purchase_id' => $purchase->id,
+                    'keyword' => $keyword,
+                    'message' => $messageText,
                 ]);
 
-                foreach ($transitKeywords as $keyword) {
-                    if (str_contains($messageTextLower, $keyword)) {
-                        Log::info("palabra de tránsito detectada: " . $keyword);
-
-                        $purchase->update(['status' => 'in_transit']);
-
-                        Log::info('Purchase marked as in_transit via WhatsApp', [
-                            'purchase_id' => $purchase->id,
-                            'message' => $messageText
-                        ]);
-
-                        // Enviar notificación de que el producto fue enviado
-                        $this->notifyPurchaseInTransit($purchase);
-
-                        return; // Solo procesar la compra más reciente
-                    }
-                }
-            }
-
-            // Si está "in_transit" y el mensaje indica que fue recibido
-            if ($currentStatus === 'in_transit') {
-                foreach ($receivedKeywords as $keyword) {
-                    if (str_contains($messageTextLower, $keyword)) {
-                        $purchase->update(['status' => 'received']);
-                        Log::info('Purchase marked as received via WhatsApp', [
-                            'purchase_id' => $purchase->id,
-                            'message' => $messageText
-                        ]);
-
-                        // Enviar notificación de que el producto fue recibido
-                        $this->notifyPurchaseReceived($purchase);
-
-                        return; // Solo procesar la compra más reciente
-                    }
-                }
+                $this->createReceiveTask($purchase);
+                return;
             }
         }
 
@@ -203,21 +169,6 @@ class WhatsAppWebhookController extends Controller
         ]);
     }
 
-    /**
-     * Format phone number
-     */
-    protected function formatPhoneNumber($phone)
-    {
-        $phone = preg_replace('/[^0-9+]/', '', $phone);
-        $phone = ltrim($phone, '+');
-
-        // Si tiene 10 dígitos (número local mexicano), agregar código de país
-        if (strlen($phone) === 10) {
-            $phone = '521' . $phone; // 52 (México) + 1 (celular)
-        }
-
-        return $phone;
-    }
 
     /**
      * Process message status updates (delivery, read, failed)
@@ -253,124 +204,16 @@ class WhatsAppWebhookController extends Controller
     }
 
     /**
-     * Create reception task for purchase in transit
-     * Note: Task creation automatically sends notification, no need for duplicate notification
+     * Tarea "Recibir compra" (la creación de la tarea ya notifica a los
+     * usuarios con permiso). Mismo paso que PurchaseV2Controller::markInTransit.
      */
-    protected function notifyPurchaseInTransit(Purchase $purchase)
+    protected function createReceiveTask(PurchaseV2 $purchase): void
     {
         try {
-            // Crear tarea automática para recibir la compra
-            // La creación de la tarea ya envía una notificación a los usuarios con permiso
-            (new PurchaseController())->createReceivePurchaseTask($purchase);
-
-            Log::info('Purchase in transit - task created and notification sent', [
-                'purchase_id' => $purchase->id
-            ]);
-        } catch (\Exception $e) {
+            app(TaskService::class)->createFromPurchaseV2($purchase);
+        } catch (\Throwable $e) {
             Log::error('Error creating purchase reception task', [
                 'purchase_id' => $purchase->id,
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Notify users that a purchase was received
-     */
-    protected function notifyPurchaseReceived(Purchase $purchase)
-    {
-        try {
-            $purchase->load(['supplier', 'details.product']);
-
-            $products = $purchase->details->map(function ($detail) {
-                return [
-                    'name' => $detail->product->name,
-                    'quantity' => $detail->quantity,
-                ];
-            })->toArray();
-
-            // Enviar notificación usando NotificationEngine
-            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
-                'purchase'      => $purchase,
-                'supplier_name' => $purchase->supplier->name,
-                'sub_type'      => 'received',
-                'products'      => $products,
-            ]);
-
-            Log::info('Purchase received notification sent', [
-                'purchase_id' => $purchase->id
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error notifying purchase received', [
-                'purchase_id' => $purchase->id,
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Crear tarea automática para recibir la compra
-     */
-    protected function createReceivePurchaseTask(Purchase $purchase)
-    {
-        try {
-            $productsList = $purchase->details->map(function ($detail) {
-                return "- {$detail->product->name} (x{$detail->quantity})";
-            })->join("\n");
-
-            $task = Task::create([
-                'title' => "Recibir Compra #{$purchase->id} - {$purchase->supplier->name}",
-                'description' => "Verificar y recibir los siguientes productos:\n\n{$productsList}\n\nProveedor: {$purchase->supplier->name}\nReferencia: {$purchase->reference}",
-                'type' => 'stock_check',
-                'priority' => 'high',
-                'status' => 'pending',
-                'due_date' => now()->addDays(2), // 2 días para recibir
-                'company_id' => $purchase->company_id,
-                'location_id' => $purchase->location_id,
-                'assigned_users' => [], // Se asignará automáticamente a usuarios con permiso
-                'is_recurring' => false,
-            ]);
-
-            Log::info('Receive purchase task created', [
-                'task_id' => $task->id,
-                'purchase_id' => $purchase->id,
-            ]);
-
-            // Notificar asignación de tarea a usuarios con permiso de compras
-            $this->notifyPurchaseTaskAssignment($task, $purchase);
-        } catch (\Exception $e) {
-            Log::error('Error creating receive purchase task', [
-                'purchase_id' => $purchase->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-    }
-
-    /**
-     * Notificar asignación de tarea de recepción de compra
-     */
-    protected function notifyPurchaseTaskAssignment(Task $task, Purchase $purchase)
-    {
-        try {
-            $purchase->load(['supplier', 'details.product']);
-
-            // Notificar a usuarios con permiso de compras via NotificationEngine (task_event)
-            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
-                'purchase'      => $purchase,
-                'supplier_name' => $purchase->supplier->name,
-                'sub_type'      => 'in_transit',
-                'products'      => $purchase->details->map(fn($d) => [
-                    'name'     => $d->product->name,
-                    'quantity' => $d->quantity,
-                ])->toArray(),
-            ]);
-
-            Log::info('Purchase task assignment notification sent', [
-                'task_id' => $task->id,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error notifying purchase task assignment', [
-                'task_id' => $task->id,
                 'error' => $e->getMessage(),
             ]);
         }

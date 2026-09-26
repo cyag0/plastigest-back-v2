@@ -324,8 +324,11 @@ class PurchaseV2Controller extends Controller
                 'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
             ]);
 
+            $whatsappSent = $this->sendOrderToSupplier($purchase);
+
             return response()->json([
                 'success' => true,
+                'whatsapp_sent' => $whatsappSent,
                 'message' => 'Compra confirmada exitosamente',
                 'data' => $purchase,
             ]);
@@ -1133,6 +1136,37 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'message' => 'Error al generar el PDF'
             ], 500);
+        }
+    }
+
+    /**
+     * Envía el pedido al proveedor por WhatsApp. Es la primera mitad del
+     * flujo: el proveedor responde "ya lo envié" y el webhook pasa la compra a
+     * tránsito. Las compras v1 lo hacían; al pasar a v2 se había perdido.
+     *
+     * Si WhatsApp no está configurado o falla, la compra queda confirmada de
+     * todos modos (en v1 un fallo de WhatsApp impedía confirmarla).
+     */
+    private function sendOrderToSupplier(PurchaseV2 $purchase): bool
+    {
+        $purchase->loadMissing(['supplier', 'location', 'details.product', 'details.unit']);
+        $phone = $purchase->supplier?->phone;
+
+        if (!$phone || !\App\Services\WhatsAppService::isConfigured()) {
+            return false;
+        }
+
+        try {
+            return (bool) app(\App\Services\WhatsAppService::class)->sendPurchaseOrder(
+                \App\Services\WhatsAppService::formatPhoneNumber($phone),
+                $purchase
+            );
+        } catch (\Throwable $e) {
+            Log::warning('No se pudo enviar el pedido por WhatsApp', [
+                'purchase_id' => $purchase->id,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
         }
     }
 }
