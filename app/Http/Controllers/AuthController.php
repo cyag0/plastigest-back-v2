@@ -218,8 +218,11 @@ class AuthController extends Controller
 
             // Verificar contraseña actual
             if (!Hash::check($validated['current_password'], $user->password)) {
+                // Con `errors` por campo, como cualquier 422, para que la app
+                // marque el campo en el formulario.
                 return response()->json([
-                    'message' => 'La contraseña actual es incorrecta'
+                    'message' => 'La contraseña actual es incorrecta',
+                    'errors' => ['current_password' => ['La contraseña actual es incorrecta']],
                 ], 422);
             }
 

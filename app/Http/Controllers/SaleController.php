@@ -86,13 +86,18 @@ class SaleController extends CrudController
             $query->where('company_id', $params['company_id']);
         }
 
-        // Filtro por fecha de creación
-        if (isset($params['date_from']) && !empty($params['date_from'])) {
-            $query->whereDate('created_at', '>=', $params['date_from']);
+        // Por fecha de la venta ($dateColumn = sale_date), no de captura: una
+        // venta registrada después con fecha anterior caía en el día de captura.
+        // Acepta date_from/date_to o start_date/end_date, como CrudController.
+        $dateFrom = $params['date_from'] ?? $params['start_date'] ?? null;
+        $dateTo = $params['date_to'] ?? $params['end_date'] ?? null;
+
+        if (!empty($dateFrom)) {
+            $query->whereDate($this->dateColumn, '>=', $dateFrom);
         }
 
-        if (isset($params['date_to']) && !empty($params['date_to'])) {
-            $query->whereDate('created_at', '<=', $params['date_to']);
+        if (!empty($dateTo)) {
+            $query->whereDate($this->dateColumn, '<=', $dateTo);
         }
     }
 
