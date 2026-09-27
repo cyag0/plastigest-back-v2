@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\CashMovement;
+use App\Models\CashRegisterSession;
 use App\Models\Expense;
 use App\Models\PurchaseV2;
 use App\Models\Sale;
@@ -32,7 +33,7 @@ class CashMovementService
      * @param string $paymentMethod Método de pago usado
      * @param string|null $notes    Notas adicionales
      */
-    public static function fromSale(Sale $sale, float $amount, string $paymentMethod, ?string $notes = null): void
+    public static function fromSale(Sale $sale, float $amount, string $paymentMethod, ?string $notes = null, ?int $sessionId = null): void
     {
         if ($amount <= 0) {
             return;
@@ -47,6 +48,7 @@ class CashMovementService
             CashMovement::create([
                 'company_id'     => $sale->company_id,
                 'location_id'    => $sale->location_id,
+                'cash_register_session_id' => $sessionId ?? $sale->cash_register_session_id,
                 'user_id'        => Auth::id() ?? $sale->user_id,
                 'type'           => 'income',
                 'amount'         => $amount,
@@ -87,6 +89,8 @@ class CashMovementService
             ->groupBy('payment_method')
             ->get();
 
+        $sessionId = self::sessionForReversal($sale);
+
         $concept = 'Cancelación de venta #' . $sale->id;
         if (!empty($sale->sale_number)) {
             $concept .= " ({$sale->sale_number})";
@@ -100,6 +104,7 @@ class CashMovementService
             CashMovement::create([
                 'company_id'     => $sale->company_id,
                 'location_id'    => $sale->location_id,
+                'cash_register_session_id' => $sessionId,
                 'user_id'        => Auth::id() ?? $sale->user_id,
                 'type'           => 'expense',
                 'amount'         => (float) $row->total,
@@ -178,6 +183,8 @@ class CashMovementService
         CashMovement::create([
             'company_id'     => $expense->company_id,
             'location_id'    => $expense->location_id,
+            // Si quien lo registra tiene turno abierto, el gasto sale de esa caja.
+            'cash_register_session_id' => self::openSessionIdOf(Auth::id()),
             'user_id'        => Auth::id() ?? $expense->user_id,
             'type'           => 'expense',
             'amount'         => (float) $expense->amount,
@@ -202,5 +209,35 @@ class CashMovementService
         CashMovement::where('source_type', 'expense')
             ->where('source_id', $expense->id)
             ->delete();
+    }
+
+    /**
+     * Turno al que se carga la devolución de una venta cancelada: el turno
+     * abierto de quien cancela o, si no tiene, el de la venta si sigue abierto.
+     * Si ninguno está abierto queda fuera de turno (no altera cortes cerrados).
+     */
+    private static function sessionForReversal(Sale $sale): ?int
+    {
+        if ($own = self::openSessionIdOf(Auth::id())) {
+            return $own;
+        }
+
+        $saleSession = $sale->cash_register_session_id
+            ? CashRegisterSession::find($sale->cash_register_session_id)
+            : null;
+
+        return $saleSession?->isOpen() ? $saleSession->id : null;
+    }
+
+    /** Id del turno abierto de un usuario. */
+    public static function openSessionIdOf(?int $userId): ?int
+    {
+        if (!$userId) {
+            return null;
+        }
+
+        return CashRegisterSession::where('user_id', $userId)
+            ->where('status', CashRegisterSession::STATUS_OPEN)
+            ->value('id');
     }
 }

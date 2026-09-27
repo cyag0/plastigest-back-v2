@@ -114,6 +114,8 @@ class CashMovementController extends CrudController
         $validatedData['company_id']  = CurrentCompany::id();
         $validatedData['location_id'] = CurrentLocation::id();
         $validatedData['user_id']     = Auth::id();
+        // Movimiento manual de quien tiene turno abierto: entra en ese corte.
+        $validatedData['cash_register_session_id'] = \App\Services\CashMovementService::openSessionIdOf(Auth::id());
 
         return $validatedData;
     }

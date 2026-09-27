@@ -199,4 +199,165 @@ class PosFlowsTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.closed_by_name', $this->user->name);
     }
+
+    // ─── Punto de venta ──────────────────────────────────────────────────────
+
+    /** Cajero con turno abierto en una caja de la sucursal; devuelve el id del turno. */
+    protected function cashierWithShift(array $extraPermissions = []): int
+    {
+        $cashier = $this->createUserWithRole($this->location, array_merge(self::CASHIER, $extraPermissions));
+        Sanctum::actingAs($cashier, ['*']);
+
+        return $this->openShift($this->register(), 500)->assertCreated()->json('data.id');
+    }
+
+    protected function sell(array $details, array $payments): \Illuminate\Testing\TestResponse
+    {
+        return $this->withHeaders($this->tenantHeaders())
+            ->postJson('/api/auth/admin/pos/sales', ['details' => $details, 'payments' => $payments]);
+    }
+
+    public function test_cannot_sell_without_an_open_shift(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $this->actAsCashier();
+
+        $this->sell([['product_id' => $coca->id, 'quantity' => 1]], [['method' => 'cash', 'amount' => 18]])
+            ->assertStatus(422)->assertJsonPath('code', 'no_open_session');
+    }
+
+    public function test_cash_sale_uses_catalog_price_returns_change_and_enters_the_shift(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $sessionId = $this->cashierWithShift();
+
+        $this->sell(
+            [['product_id' => $coca->id, 'quantity' => 2]],
+            [['method' => 'cash', 'amount' => 36, 'tendered' => 50]]
+        )->assertCreated()
+            ->assertJsonPath('data.total', 36)
+            ->assertJsonPath('data.change', 14);
+
+        $this->assertEquals(8, $this->stockOf($coca));
+        $this->assertDatabaseHas('sales', ['cash_register_session_id' => $sessionId, 'payment_method' => 'cash', 'payment_status' => 'paid']);
+        $this->assertDatabaseHas('cash_movements', ['cash_register_session_id' => $sessionId, 'type' => 'income', 'amount' => 36, 'payment_method' => 'cash']);
+    }
+
+    public function test_mixed_payment_creates_one_movement_per_method_and_closes_correctly(): void
+    {
+        $leche = $this->createProduct(['sale_price' => 29], 10);
+        $sessionId = $this->cashierWithShift();
+
+        $this->sell(
+            [['product_id' => $leche->id, 'quantity' => 2]],
+            [['method' => 'cash', 'amount' => 20, 'tendered' => 20], ['method' => 'card', 'amount' => 38]]
+        )->assertCreated()->assertJsonPath('data.payment_method', 'mixed');
+
+        $this->assertSame(2, \App\Models\SalePayment::count());
+        $this->assertSame(2, CashMovement::where('cash_register_session_id', $sessionId)->count());
+
+        // Esperado en caja: fondo 500 + 20 en efectivo (la tarjeta no entra a la caja).
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/cash-register-sessions/{$sessionId}/close", ['counted_cash' => 520])
+            ->assertOk()
+            ->assertJsonPath('data.expected_cash', 520)
+            ->assertJsonPath('data.difference', 0)
+            ->assertJsonPath('summary.sales_total', 58)
+            ->assertJsonPath('summary.by_method.card.income', 38);
+    }
+
+    public function test_payments_must_add_up_to_the_total(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $this->cashierWithShift();
+
+        $this->sell([['product_id' => $coca->id, 'quantity' => 2]], [['method' => 'cash', 'amount' => 30]])
+            ->assertStatus(422)->assertJsonValidationErrors('payments');
+
+        $this->sell([['product_id' => $coca->id, 'quantity' => 2]], [['method' => 'cash', 'amount' => 36, 'tendered' => 20]])
+            ->assertStatus(422)->assertJsonValidationErrors('payments.0.tendered');
+
+        $this->assertEquals(10, $this->stockOf($coca), 'una venta rechazada no mueve stock');
+    }
+
+    public function test_price_and_discount_need_permission(): void
+    {
+        $arroz = $this->createProduct(['sale_price' => 35], 10);
+        $this->cashierWithShift();
+
+        // Sin permiso: ni descuento ni precio distinto al del catálogo (aunque la app lo mande).
+        $this->sell([['product_id' => $arroz->id, 'quantity' => 1, 'discount' => 5]], [['method' => 'cash', 'amount' => 30]])
+            ->assertStatus(422)->assertJsonValidationErrors('details.0.unit_price');
+        $this->sell([['product_id' => $arroz->id, 'quantity' => 1, 'unit_price' => 1]], [['method' => 'cash', 'amount' => 1]])
+            ->assertStatus(422)->assertJsonValidationErrors('details.0.unit_price');
+
+        // Con permiso.
+        $this->cashierWithShift(['sales_discount']);
+        $this->sell([['product_id' => $arroz->id, 'quantity' => 1, 'discount' => 5]], [['method' => 'cash', 'amount' => 30]])
+            ->assertCreated()->assertJsonPath('data.total', 30)->assertJsonPath('data.discount', 5);
+    }
+
+    public function test_closed_shift_cannot_sell(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $sessionId = $this->cashierWithShift();
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/cash-register-sessions/{$sessionId}/close", ['counted_cash' => 500])->assertOk();
+
+        $this->sell([['product_id' => $coca->id, 'quantity' => 1]], [['method' => 'cash', 'amount' => 18]])
+            ->assertStatus(422)->assertJsonPath('code', 'no_open_session');
+    }
+
+    public function test_cancelling_a_pos_sale_reverses_cash_in_the_shift(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $sessionId = $this->cashierWithShift();
+        $saleId = $this->sell([['product_id' => $coca->id, 'quantity' => 2]], [['method' => 'cash', 'amount' => 36]])->json('data.id');
+
+        // El administrador cancela (el cajero no tiene permiso de cancelar ventas).
+        Sanctum::actingAs($this->user, ['*']);
+        $this->withHeaders($this->tenantHeaders())->postJson("/api/auth/admin/sales/{$saleId}/cancel")->assertOk();
+
+        // Quien cancela no tiene turno: la devolución entra al turno de la venta, que sigue abierto.
+        $this->assertDatabaseHas('cash_movements', ['cash_register_session_id' => $sessionId, 'type' => 'expense', 'amount' => 36]);
+        $this->assertEquals(10, $this->stockOf($coca));
+    }
+
+    public function test_package_sale_and_catalog(): void
+    {
+        $coca = $this->createProduct(['name' => 'Coca Cola 600ml', 'code' => 'COCA600', 'sale_price' => 18], 30);
+        $pack = \App\Models\ProductPackage::create([
+            'product_id' => $coca->id, 'company_id' => $this->company->id, 'package_name' => 'Caja 12',
+            'barcode' => '7501055300075', 'quantity_per_package' => 12, 'unit_id' => $coca->unit_id,
+            'sale_price' => 190, 'is_active' => true,
+        ]);
+        $this->cashierWithShift();
+
+        $catalog = collect($this->withHeaders($this->tenantHeaders())->getJson('/api/auth/admin/pos/catalog')->assertOk()->json('data'));
+        $this->assertSame(30.0, (float) $catalog->firstWhere('key', "p{$coca->id}")['stock']);
+        $packItem = $catalog->firstWhere('key', "k{$pack->id}");
+        $this->assertSame('7501055300075', $packItem['code']);
+        $this->assertSame(190.0, (float) $packItem['price']);
+        $this->assertSame(2.0, (float) $packItem['stock'], 'cajas completas que alcanzan con 30 piezas');
+
+        $this->sell([['product_id' => $coca->id, 'package_id' => $pack->id, 'quantity' => 1]], [['method' => 'card', 'amount' => 190]])
+            ->assertCreated();
+        $this->assertEquals(18, $this->stockOf($coca), 'una caja descuenta 12 piezas');
+    }
+
+    public function test_old_sales_screen_still_works_and_joins_the_open_shift(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $sessionId = $this->cashierWithShift(['sales_create']);
+
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson('/api/auth/admin/sales', [
+                'payment_method' => 'cash',
+                'paid_amount' => 18,
+                'details' => [['product_id' => $coca->id, 'unit_id' => $coca->unit_id, 'quantity' => 1, 'unit_price' => 18]],
+            ])->assertCreated();
+
+        $this->assertDatabaseHas('sales', ['cash_register_session_id' => $sessionId, 'total' => 18]);
+        $this->assertDatabaseHas('cash_movements', ['cash_register_session_id' => $sessionId, 'amount' => 18]);
+    }
 }

@@ -13,7 +13,6 @@ use App\Services\CashMovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
-use App\Notifications\NotificationEngine;
 use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Request;
@@ -183,6 +182,18 @@ class SaleController extends CrudController
      */
     protected function process($callback, array $data, $method = 'create'): Model
     {
+        // El alta vive en SaleService (la comparte el punto de venta). Si quien
+        // vende tiene turno de caja abierto, la venta entra en ese turno.
+        if ($method === 'create') {
+            $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
+
+            return app(\App\Services\SaleService::class)->create([
+                'company_id' => CurrentCompany::get()->id,
+                'location_id' => CurrentLocation::get()->id,
+                'user_id' => Auth::id(),
+            ] + $data, $session)->load($this->getShowRelations());
+        }
+
         try {
             DB::beginTransaction();
 
@@ -284,24 +295,6 @@ class SaleController extends CrudController
                         'discount' => 0,
                         'total' => $subtotal,
                     ]);
-                }
-            }
-
-            // Marcar como cerrada y afectar stock automáticamente
-            if ($method === 'create') {
-                // La venta ya nace closed (por el booted del modelo), solo validar y actualizar stock
-                $sale->validateAndUpdateStock();
-
-                // Verificar stock bajo después de la venta
-                $this->checkLowStockAndNotify($sale);
-
-                // Registrar ingreso en caja si hay pago inicial
-                if ($paidAmount > 0) {
-                    CashMovementService::fromSale(
-                        $sale,
-                        (float) $paidAmount,
-                        $data['payment_method'] ?? 'cash'
-                    );
                 }
             }
 
@@ -532,51 +525,6 @@ class SaleController extends CrudController
                 'success' => false,
                 'message' => 'Error al obtener estadísticas: ' . $e->getMessage()
             ], 500);
-        }
-    }
-
-    /**
-     * Verificar stock bajo y enviar notificaciones
-     */
-    protected function checkLowStockAndNotify(Sale $sale): void
-    {
-        try {
-            $locationId = $sale->location_id;
-            $companyId = $sale->company_id;
-
-            foreach ($sale->details as $detail) {
-
-                $productLocation = DB::table('product_location')
-                    ->where('product_id', $detail->product_id)
-                    ->where('location_id', $locationId)
-                    ->first();
-
-                if (!$productLocation || !$productLocation->minimum_stock) {
-                    continue;
-                }
-
-                $currentStock = $productLocation->current_stock ?? 0;
-                $minimumStock = $productLocation->minimum_stock;
-
-                // Si el stock actual es menor al mínimo, enviar notificación
-                if ($currentStock < $minimumStock) {
-                    $product = Product::find($detail->product_id);
-                    $location = \App\Models\Admin\Location::find($locationId);
-
-                    NotificationEngine::dispatch('low_stock', $companyId, [
-                        'product'       => $product,
-                        'location'      => $location,
-                        'current_stock' => $currentStock,
-                        'minimum_stock' => $minimumStock,
-                    ]);
-                }
-            }
-        } catch (\Exception $e) {
-            // Log error pero no fallar la venta
-            Log::error('Error al verificar stock bajo: ' . $e->getMessage(), [
-                'sale_id' => $sale->id,
-                'exception' => $e,
-            ]);
         }
     }
 

@@ -243,6 +243,9 @@ Route::middleware('auth:sanctum')->group(function () {
             // Cash Movement Routes
             // Cajas y turnos
             Route::apiResource('cash-registers', \App\Http\Controllers\CashRegisterController::class);
+            // Punto de venta para cajeros
+            Route::get('pos/catalog', [\App\Http\Controllers\PosController::class, 'catalog']);
+            Route::post('pos/sales', [\App\Http\Controllers\PosController::class, 'store']);
             Route::prefix('cash-register-sessions')->controller(\App\Http\Controllers\CashRegisterSessionController::class)->group(function () {
                 Route::get('/', 'index');
                 Route::get('current', 'current');
