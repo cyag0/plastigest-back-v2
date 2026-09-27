@@ -360,4 +360,17 @@ class PosFlowsTest extends TestCase
         $this->assertDatabaseHas('sales', ['cash_register_session_id' => $sessionId, 'total' => 18]);
         $this->assertDatabaseHas('cash_movements', ['cash_register_session_id' => $sessionId, 'amount' => 18]);
     }
+
+    public function test_daily_closing_is_now_read_only(): void
+    {
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson('/api/auth/admin/cash-closings', [
+                'closing_date' => now()->toDateString(), 'opening_balance' => 0, 'total_income' => 0, 'total_expense' => 0,
+                'expected_balance' => 0, 'total_cash' => 0, 'total_card' => 0, 'total_transfer' => 0, 'total_other' => 0,
+                'movements_count' => 0,
+            ])->assertStatus(422)->assertJsonPath('code', 'closing_replaced_by_shifts');
+
+        // El historial se sigue consultando.
+        $this->withHeaders($this->tenantHeaders())->getJson('/api/auth/admin/cash-closings')->assertOk();
+    }
 }

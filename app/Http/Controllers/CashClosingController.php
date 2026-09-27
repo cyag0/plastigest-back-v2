@@ -26,6 +26,28 @@ class CashClosingController extends CrudController
     protected string $model = CashClosing::class;
     protected ?string $permissionPrefix = 'cash_movements';
 
+    /**
+     * El corte ahora se hace por turno de caja (cash-register-sessions). Los
+     * cierres diarios quedan como consulta histórica: listado, detalle y PDF.
+     */
+    public function store(\Illuminate\Http\Request $request)
+    {
+        return $this->closedByShifts();
+    }
+
+    public function update(\Illuminate\Http\Request $request, $id)
+    {
+        return $this->closedByShifts();
+    }
+
+    private function closedByShifts()
+    {
+        return response()->json([
+            'message' => 'Ahora el corte se hace por turno: cierra tu turno de caja desde el punto de venta.',
+            'code' => 'closing_replaced_by_shifts',
+        ], 422);
+    }
+
     protected function indexRelations(): array
     {
         return ['location', 'user'];
