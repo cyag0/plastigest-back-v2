@@ -45,8 +45,10 @@ class CashRegisterController extends CrudController
         // Siempre dentro de la compañía actual.
         $query->where('company_id', CurrentCompany::id());
 
-        // Un usuario básico solo ve las cajas de su sucursal.
-        if (!CurrentWorker::canAccessAllLocations()) {
+        // Un usuario básico solo ve las cajas de su sucursal. El POS pide
+        // current_location para listar solo las de la sucursal en la que se
+        // trabaja, aunque el usuario vea todas (abrir turno lo exige).
+        if (!CurrentWorker::canAccessAllLocations() || !empty($params['current_location'])) {
             $query->where('location_id', CurrentLocation::id());
         } elseif (!empty($params['location_id'])) {
             $query->where('location_id', (int) $params['location_id']);

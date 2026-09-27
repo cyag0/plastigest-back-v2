@@ -81,6 +81,13 @@ class PosFlowsTest extends TestCase
         $this->assertSame(['Mía', 'Otra sucursal'], $names);
         $this->withHeaders($this->tenantHeaders())->getJson("/api/auth/admin/cash-registers/{$foreign->id}")->assertNotFound();
 
+        // Admin en el POS: solo las de la sucursal en la que trabaja (las otras no se pueden abrir).
+        $this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/cash-registers?per_page=50&current_location=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $mine->id);
+
         // Cajero: solo las de su sucursal (las necesita para abrir turno).
         Sanctum::actingAs($this->createUserWithRole($this->location, self::CASHIER), ['*']);
         $this->withHeaders($this->tenantHeaders())
