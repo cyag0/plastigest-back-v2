@@ -4,7 +4,9 @@ namespace Tests\Feature\Flows;
 
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
+use App\Models\CashMovement;
 use App\Models\CashRegister;
+use App\Models\CashRegisterSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\Concerns\CreatesTenant;
@@ -86,5 +88,115 @@ class PosFlowsTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $mine->id);
+    }
+
+    // ─── Turnos ──────────────────────────────────────────────────────────────
+
+    protected function actAsCashier(): \App\Models\User
+    {
+        $cashier = $this->createUserWithRole($this->location, self::CASHIER);
+        Sanctum::actingAs($cashier, ['*']);
+
+        return $cashier;
+    }
+
+    protected function openShift(CashRegister $register, float $amount = 500): \Illuminate\Testing\TestResponse
+    {
+        return $this->withHeaders($this->tenantHeaders())
+            ->postJson('/api/auth/admin/cash-register-sessions/open', [
+                'cash_register_id' => $register->id,
+                'opening_amount' => $amount,
+            ]);
+    }
+
+    public function test_one_open_shift_per_register_and_per_cashier(): void
+    {
+        $caja1 = $this->register(['name' => 'Caja 1']);
+        $caja2 = $this->register(['name' => 'Caja 2']);
+
+        $cashierA = $this->actAsCashier();
+        $this->openShift($caja1)->assertCreated()->assertJsonPath('data.cash_register_name', 'Caja 1');
+
+        // El mismo cajero no abre un segundo turno en otra caja.
+        $this->openShift($caja2)->assertStatus(422)->assertJsonValidationErrors('cash_register_id');
+
+        // Otro cajero no abre en una caja ocupada.
+        $this->actAsCashier();
+        $this->openShift($caja1)->assertStatus(422)
+            ->assertJsonPath('errors.cash_register_id.0', "La caja ya tiene un turno abierto de {$cashierA->name}.");
+
+        // Y la base de datos lo impide aunque se salte el servicio (doble clic, dos dispositivos).
+        $this->expectException(\Illuminate\Database\QueryException::class);
+        CashRegisterSession::create([
+            'company_id' => $this->company->id, 'location_id' => $this->location->id,
+            'cash_register_id' => $caja1->id, 'user_id' => $this->user->id,
+            'status' => 'open', 'opened_at' => now(), 'opening_amount' => 0,
+        ]);
+    }
+
+    public function test_cannot_open_a_register_of_another_branch(): void
+    {
+        $otherBranch = Location::factory()->create(['company_id' => $this->company->id]);
+        $foreign = $this->register(['location_id' => $otherBranch->id]);
+
+        $this->actAsCashier();
+        $this->openShift($foreign)->assertStatus(422);
+    }
+
+    public function test_closing_computes_expected_cash_and_difference(): void
+    {
+        $caja = $this->register();
+        $this->actAsCashier();
+        $sessionId = $this->openShift($caja, 500)->json('data.id');
+
+        foreach ([['income', 300, 'cash'], ['income', 200, 'card'], ['expense', 50, 'cash']] as [$type, $amount, $method]) {
+            CashMovement::create([
+                'company_id' => $this->company->id, 'location_id' => $this->location->id,
+                'cash_register_session_id' => $sessionId, 'user_id' => $this->user->id,
+                'type' => $type, 'amount' => $amount, 'concept' => 't', 'payment_method' => $method,
+                'source_type' => 'manual', 'movement_date' => now()->toDateString(),
+            ]);
+        }
+
+        // En vivo: fondo 500 + 300 − 50 en efectivo = 750 (la tarjeta no está en la caja).
+        $this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/cash-register-sessions/current')
+            ->assertOk()
+            ->assertJsonPath('summary.expected_cash', 750)
+            ->assertJsonPath('summary.by_method.card.income', 200);
+
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/cash-register-sessions/{$sessionId}/close", ['counted_cash' => 740, 'notes' => 'Faltan 10'])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'closed')
+            ->assertJsonPath('data.expected_cash', 750)
+            ->assertJsonPath('data.difference', -10);
+
+        // No se cierra dos veces y la caja queda libre.
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/cash-register-sessions/{$sessionId}/close", ['counted_cash' => 740])
+            ->assertStatus(422);
+        $this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/cash-register-sessions/current')->assertJsonPath('data', null);
+    }
+
+    public function test_only_the_cashier_or_an_admin_can_close_a_shift(): void
+    {
+        $caja = $this->register();
+        $this->actAsCashier();
+        $sessionId = $this->openShift($caja)->json('data.id');
+
+        // Otro cajero no puede cerrarlo.
+        $this->actAsCashier();
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/cash-register-sessions/{$sessionId}/close", ['counted_cash' => 500])
+            ->assertForbidden();
+
+        // El administrador sí (turno olvidado abierto).
+        Sanctum::actingAs($this->user, ['*']);
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/cash-register-sessions/{$sessionId}/close", ['counted_cash' => 500])
+            ->assertOk()
+            ->assertJsonPath('data.closed_by_name', $this->user->name);
     }
 }

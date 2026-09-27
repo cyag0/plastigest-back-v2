@@ -243,6 +243,13 @@ Route::middleware('auth:sanctum')->group(function () {
             // Cash Movement Routes
             // Cajas y turnos
             Route::apiResource('cash-registers', \App\Http\Controllers\CashRegisterController::class);
+            Route::prefix('cash-register-sessions')->controller(\App\Http\Controllers\CashRegisterSessionController::class)->group(function () {
+                Route::get('/', 'index');
+                Route::get('current', 'current');
+                Route::post('open', 'open');
+                Route::get('{id}', 'show')->whereNumber('id');
+                Route::post('{id}/close', 'close')->whereNumber('id');
+            });
 
             Route::get('cash-movements/stats', [CashMovementController::class, 'stats']);
             Route::apiResource('cash-movements', CashMovementController::class);
