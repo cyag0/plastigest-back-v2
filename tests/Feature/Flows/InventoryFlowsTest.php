@@ -207,6 +207,23 @@ class InventoryFlowsTest extends TestCase
         $this->assertSame(TransferStatus::COMPLETED, $transfer->fresh()->status);
     }
 
+    public function test_origin_can_reject_a_transfer_request(): void
+    {
+        $origin = Location::factory()->create(['company_id' => $this->company->id]);
+        $coco = $this->createProduct();
+        $this->setStock($coco, $origin, 50);
+
+        $transfer = $this->requestTransfer($origin, $coco->id, 10);
+
+        // Antes fallaba: 'rejected' no estaba en el enum de la columna status.
+        $this->withHeaders($this->tenantHeaders($origin))
+            ->postJson("/api/auth/admin/inventory-transfers/{$transfer->id}/reject", ['rejection_reason' => 'Sin reparto'])
+            ->assertOk();
+
+        $this->assertSame(TransferStatus::REJECTED, $transfer->fresh()->status);
+        $this->assertEquals(50, $this->stockOf($coco, $origin));
+    }
+
     public function test_cancelling_an_in_transit_transfer_returns_stock_to_origin(): void
     {
         $origin = Location::factory()->create(['company_id' => $this->company->id]);
