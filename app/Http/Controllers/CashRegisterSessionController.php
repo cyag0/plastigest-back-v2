@@ -89,14 +89,26 @@ class CashRegisterSessionController extends Controller
         ]);
 
         // La caja tiene que ser de la sucursal en la que está trabajando.
-        $register = CashRegister::where('company_id', CurrentCompany::id())
-            ->where('location_id', CurrentLocation::id())
+        $register = CashRegister::with('location')
+            ->where('company_id', CurrentCompany::id())
             ->find($validated['cash_register_id']);
 
-        if (!$register) {
+        $problem = match (true) {
+            !$register => 'La caja no existe.',
+            !CurrentLocation::exists() => 'Selecciona la sucursal en la que vas a cobrar.',
+            $register->location_id !== CurrentLocation::id() => sprintf(
+                '%s es de %s y estás trabajando en %s. Cambia de sucursal o elige una caja de esta.',
+                $register->name,
+                $register->location?->name ?? 'otra sucursal',
+                CurrentLocation::name()
+            ),
+            default => null,
+        };
+
+        if ($problem) {
             return response()->json([
-                'message' => 'La caja no pertenece a esta sucursal.',
-                'errors' => ['cash_register_id' => ['La caja no pertenece a esta sucursal.']],
+                'message' => $problem,
+                'errors' => ['cash_register_id' => [$problem]],
             ], 422);
         }
 

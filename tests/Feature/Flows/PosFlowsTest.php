@@ -147,7 +147,11 @@ class PosFlowsTest extends TestCase
         $foreign = $this->register(['location_id' => $otherBranch->id]);
 
         $this->actAsCashier();
-        $this->openShift($foreign)->assertStatus(422);
+        $message = $this->openShift($foreign)->assertStatus(422)->json('message');
+
+        // El mensaje dice de qué sucursal es la caja y en cuál se está trabajando.
+        $this->assertStringContainsString($otherBranch->name, $message);
+        $this->assertStringContainsString($this->location->name, $message);
     }
 
     public function test_closing_computes_expected_cash_and_difference(): void
