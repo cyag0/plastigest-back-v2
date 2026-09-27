@@ -40,6 +40,8 @@ class Sale extends Model
     protected $fillable = [
         'company_id',
         'location_id',
+        'cash_register_id',
+        'cash_register_session_id',
         'user_id',
         'customer_id',
         'sale_number',
@@ -107,6 +109,22 @@ class Sale extends Model
     /**
      * Relación con detalles de la venta
      */
+    /** Pagos por método (una venta mixta tiene varios). */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(SalePayment::class);
+    }
+
+    public function cashRegister(): BelongsTo
+    {
+        return $this->belongsTo(CashRegister::class);
+    }
+
+    public function cashRegisterSession(): BelongsTo
+    {
+        return $this->belongsTo(CashRegisterSession::class);
+    }
+
     public function details(): HasMany
     {
         return $this->hasMany(SaleDetail::class, 'sale_id');

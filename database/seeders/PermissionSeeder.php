@@ -54,6 +54,9 @@ class PermissionSeeder extends Seeder
             [Resources::REMINDERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
             [Resources::NOTIFICATIONS, [Actions::READ, Actions::LIST, Actions::MANAGE]],
             [Resources::CASH_MOVEMENTS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::CASH_REGISTERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            // Historial de turnos de todos los cajeros. Abrir/cerrar el propio es sales_pos.
+            [Resources::CASH_REGISTER_SESSIONS, [Actions::READ, Actions::LIST]],
 
             // Reportes y Dashboard
             // El CRUD lo usa SalesReportController (reportes de venta / corte).
@@ -86,6 +89,16 @@ class PermissionSeeder extends Seeder
                 'name' => 'system_admin',
                 'description' => 'Administrador del sistema',
                 'resource' => Resources::SETTINGS->value,
+            ],
+            [
+                'name' => 'sales_pos',
+                'description' => 'Vender en el punto de venta y abrir/cerrar su turno',
+                'resource' => Resources::SALES->value,
+            ],
+            [
+                'name' => 'sales_discount',
+                'description' => 'Cambiar precio y aplicar descuentos en el punto de venta',
+                'resource' => Resources::SALES->value,
             ],
         ];
 

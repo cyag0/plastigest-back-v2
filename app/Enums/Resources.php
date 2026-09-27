@@ -32,6 +32,8 @@ enum Resources: string
     case PRODUCTION_ORDERS = 'production_orders';
     case FORMULAS = 'formulas';
     case CASH_MOVEMENTS = 'cash_movements';
+    case CASH_REGISTERS = 'cash_registers';
+    case CASH_REGISTER_SESSIONS = 'cash_register_sessions';
 
     /**
      * Obtener el label legible del recurso
@@ -67,6 +69,8 @@ enum Resources: string
             self::PRODUCTION_ORDERS => 'Órdenes de Producción',
             self::FORMULAS => 'Fórmulas',
             self::CASH_MOVEMENTS => 'Movimientos de Caja',
+            self::CASH_REGISTERS => 'Cajas',
+            self::CASH_REGISTER_SESSIONS => 'Turnos de Caja',
         };
     }
 
@@ -104,6 +108,8 @@ enum Resources: string
             self::PRODUCTION_ORDERS => 'Captura de órdenes de producción con rendimientos reales',
             self::FORMULAS => 'Plantillas de fórmulas y recetas reutilizables',
             self::CASH_MOVEMENTS => 'Movimientos de caja y tesorería',
+            self::CASH_REGISTERS => 'Catálogo de cajas por sucursal',
+            self::CASH_REGISTER_SESSIONS => 'Turnos de cajero: apertura, cierre y corte',
         };
     }
 
@@ -141,6 +147,8 @@ enum Resources: string
             self::PRODUCTION_ORDERS => 'clipboard-text',
             self::FORMULAS => 'flask',
             self::CASH_MOVEMENTS => 'cash-multiple',
+            self::CASH_REGISTERS => 'cash-register',
+            self::CASH_REGISTER_SESSIONS => 'account-clock',
         };
     }
 

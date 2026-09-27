@@ -241,6 +241,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('sales-orders', SalesOrderController::class);
 
             // Cash Movement Routes
+            // Cajas y turnos
+            Route::apiResource('cash-registers', \App\Http\Controllers\CashRegisterController::class);
+
             Route::get('cash-movements/stats', [CashMovementController::class, 'stats']);
             Route::apiResource('cash-movements', CashMovementController::class);
             Route::get('cash-closings/{id}/pdf-url', [CashClosingController::class, 'generatePdfUrl']);
