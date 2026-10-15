@@ -9,6 +9,7 @@ use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
  * Preferencias de notificación de la empresa o, con scope=location, de la
@@ -44,6 +45,27 @@ class NotificationPreferenceController extends Controller
     private function noLocation()
     {
         return response()->json(['success' => false, 'message' => 'Elige una sucursal de la empresa.'], 422);
+    }
+
+    /**
+     * La configuración de la empresa aplica en todas las sucursales que no
+     * tienen la suya: solo la cambia quien tiene acceso a todas (o el
+     * administrador del sistema). Antes un encargado con notifications_manage
+     * podía apagar o redirigir para toda la empresa avisos como las mermas o
+     * las diferencias de conteo. Quien solo opera su sucursal edita la de su
+     * sucursal (scope=location).
+     */
+    private function companyScopeDenied(int|false|null $locationId)
+    {
+        if ($locationId !== null || CurrentWorker::canAccessAllLocations()) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Solo quien tiene acceso a todas las sucursales cambia los avisos de la empresa. Puedes personalizar los de tu sucursal.',
+            'code' => 'company_scope_forbidden',
+        ], 403);
     }
 
     /** Valores de una fila tal como los ve la app. */
@@ -154,6 +176,14 @@ class NotificationPreferenceController extends Controller
         if ($locationId === false) {
             return $this->noLocation();
         }
+        if ($denied = $this->companyScopeDenied($locationId)) {
+            return $denied;
+        }
+
+        $company = CurrentCompany::get();
+        if (!$company) {
+            return response()->json(['success' => false, 'message' => 'No hay empresa seleccionada'], 422);
+        }
 
         $data = $request->validate([
             'channel_db'         => 'sometimes|boolean',
@@ -161,10 +191,16 @@ class NotificationPreferenceController extends Controller
             'channel_push'       => 'sometimes|boolean',
             'is_active'          => 'sometimes|boolean',
             'allowed_user_ids'   => 'sometimes|nullable|array',
-            'allowed_user_ids.*' => 'integer|exists:users,id',
+            // Solo usuarios activos de la empresa: antes cualquier id de
+            // usuario, también de otra empresa.
+            'allowed_user_ids.*' => [
+                'integer',
+                Rule::exists('users', 'id')->where('is_active', true),
+                Rule::exists('user_company', 'user_id')->where('company_id', $company->id),
+            ],
+        ], [
+            'allowed_user_ids.*.exists' => 'Solo puedes elegir usuarios activos de la empresa.',
         ]);
-
-        $company = CurrentCompany::get();
 
         // Una fila nueva parte de lo que aplicaba hasta ahora: la de la
         // sucursal, de la configuración de la empresa; la de la empresa, de
@@ -202,6 +238,9 @@ class NotificationPreferenceController extends Controller
         $locationId = $this->scopeLocationId($request);
         if ($locationId === false) {
             return $this->noLocation();
+        }
+        if ($denied = $this->companyScopeDenied($locationId)) {
+            return $denied;
         }
 
         NotificationPreference::where('company_id', CurrentCompany::id())
@@ -253,6 +292,15 @@ class NotificationPreferenceController extends Controller
         $template = $resolver->resolve($eventType, []);
         $permission = $template->getDefaultPermission();
         $locationId = $scopeLocationId ?? $validated['location_id'] ?? null;
+
+        // Quien solo opera su sucursal elige destinatarios de su sucursal (los
+        // avisos de la empresa ya no los cambia): no ve a los de las demás.
+        if (!CurrentWorker::canAccessAllLocations()) {
+            $locationId = CurrentLocation::id();
+            if (!$locationId) {
+                return $this->noLocation();
+            }
+        }
 
         $query = User::where('is_active', true)
             ->whereHas('companies', fn($q) => $q->where('companies.id', $company->id));
@@ -310,6 +358,9 @@ class NotificationPreferenceController extends Controller
         $locationId = $this->scopeLocationId($request);
         if ($locationId === false) {
             return $this->noLocation();
+        }
+        if ($denied = $this->companyScopeDenied($locationId)) {
+            return $denied;
         }
 
         NotificationPreference::where('company_id', $company->id)
