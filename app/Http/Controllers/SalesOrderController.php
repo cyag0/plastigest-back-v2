@@ -338,6 +338,50 @@ class SalesOrderController extends CrudController
         ]);
     }
 
+    /**
+     * DELETE sales-orders/{id}: solo pedidos pendientes o cancelados y sin
+     * venta.
+     *
+     * Antes se borraba cualquier pedido: uno en preparación o en camino dejaba
+     * su mercancía apartada para siempre (reserved_stock nunca se liberaba) y
+     * uno cobrado dejaba su venta apuntando a un pedido inexistente. Se decide
+     * con la fila bloqueada: un "preparar" simultáneo no puede apartar stock
+     * de un pedido que se está borrando.
+     */
+    public function destroy($id)
+    {
+        if (!$this->canDestroy()) {
+            return $this->forbiddenResponse('eliminar este pedido');
+        }
+
+        try {
+            return DB::transaction(function () use ($id) {
+                /** @var SalesOrder|null $order */
+                $order = $this->scopedQuery()->with('details')->lockForUpdate()->find($id);
+                if (!$order) {
+                    return response()->json(['message' => 'Pedido no encontrado'], 404);
+                }
+
+                $reason = match (true) {
+                    (bool) $order->sale_id => 'El pedido ya se cobró: no se puede eliminar porque su venta lo referencia.',
+                    !in_array($order->status, [SalesOrderStatus::PENDING, SalesOrderStatus::CANCELLED], true),
+                    (float) $order->details->sum('reserved_quantity_base') > 0.000001
+                        => 'El pedido tiene mercancía apartada: cancélalo primero para liberarla y después elimínalo.',
+                    default => null,
+                };
+                if ($reason) {
+                    throw new BusinessRuleException($reason, 'order_not_deletable');
+                }
+
+                $order->delete();
+
+                return response()->json(['message' => 'Pedido eliminado']);
+            });
+        } catch (\Throwable $exception) {
+            return $this->errorResponse($exception, 'Error al eliminar el pedido', $this->isInternalError($exception) ? 500 : 422);
+        }
+    }
+
     public function prepare(Request $request, int $id)
     {
         return $this->transition($id, SalesOrderStatus::PREPARING, 'Pedido marcado como preparando');
