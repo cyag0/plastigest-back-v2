@@ -122,6 +122,9 @@
                             @endforeach
                         </tbody>
                     </table>
+                    @if($abonos > 0)
+                        <div class="footnote">Incluye {{ F::money($abonos) }} de abonos registrados en el periodo.</div>
+                    @endif
                 @endif
             </td>
         </tr>
@@ -311,5 +314,5 @@
         @endif
     @endif
 
-    <div class="footnote">Las ventas canceladas no cuentan en ventas, tickets ni métodos de pago. "Por cobrar" es lo que quedó pendiente de las ventas del periodo (crédito o anticipo).</div>
+    <div class="footnote">Las ventas canceladas no cuentan en ventas, tickets ni métodos de pago. Los métodos de pago son lo cobrado en el periodo: lo pagado al vender y los abonos registrados en el periodo, aunque la venta sea anterior. "Por cobrar" es lo que sigue pendiente de las ventas del periodo (crédito o anticipo).</div>
 @endsection
