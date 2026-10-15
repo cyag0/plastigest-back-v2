@@ -37,6 +37,17 @@ class ActivityAndKardexTest extends TestCase
             ->orderBy('id')->pluck('description')->all();
     }
 
+    /**
+     * Los datos que arma la prueba se crean con el usuario autenticado y
+     * también quedan en la bitácora; no son lo que se mide. Antes no
+     * aparecían solo porque la empresa "actual" de la prueba anterior seguía
+     * puesta y el renglón fallaba en silencio por la llave foránea.
+     */
+    private function forgetFixtureActivity(): void
+    {
+        ActivityLog::query()->delete();
+    }
+
     // ─── Bitácora ────────────────────────────────────────────────────────────
 
     public function test_a_cashier_shift_reads_as_plain_sentences(): void
@@ -81,6 +92,7 @@ class ActivityAndKardexTest extends TestCase
     {
         $h = $this->tenantHeaders();
         $product = $this->createProduct(['name' => 'Cocada', 'sale_price' => 18]);
+        $this->forgetFixtureActivity();
 
         $this->withHeaders($h)->putJson("/api/auth/admin/products/{$product->id}", ['sale_price' => 20])->assertOk();
         $this->withHeaders($h)->putJson("/api/auth/admin/products/{$product->id}", ['is_active' => false])->assertOk();
@@ -108,6 +120,7 @@ class ActivityAndKardexTest extends TestCase
     {
         $h = $this->tenantHeaders();
         $other = Location::factory()->create(['company_id' => $this->company->id, 'name' => 'Guayabitos']);
+        $this->forgetFixtureActivity();
         $roleId = $this->withHeaders($h)->postJson('/api/auth/admin/roles', [
             'name' => 'Cajero', 'permissions' => $this->permissionMap(['sales_pos']),
         ])->assertCreated()->json('data.id');
