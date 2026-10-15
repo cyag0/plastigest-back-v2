@@ -221,8 +221,16 @@ class ProductionOrderService
                     );
                 }
 
-                // Marcar mermas (inventory_adjustment_details) como canceladas: revertimos stock
-                foreach ($order->wastes()->get() as $waste) {
+                // Mermas (inventory_adjustment_details): se devuelve su salida y
+                // quedan marcadas como revertidas (content.reverted_at). Una merma
+                // ya revertida no se vuelve a revertir, y los ajustes generados
+                // por producción no se editan ni eliminan desde Ajustes (antes,
+                // eliminarla ahí después de cancelar la revertía otra vez).
+                foreach ($order->wastes()->lockForUpdate()->get() as $waste) {
+                    if (!empty($waste->content['reverted_at'])) {
+                        continue;
+                    }
+
                     // Las mermas originalmente fueron 'out' — para revertir hacemos 'in'
                     $this->movementService->increment(
                         (int) $waste->location_id,
@@ -235,6 +243,11 @@ class ProductionOrderService
 
                     $waste->update([
                         'notes' => trim(($waste->notes ?? '') . "\n[CANCELADA] Ajuste revertido por cancelación de producción"),
+                        'content' => array_merge($waste->content ?? [], [
+                            'reverted_at' => now()->toIso8601String(),
+                            'reverted_by' => Auth::id(),
+                            'reverted_reason' => 'production_order_cancelled',
+                        ]),
                     ]);
                 }
             }

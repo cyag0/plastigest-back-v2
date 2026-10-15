@@ -444,4 +444,35 @@ class ComprasProduccionProductionTest extends TestCase
 
         $this->assertSame("{$prefix}0042", ProductionOrder::findOrFail($this->draft())->folio);
     }
+
+    // ─── Cancelación: mermas revertidas una sola vez ────────────────────────
+
+    public function test_cancelling_marks_the_waste_adjustments_as_reverted(): void
+    {
+        $id = $this->draft(null, null, ['wastes' => [$this->waste(2)]]);
+        $this->actingInBranch($this->user)->postJson("/api/auth/admin/production-orders/{$id}/complete")->assertOk();
+        $this->assertEquals(34, $this->stockOf($this->coco), '14 consumidos y 2 de merma');
+
+        $this->actingInBranch($this->user)->postJson("/api/auth/admin/production-orders/{$id}/cancel")->assertOk();
+
+        $this->assertEquals(50, $this->stockOf($this->coco));
+        $waste = ProductionOrder::findOrFail($id)->wastes()->sole();
+        $this->assertNotEmpty($waste->content['reverted_at'] ?? null);
+        $this->assertSame('production_order_cancelled', $waste->content['reverted_reason']);
+        $this->assertSame($this->user->id, $waste->content['reverted_by']);
+    }
+
+    public function test_a_waste_already_reverted_is_not_reverted_again(): void
+    {
+        $id = $this->draft(null, null, ['wastes' => [$this->waste(2)]]);
+        $this->actingInBranch($this->user)->postJson("/api/auth/admin/production-orders/{$id}/complete")->assertOk();
+
+        $waste = ProductionOrder::findOrFail($id)->wastes()->sole();
+        $waste->update(['content' => ['reverted_at' => now()->toIso8601String()]]);
+
+        $this->actingInBranch($this->user)->postJson("/api/auth/admin/production-orders/{$id}/cancel")->assertOk();
+
+        // Vuelven los 14 consumidos; la merma ya revertida no se devuelve otra vez.
+        $this->assertEquals(48, $this->stockOf($this->coco));
+    }
 }
