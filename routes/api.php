@@ -346,6 +346,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::apiResource('sales-reports', \App\Http\Controllers\SalesReportController::class);
 
             // Sistema legacy de inventory transfers (solo CRUD + workflow)
+            // "Pedir a" de la solicitud; antes del apiResource para que
+            // {inventory_transfer} no capture "origins".
+            Route::get('inventory-transfers/origins', [InventoryTransferController::class, 'origins']);
             Route::apiResource('inventory-transfers', InventoryTransferController::class);
 
             // Rutas de workflow
