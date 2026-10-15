@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use App\Support\CurrentCompany;
@@ -363,13 +364,44 @@ abstract class CrudController extends Controller
         $dateFrom = $params['date_from'] ?? $params['start_date'] ?? null;
         $dateTo   = $params['date_to']   ?? $params['end_date']   ?? null;
 
+        // Rango semiabierto sobre la columna (desde el día "desde" y antes del
+        // día siguiente al "hasta"): da lo mismo que comparar la fecha y sirve
+        // igual para columnas DATE y DATETIME, pero deja usar el índice;
+        // whereDate() envolvía la columna en DATE() y recorría todo el
+        // historial. Un valor que no empieza con una fecha Y-m-d válida se
+        // filtra como antes.
         if ($dateFrom) {
-            $query->whereDate($this->dateColumn, '>=', $dateFrom);
+            $from = self::dayOf($dateFrom);
+            if ($from) {
+                $query->where($this->dateColumn, '>=', $from->toDateString());
+            } else {
+                $query->whereDate($this->dateColumn, '>=', $dateFrom);
+            }
         }
 
         if ($dateTo) {
-            $query->whereDate($this->dateColumn, '<=', $dateTo);
+            $to = self::dayOf($dateTo);
+            if ($to) {
+                $query->where($this->dateColumn, '<', $to->addDay()->toDateString());
+            } else {
+                $query->whereDate($this->dateColumn, '<=', $dateTo);
+            }
         }
+    }
+
+    /**
+     * El día de un filtro de fecha ("2026-10-15" o "2026-10-15T08:00:00"),
+     * o null si no empieza con una fecha válida.
+     */
+    private static function dayOf(mixed $value): ?Carbon
+    {
+        if (!is_string($value) || !preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $value, $m)) {
+            return null;
+        }
+
+        return checkdate((int) $m[2], (int) $m[3], (int) $m[1])
+            ? Carbon::createFromFormat('!Y-m-d', "{$m[1]}-{$m[2]}-{$m[3]}")
+            : null;
     }
 
     /**
