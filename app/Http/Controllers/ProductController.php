@@ -513,8 +513,6 @@ class ProductController extends CrudController
         // Remover is_active ya que ahora se maneja en el pivot table
         unset($validatedData['is_active']);
 
-        Log::info('Mensaje informativo', ['data' => $request->all()]);
-
         return $validatedData;
     }
 

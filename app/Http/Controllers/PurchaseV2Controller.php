@@ -610,14 +610,6 @@ class PurchaseV2Controller extends Controller
         }
 
         try {
-            // Log para debug
-            Log::info('UpdateDetail Request', [
-                'detail_id' => $detailId,
-                'all_data' => $request->all(),
-                'input' => $request->input(),
-                'json' => $request->json()->all(),
-            ]);
-
             $validated = $request->validate([
                 'quantity' => 'nullable|numeric|min:0.0001',
                 'unit_id' => 'nullable|integer|exists:units,id',
@@ -636,8 +628,6 @@ class PurchaseV2Controller extends Controller
                     'message' => 'Solo se pueden modificar compras en borrador',
                 ], 400);
             }
-
-            Log::info("message", ['validated' => $validated, 'data' => $request->all()]);
 
             // Actualizar campos enviados
             if (isset($validated['quantity'])) {
