@@ -13,6 +13,7 @@ use App\Support\CurrentWorker;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\URL;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -29,6 +30,9 @@ class InventoryMovementController extends Controller
     /** Tope de renglones del CSV: más que eso ya no se abre bien en Excel. */
     private const EXPORT_LIMIT = 20000;
 
+    /** Días que muestra el kárdex cuando no se elige un rango de fechas. */
+    private const DEFAULT_DAYS = 30;
+
     public function index(Request $request): JsonResponse
     {
         if (!CurrentWorker::hasPermission('inventory_list')) {
@@ -37,31 +41,47 @@ class InventoryMovementController extends Controller
 
         $companyId = CurrentCompany::id();
         $locationId = $this->locationScope($request->input('location_id'));
+        $filters = $this->withDefaultRange($request->all());
 
-        $query = $this->filtered(StockLedgerEntry::query(), $request->all(), $companyId, $locationId);
+        $query = $this->filtered(StockLedgerEntry::query(), $filters, $companyId, $locationId);
 
-        $summary = (clone $query)->toBase()
-            ->selectRaw("COUNT(*) as total, SUM(direction = 'in') as entries_in, SUM(direction = 'out') as entries_out")
-            ->first();
+        // Un solo conteo por petición: el total del resumen es también el de
+        // la paginación (antes paginate() volvía a contar todo).
+        $summaryQuery = (clone $query)->toBase()
+            ->selectRaw("COUNT(*) as total, SUM(direction = 'in') as entries_in, SUM(direction = 'out') as entries_out");
 
-        $entries = $query->with(['product.unit', 'location', 'counterpartLocation', 'user'])
-            ->orderByDesc('created_at')
-            ->orderByDesc('id')
-            ->paginate(min((int) $request->input('per_page', 25), 100));
+        // Con un solo producto las cantidades sí se pueden sumar (misma unidad).
+        if ($request->filled('product_id')) {
+            $summaryQuery
+                ->selectRaw("COALESCE(SUM(CASE WHEN direction = 'in' THEN quantity END), 0) as qty_in")
+                ->selectRaw("COALESCE(SUM(CASE WHEN direction = 'out' THEN quantity END), 0) as qty_out");
+        }
+
+        $summary = $summaryQuery->first();
+        $total = (int) ($summary->total ?? 0);
+
+        $perPage = (int) $request->input('per_page', 25);
+        $perPage = min($perPage > 0 ? $perPage : 25, 100);
+        $page = max(1, (int) $request->input('page', 1));
+
+        $items = $total > 0
+            ? $query->with(['product.unit', 'location', 'counterpartLocation', 'user'])
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->forPage($page, $perPage)
+                ->get()
+            : collect();
+
+        $entries = new LengthAwarePaginator($items, $total, $perPage, $page);
 
         ReferenceLabels::attach($entries->items());
 
-        // Con un solo producto las cantidades sí se pueden sumar (misma unidad).
         $productTotals = null;
         if ($request->filled('product_id')) {
-            $totals = (clone $this->filtered(StockLedgerEntry::query(), $request->all(), $companyId, $locationId))->toBase()
-                ->selectRaw("COALESCE(SUM(CASE WHEN direction = 'in' THEN quantity END), 0) as qty_in")
-                ->selectRaw("COALESCE(SUM(CASE WHEN direction = 'out' THEN quantity END), 0) as qty_out")
-                ->first();
             $productTotals = [
-                'in' => (float) $totals->qty_in,
-                'out' => (float) $totals->qty_out,
-                'net' => (float) $totals->qty_in - (float) $totals->qty_out,
+                'in' => (float) $summary->qty_in,
+                'out' => (float) $summary->qty_out,
+                'net' => (float) $summary->qty_in - (float) $summary->qty_out,
             ];
         }
 
@@ -76,12 +96,19 @@ class InventoryMovementController extends Controller
                 'to' => $entries->lastItem(),
             ],
             'summary' => [
-                'total' => (int) ($summary->total ?? 0),
+                'total' => $total,
                 'entries_in' => (int) ($summary->entries_in ?? 0),
                 'entries_out' => (int) ($summary->entries_out ?? 0),
                 'product' => $productTotals,
             ],
             'filters' => $this->filterOptions($companyId),
+            // Fechas que se aplicaron; default = true cuando son los últimos
+            // DEFAULT_DAYS días porque no se eligió rango.
+            'range' => [
+                'date_from' => $filters['date_from'] ?? null,
+                'date_to' => $filters['date_to'] ?? null,
+                'default' => empty($request->input('date_from')) && empty($request->input('date_to')),
+            ],
         ]);
     }
 
@@ -96,7 +123,8 @@ class InventoryMovementController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $filters = collect($request->only(['search', 'product_id', 'reason', 'direction', 'user_id', 'date_from', 'date_to']))
+        // Con el mismo rango que la lista: sin fechas, los últimos días.
+        $filters = collect($this->withDefaultRange($request->only(['search', 'product_id', 'reason', 'direction', 'user_id', 'date_from', 'date_to'])))
             ->filter(fn($v) => $v !== null && $v !== '' && $v !== [])
             ->map(fn($v) => is_array($v) ? implode(',', $v) : $v)
             ->all();
@@ -159,6 +187,21 @@ class InventoryMovementController extends Controller
 
             fclose($out);
         }, $fileName, ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    /**
+     * Sin fechas, el kárdex muestra los últimos DEFAULT_DAYS días (hoy
+     * incluido): antes cada página contaba y sumaba todo el historial, y al
+     * abrir la pantalla eso pasaba dos veces (opciones de filtro y lista).
+     * Con cualquiera de las dos fechas se respeta lo pedido.
+     */
+    private function withDefaultRange(array $filters): array
+    {
+        if (empty($filters['date_from']) && empty($filters['date_to'])) {
+            $filters['date_from'] = now()->subDays(self::DEFAULT_DAYS - 1)->toDateString();
+        }
+
+        return $filters;
     }
 
     /**
