@@ -159,6 +159,25 @@ class AccesosUserTakeoverTest extends TestCase
         $this->assertContains($this->owner->id, $ids);
     }
 
+    public function test_the_api_tells_the_app_who_is_a_system_admin(): void
+    {
+        $manager = $this->branchManager();
+
+        $rows = collect($this->actingInBranch($this->user)->getJson('/api/auth/admin/users?scope=location')
+            ->assertOk()->json('data'))->keyBy('id');
+        $this->assertTrue($rows[$this->owner->id]['is_system_admin']);
+        $this->assertFalse($rows[$manager->id]['is_system_admin']);
+
+        $this->actingInBranch($this->user)->getJson("/api/auth/admin/users/{$this->owner->id}")
+            ->assertOk()->assertJsonPath('data.is_system_admin', true);
+        $this->actingInBranch($manager)->getJson("/api/auth/admin/users/{$manager->id}")
+            ->assertOk()->assertJsonPath('data.is_system_admin', false);
+
+        $rows = collect($this->actingInBranch($manager)->getJson('/api/auth/admin/users?scope=location')
+            ->assertOk()->json('data'));
+        $this->assertFalse($rows->contains('is_system_admin', true));
+    }
+
     public function test_the_system_admin_can_still_manage_the_owner_account(): void
     {
         $this->actingInBranch($this->user)

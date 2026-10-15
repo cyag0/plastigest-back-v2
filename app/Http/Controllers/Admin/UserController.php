@@ -91,6 +91,14 @@ class UserController extends CrudController
             $this->excludeSystemAdmins($query);
         }
 
+        // is_system_admin de cada renglón en la misma consulta (UserResource).
+        $direct = $this->systemAdminRoleQuery('users_roles');
+        $branch = $this->systemAdminRoleQuery('user_location_roles');
+        $query->select('users.*')->selectRaw(
+            "(exists({$direct->toSql()}) or exists({$branch->toSql()})) as is_system_admin",
+            [...$direct->getBindings(), ...$branch->getBindings()]
+        );
+
         // "Usuarios" de la empresa: solo los de la empresa seleccionada. El
         // administrador del sistema veía aquí a los de todas las empresas.
         if (filter_var($params['by_company'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($companyId = CurrentCompany::id())) {
@@ -138,15 +146,22 @@ class UserController extends CrudController
     private function excludeSystemAdmins($query): void
     {
         foreach (['users_roles', 'user_location_roles'] as $pivot) {
-            $query->whereNotExists(function ($sub) use ($pivot) {
-                $sub->selectRaw('1')
-                    ->from($pivot)
-                    ->join('rol_permission', 'rol_permission.role_id', '=', "{$pivot}.role_id")
-                    ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
-                    ->whereColumn("{$pivot}.user_id", 'users.id')
-                    ->where('permissions.name', 'system_admin');
-            });
+            $query->whereNotExists($this->systemAdminRoleQuery($pivot));
         }
+    }
+
+    /**
+     * Roles con system_admin del usuario del renglón en $pivot (users_roles o
+     * user_location_roles), para usar dentro de un EXISTS.
+     */
+    private function systemAdminRoleQuery(string $pivot)
+    {
+        return DB::table($pivot)
+            ->selectRaw('1')
+            ->join('rol_permission', 'rol_permission.role_id', '=', "{$pivot}.role_id")
+            ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
+            ->whereColumn("{$pivot}.user_id", 'users.id')
+            ->where('permissions.name', 'system_admin');
     }
 
     /**
