@@ -86,10 +86,24 @@ class ProductController extends CrudController
 
     /**
      * Override del método show para incluir unidades disponibles
+     *
+     * Responde la vista de detalle (sin el contexto `editing` del show
+     * genérico, que cambia la forma). Antes no pedía permiso ni empresa:
+     * cualquier usuario veía por id el producto de cualquier empresa, con
+     * costo, receta y existencias.
      */
     public function show($id)
     {
-        $product = Product::with($this->getShowRelations())->findOrFail($id);
+        // Ver un producto, con el mismo permiso que listarlos: la ficha la
+        // abren también el ajuste de inventario y el resumen de producción.
+        if (!CurrentWorker::hasPermission('products_read') && !CurrentWorker::hasPermission('products_list')) {
+            return $this->forbiddenResponse('ver este producto');
+        }
+
+        $product = $this->scopedQuery()->with($this->getShowRelations())->find($id);
+        if (!$product) {
+            return response()->json(['message' => 'Recurso no encontrado'], 404);
+        }
 
         return new ProductResource($product);
     }
