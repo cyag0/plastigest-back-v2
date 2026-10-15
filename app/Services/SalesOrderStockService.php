@@ -16,6 +16,9 @@ use Illuminate\Validation\ValidationException;
 
 class SalesOrderStockService
 {
+    /** Inicio del motivo de validateDraftDetails cuando no alcanza el stock. */
+    public const INSUFFICIENT_STOCK_PREFIX = 'Stock insuficiente para ';
+
     public function __construct(
         private readonly MovementService $movementService = new MovementService(),
     ) {
@@ -80,7 +83,7 @@ class SalesOrderStockService
 
             $errors[$errorKeysByProduct[$productId]] = [
                 sprintf(
-                    'Stock insuficiente para %s. Disponible: %s %s, solicitado: %s %s.',
+                    self::INSUFFICIENT_STOCK_PREFIX . '%s. Disponible: %s %s, solicitado: %s %s.',
                     $productName,
                     number_format($availableQuantity, 3, '.', ''),
                     $unitLabel,

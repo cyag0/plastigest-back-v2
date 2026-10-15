@@ -14,6 +14,7 @@ use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderDetail;
+use App\Services\SalesOrderStockService;
 use App\Support\ClientRequest;
 use App\Support\CurrentWorker;
 use App\Support\CurrentCompany;
@@ -500,6 +501,91 @@ class SalesOrderController extends CrudController
     }
 
     /**
+     * POST sales-orders/quick-checkout — cobro rápido del kiosco: crea el
+     * pedido y lo cobra en UNA transacción.
+     *
+     * Antes el kiosco hacía dos llamadas (alta y cobro): si el cobro fallaba o
+     * no llegaba la respuesta, el pedido quedaba pendiente y el reintento
+     * creaba otro. Mismas reglas que el alta (precio de catálogo salvo
+     * sales_discount, stock disponible) y que el cobro (turno para el
+     * efectivo, crédito sin pago); si algo falla no queda nada.
+     *
+     * client_request_id es obligatorio: un reintento con la misma llave
+     * responde 200 con el pedido ya cobrado, sin cobrar otra vez. El alta
+     * responde 201 con la misma forma que el cobro de un pedido:
+     * {success, message, data: pedido (con sale), sale: {id, sale_number, total}}.
+     */
+    public function quickCheckout(Request $request)
+    {
+        if (!$this->canStore() || !$this->canEdit()) {
+            return $this->forbiddenResponse('cobrar pedidos');
+        }
+
+        $validated = $request->validate(array_merge($this->orderRules(), [
+            'payment_method' => 'sometimes|in:cash,card,transfer,credit',
+            'paid_amount' => 'sometimes|numeric|min:0',
+            'client_request_id' => ClientRequest::rules(true),
+        ]));
+        $requestId = $validated['client_request_id'];
+
+        try {
+            if ($previous = $this->orderForRequest($requestId)) {
+                return $this->quickCheckoutReplay($previous);
+            }
+
+            $payment = array_intersect_key($validated, array_flip(['payment_method', 'paid_amount']))
+                + ['client_request_id' => $requestId];
+            $orderData = $this->processStoreData(
+                array_diff_key($validated, array_flip(['payment_method', 'paid_amount'])),
+                $request,
+            );
+
+            $this->inQuickCheckout = true;
+            [$order, $sale] = DB::transaction(function () use ($orderData, $payment): array {
+                $order = $this->process(fn($data) => $this->create($data), $orderData, 'create');
+                $sale = app()->make('App\\Services\\SalesOrderStockService')->checkoutOrder($order, $payment);
+
+                return [$order, $sale];
+            });
+
+            return $this->checkoutResponse($order, $sale, 201);
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            return $this->validationFailure($exception, 'No se pudo cobrar el pedido');
+        } catch (\Throwable $exception) {
+            // Otro envío con la misma llave se registró primero: esta
+            // transacción se revirtió completa y se responde con aquel pedido.
+            if (ClientRequest::isDuplicate($exception)) {
+                try {
+                    if ($previous = $this->orderForRequest($requestId)) {
+                        return $this->quickCheckoutReplay($previous);
+                    }
+                } catch (\Throwable $replayException) {
+                    $exception = $replayException;
+                }
+            }
+
+            return $this->errorResponse($exception, 'Error al cobrar el pedido', $this->isInternalError($exception) ? 500 : 422);
+        } finally {
+            $this->inQuickCheckout = false;
+        }
+    }
+
+    /**
+     * Reintento del cobro rápido: el pedido con esa llave ya se cobró en el
+     * mismo envío; se responde igual (200). Un pedido con la llave pero sin
+     * venta vino de otro lado (un alta simple): no se cobra aquí.
+     */
+    private function quickCheckoutReplay(SalesOrder $order)
+    {
+        $sale = $order->sale_id ? Sale::find($order->sale_id) : null;
+        if (!$sale) {
+            throw ClientRequest::conflict();
+        }
+
+        return $this->checkoutResponse($order, $sale);
+    }
+
+    /**
      * Venta registrada con la llave en la empresa (el cobro de un pedido o el
      * cobro rápido del kiosco guardan la llave en la venta).
      */
@@ -537,11 +623,20 @@ class SalesOrderController extends CrudController
      */
     private function validationFailure(\Illuminate\Validation\ValidationException $exception, string $fallback)
     {
-        return response()->json([
+        $message = collect($exception->errors())->flatten()->first() ?? $fallback;
+        $payload = [
             'success' => false,
-            'message' => collect($exception->errors())->flatten()->first() ?? $fallback,
+            'message' => $message,
             'errors' => $exception->errors(),
-        ], 422);
+        ];
+
+        // No alcanza el stock de un renglón: el mismo code que el resto de los
+        // cobros (C3), para que la app recargue las existencias.
+        if (str_starts_with((string) $message, SalesOrderStockService::INSUFFICIENT_STOCK_PREFIX)) {
+            $payload['code'] = 'insufficient_stock';
+        }
+
+        return response()->json($payload, 422);
     }
 
     private function transition(int $id, SalesOrderStatus $targetStatus, string $message)
