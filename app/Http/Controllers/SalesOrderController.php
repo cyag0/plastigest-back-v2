@@ -211,6 +211,37 @@ class SalesOrderController extends CrudController
         return $order;
     }
 
+    /**
+     * Edita el pedido con su fila bloqueada y el estado releído; corre dentro
+     * de la transacción de persistOrder, antes de reemplazar los renglones.
+     * validateUpdateData lo revisó sin bloqueo: un "preparar" que entraba en
+     * medio apartaba el stock de los renglones que aquí se borran (o el de los
+     * viejos) y esa reserva ya no la liberaba nadie, porque cancelar y cobrar
+     * liberan lo que dicen los renglones. Ahora uno espera al otro.
+     */
+    public function edit(array $data, int $id): Model
+    {
+        /** @var SalesOrder|null $order */
+        $order = $this->scopedQuery()->lockForUpdate()->find($id);
+        if (!$order) {
+            throw new \Exception('Recurso no encontrado');
+        }
+
+        $reserved = (float) SalesOrderDetail::where('sales_order_id', $order->id)
+            ->lockForUpdate()
+            ->sum('reserved_quantity_base');
+
+        if ($order->status !== SalesOrderStatus::PENDING || $reserved > 0.000001) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'status' => ['Solo se pueden editar pedidos en estado pendiente.'],
+            ]);
+        }
+
+        $order->update($data);
+
+        return $order;
+    }
+
     private function persistOrder($callback, array $data, string $method, ?string $requestId): Model
     {
         return DB::transaction(function () use ($callback, $data, $method, $requestId): Model {
