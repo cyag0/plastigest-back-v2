@@ -6,6 +6,7 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\LocationResource;
 use App\Models\Admin\Location;
 use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use Illuminate\Container\Attributes\Log;
 use Illuminate\Http\Request;
@@ -126,7 +127,7 @@ class LocationController extends CrudController
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        return $request->validate([
+        $validated = $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'nullable|string|max:1000',
             'address' => 'required|string|max:500',
@@ -135,6 +136,21 @@ class LocationController extends CrudController
             'company_id' => 'required|exists:companies,id',
             'is_active' => 'boolean',
         ]);
+
+        // Quien solo opera su sucursal edita sus datos, pero no la desactiva
+        // (su personal ya no podría elegirla al entrar) ni la pasa a otra
+        // empresa: eso es de quien administra todas. El formulario reenvía
+        // todos los campos, así que solo cuenta lo que de verdad cambia.
+        if (!CurrentWorker::canAccessAllLocations()) {
+            if (array_key_exists('is_active', $validated) && (bool) $validated['is_active'] !== (bool) $model->is_active) {
+                abort($this->forbiddenResponse('activar o desactivar sucursales'));
+            }
+            if ((int) $validated['company_id'] !== (int) $model->company_id) {
+                abort($this->forbiddenResponse('mover la sucursal a otra empresa'));
+            }
+        }
+
+        return $validated;
     }
 
     /**
@@ -187,6 +203,35 @@ class LocationController extends CrudController
         }
 
         return parent::update($request, $id);
+    }
+
+    /**
+     * Ver, editar o eliminar una sucursal: quien no tiene acceso a todas las
+     * sucursales (system_admin o locations_all) solo puede con la actual, como
+     * SettingsController::authorizeLocation. El listado ya ocultaba las demás,
+     * pero por id se podía ver, renombrar o desactivar cualquier sucursal de
+     * la empresa.
+     */
+    protected function findModel($id): ?Model
+    {
+        return $this->accessibleLocationQuery()->find($id);
+    }
+
+    protected function findModelForShow($id): ?Model
+    {
+        return $this->accessibleLocationQuery()->with($this->getShowRelations())->find($id);
+    }
+
+    private function accessibleLocationQuery()
+    {
+        $query = $this->scopedQuery();
+
+        if (!CurrentWorker::canAccessAllLocations()) {
+            $locationId = CurrentLocation::id();
+            $locationId ? $query->whereKey($locationId) : $query->whereRaw('1 = 0');
+        }
+
+        return $query;
     }
 
     /**
