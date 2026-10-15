@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use App\Models\User;
 
 class UserSeeder extends Seeder
@@ -73,7 +74,8 @@ class UserSeeder extends Seeder
             }
         }
 
-        // Asignar el rol al super admin globalmente (fallback)
+        // Asignar el rol al super admin globalmente (fallback). El índice
+        // único (user_id, role_id) hace que volver a correrlo no lo repita.
         DB::table('users_roles')->insertOrIgnore([
             'user_id' => $superAdmin->id,
             'role_id' => $superAdminRoleId,
@@ -99,8 +101,10 @@ class UserSeeder extends Seeder
 
     /**
      * Contraseña del Super Admin desde ADMIN_PASSWORD. En local/testing, si no
-     * está definida, se usa "password" para no complicar el desarrollo; en
-     * cualquier otro entorno (producción, staging) se aborta con un mensaje.
+     * está definida, se genera una al azar y se muestra una sola vez en la
+     * consola (antes era "password", escrita aquí: ninguna contraseña va en el
+     * código). En cualquier otro entorno (producción, staging) se aborta con
+     * un mensaje.
      */
     private function adminPassword(): string
     {
@@ -108,9 +112,9 @@ class UserSeeder extends Seeder
 
         if (app()->environment('local', 'testing')) {
             if ($password === '') {
-                $this->command->warn('⚠️  ADMIN_PASSWORD no está definido: se usa "password" (solo local/testing).');
-
-                return 'password';
+                $password = Str::password(20, symbols: false);
+                $this->command->warn('⚠️  ADMIN_PASSWORD no está definido. Contraseña generada para el Super Admin '
+                    . "(solo se muestra ahora; define ADMIN_PASSWORD para fijarla): {$password}");
             }
 
             return $password;
