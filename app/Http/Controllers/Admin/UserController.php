@@ -597,6 +597,13 @@ class UserController extends CrudController
             return response()->json(['message' => 'Recurso no encontrado'], 404);
         }
 
+        // Desactivarse deja la cuenta sin acceso al instante, y a un
+        // administrador del sistema nadie más lo puede reactivar.
+        if ((int) $target->getKey() === (int) Auth::id() && $request->has('is_active')
+            && !filter_var($request->input('is_active'), FILTER_VALIDATE_BOOLEAN)) {
+            return response()->json(['message' => 'No puedes desactivar tu propia cuenta.'], 422);
+        }
+
         if ($denied = $this->guardTarget($target, $request)
             ?? $this->guardAssignment($request, $target)
             ?? $this->requireBranchForLocationRole($request)) {

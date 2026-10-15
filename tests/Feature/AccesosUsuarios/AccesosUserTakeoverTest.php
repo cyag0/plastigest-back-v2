@@ -265,6 +265,26 @@ class AccesosUserTakeoverTest extends TestCase
             ->assertOk();
     }
 
+    public function test_nobody_deactivates_their_own_account(): void
+    {
+        foreach ([$this->branchManager(), $this->owner] as $user) {
+            $user->createToken('telefono');
+
+            $this->actingInBranch($user)
+                ->putJson("/api/auth/admin/users/{$user->id}", ['is_active' => false])
+                ->assertStatus(422)
+                ->assertJsonPath('message', 'No puedes desactivar tu propia cuenta.');
+
+            $this->assertTrue((bool) $user->fresh()->is_active);
+            $this->assertSame(1, $user->tokens()->count());
+
+            // Reenviar el formulario con la cuenta activa sigue funcionando.
+            $this->actingInBranch($user)
+                ->putJson("/api/auth/admin/users/{$user->id}", ['name' => 'Yo mismo', 'is_active' => true])
+                ->assertOk();
+        }
+    }
+
     // ─── Quitar roles se revisa como asignarlos ──────────────────────────────
 
     public function test_removing_a_system_role_is_checked_like_assigning_it(): void
