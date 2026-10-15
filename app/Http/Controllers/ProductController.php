@@ -10,6 +10,7 @@ use App\Models\InventoryType;
 use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\StockLedgerEntry;
+use App\Services\StockDefinitionGuard;
 use App\Enums\StockLedgerReason;
 use App\Constants\Files;
 use App\Support\BarcodeLabelPdf;
@@ -512,6 +513,14 @@ class ProductController extends CrudController
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
+        // La unidad base no cambia si el producto ya tiene existencia,
+        // movimientos o documentos abiertos: la existencia y el historial
+        // están en esa unidad y no se reescalan (422 product_unit_locked).
+        if (array_key_exists('unit_id', $validatedData)
+            && (int) ($validatedData['unit_id'] ?? 0) !== (int) $model->unit_id) {
+            app(StockDefinitionGuard::class)->assertProductUnitCanChange($model);
+        }
+
         // Remover campos que no van a la base de datos (se procesan después de actualizar)
         unset($validatedData['activate_in_all_locations']);
         unset($validatedData['activate_in_current_location']);
