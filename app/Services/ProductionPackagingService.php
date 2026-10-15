@@ -86,16 +86,6 @@ class ProductionPackagingService
      */
     public function pack(ProductionOrder $order, array $lines): ProductionOrder
     {
-        $status = $this->status($order);
-
-        if (!$status->allowsPackaging()) {
-            throw new RuntimeException(
-                $status === ProductionOrderStatus::DRAFT
-                    ? 'La producción debe completarse antes de poder empacar.'
-                    : "No se puede empacar una orden en estado {$status->label()}."
-            );
-        }
-
         $rows = array_values(array_filter(
             $lines,
             fn($row) => !empty($row['product_id']) && (float) ($row['quantity'] ?? 0) > 0
@@ -106,12 +96,28 @@ class ProductionPackagingService
         }
 
         return DB::transaction(function () use ($order, $rows) {
+            // Estado y granel restante se leen con la orden bloqueada: dos
+            // empaques simultáneos (o un empaque y una cancelación) tienen que
+            // verse entre sí, si no ambos consumirían el mismo granel.
+            $order = $this->lockOrder($order);
+            $this->assertAllowsPackaging($order);
+            $order->load(['outputs', 'packagings']);
+
             $locationId = (int) $order->location_id;
-            $nextSort = (int) $order->packagings()->max('sort_order') + 1;
+            $nextSort = (int) $order->packagings->max('sort_order') + 1;
+
+            // Granel de esta orden que todavía se puede empacar, por producto y
+            // en su unidad base. Se va descontando con cada renglón.
+            $remainingBySource = [];
 
             foreach ($rows as $row) {
                 $product = Product::with('packagingMaterials')->findOrFail((int) $row['product_id']);
                 $quantity = (float) $row['quantity'];
+                $unitId = (int) ($row['unit_id'] ?? $product->unit_id);
+
+                // La receta (granel y material) es por unidad base del terminado:
+                // empacar 2 docenas de un producto por pieza son 24 piezas, no 2.
+                $units = $this->movementService->quantityInProductUnit((int) $product->id, $unitId, $quantity);
 
                 $sourceProductId = $row['source_product_id'] ?? $product->packaging_source_product_id;
                 // Sólo se sobrescribe la receta si la línea manda un valor real:
@@ -123,15 +129,48 @@ class ProductionPackagingService
                     ?? $product->packaging_source_unit_id
                     ?? ($sourceProductId ? Product::whereKey($sourceProductId)->value('unit_id') : null);
 
-                $sourceTotal = $sourceProductId ? round($sourcePerUnit * $quantity, 4) : null;
+                // Un empaque sin granel (receta en cero o sin producto de origen)
+                // daba de alta producto terminado sin consumir nada de la orden.
+                if (!$sourceProductId) {
+                    throw new RuntimeException("{$product->name} no tiene granel de origen: configura su receta de empaque.");
+                }
+                if ($sourcePerUnit <= 0) {
+                    throw new RuntimeException("La receta de empaque de {$product->name} no consume granel: indica cuánto lleva cada unidad.");
+                }
+
+                $sourceProductId = (int) $sourceProductId;
+
+                if (!array_key_exists($sourceProductId, $remainingBySource)) {
+                    $remaining = $this->remainingSourceBaseQuantity($order, $sourceProductId);
+                    if ($remaining === null) {
+                        $sourceName = Product::whereKey($sourceProductId)->value('name') ?? "producto {$sourceProductId}";
+                        throw new RuntimeException("{$sourceName} no es una salida de esta producción: no se puede empacar aquí.");
+                    }
+                    $remainingBySource[$sourceProductId] = $remaining;
+                }
+
+                $sourceTotal = round($sourcePerUnit * $units, 4);
+                $sourceTotalBase = $this->movementService->quantityInProductUnit($sourceProductId, (int) $sourceUnitId, $sourceTotal);
+
+                // Sólo se empaca lo que produjo esta orden. Antes bastaba con que
+                // la sucursal tuviera granel de producciones anteriores.
+                if ($sourceTotalBase > $remainingBySource[$sourceProductId] + 0.0001) {
+                    throw new RuntimeException(sprintf(
+                        'No alcanza el granel de esta producción para empacar %s: quedan %s y se necesitan %s.',
+                        $product->name,
+                        $this->formatQuantity($remainingBySource[$sourceProductId]),
+                        $this->formatQuantity($sourceTotalBase)
+                    ));
+                }
+                $remainingBySource[$sourceProductId] -= $sourceTotalBase;
 
                 $packaging = ProductionOrderPackaging::create([
                     'production_order_id' => $order->id,
                     'product_id' => $product->id,
-                    'unit_id' => (int) ($row['unit_id'] ?? $product->unit_id),
+                    'unit_id' => $unitId,
                     'quantity' => $quantity,
                     'source_product_id' => $sourceProductId,
-                    'source_unit_id' => $sourceProductId ? $sourceUnitId : null,
+                    'source_unit_id' => $sourceUnitId,
                     'source_quantity' => $sourceTotal,
                     'packed_at' => now(),
                     'packed_by' => Auth::id(),
@@ -140,20 +179,18 @@ class ProductionPackagingService
                 ]);
 
                 // 1. Consumir el granel del que se empaca.
-                if ($sourceProductId && $sourceTotal > 0) {
-                    $this->movementService->decrement(
-                        $locationId,
-                        (int) $sourceProductId,
-                        (int) $sourceUnitId,
-                        $sourceTotal,
-                        null,
-                        StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel consumido al empacar')
-                    );
-                }
+                $this->movementService->decrement(
+                    $locationId,
+                    $sourceProductId,
+                    (int) $sourceUnitId,
+                    $sourceTotal,
+                    null,
+                    StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel consumido al empacar')
+                );
 
                 // 2. Consumir el material de empaque.
                 foreach ($this->materialsFor($product, $row) as $material) {
-                    $materialQty = round((float) $material['quantity'] * $quantity, 4);
+                    $materialQty = round((float) $material['quantity'] * $units, 4);
                     if ($materialQty <= 0) {
                         continue;
                     }
@@ -201,17 +238,30 @@ class ProductionPackagingService
      */
     public function revert(ProductionOrder $order, ProductionOrderPackaging $packaging): ProductionOrder
     {
-        $status = $this->status($order);
-
-        if (!$status->allowsPackaging()) {
-            throw new RuntimeException("No se puede revertir un empaque de una orden en estado {$status->label()}.");
-        }
-
-        if ((int) $packaging->production_order_id !== (int) $order->id) {
-            throw new RuntimeException('El empaque no pertenece a esta orden de producción.');
-        }
-
         return DB::transaction(function () use ($order, $packaging) {
+            $order = $this->lockOrder($order);
+            $status = $this->status($order);
+
+            if (!$status->allowsPackaging()) {
+                throw new RuntimeException("No se puede revertir un empaque de una orden en estado {$status->label()}.");
+            }
+
+            // Se relee el empaque bloqueado: si otra petición ya lo revirtió, ya
+            // no existe. Antes el delete "funcionaba" con 0 filas y el stock se
+            // devolvía dos veces.
+            $packaging = ProductionOrderPackaging::query()
+                ->with('materials')
+                ->lockForUpdate()
+                ->find($packaging->getKey());
+
+            if (!$packaging) {
+                throw new RuntimeException('Ese empaque ya fue revertido.');
+            }
+
+            if ((int) $packaging->production_order_id !== (int) $order->id) {
+                throw new RuntimeException('El empaque no pertenece a esta orden de producción.');
+            }
+
             $this->reverseStock($order, $packaging);
             $packaging->materials()->delete();
             $packaging->delete();
@@ -233,14 +283,19 @@ class ProductionPackagingService
      */
     public function finish(ProductionOrder $order): ProductionOrder
     {
-        $order->assertCanTransitionTo(ProductionOrderStatus::PACKED);
+        return DB::transaction(function () use ($order) {
+            // Con la orden bloqueada: un empaque que llega al mismo tiempo no
+            // puede colarse en una orden que ya se cerró (ni al revés).
+            $order = $this->lockOrder($order);
+            $order->assertCanTransitionTo(ProductionOrderStatus::PACKED);
 
-        $order->status = ProductionOrderStatus::PACKED;
-        $order->packed_at = now();
-        $order->updated_by = Auth::id();
-        $order->save();
+            $order->status = ProductionOrderStatus::PACKED;
+            $order->packed_at = now();
+            $order->updated_by = Auth::id();
+            $order->save();
 
-        return $order->fresh(['packagings.materials', 'outputs']);
+            return $order->fresh(['packagings.materials', 'outputs']);
+        });
     }
 
     /**
@@ -489,5 +544,54 @@ class ProductionPackagingService
         return $order->status instanceof ProductionOrderStatus
             ? $order->status
             : ProductionOrderStatus::from((string) $order->status);
+    }
+
+    /**
+     * Relee la orden bloqueando su fila hasta que termine la transacción. El
+     * modelo que llega se cargó antes y su estado puede ya no ser el real.
+     */
+    private function lockOrder(ProductionOrder $order): ProductionOrder
+    {
+        return ProductionOrder::query()->lockForUpdate()->findOrFail($order->getKey());
+    }
+
+    private function assertAllowsPackaging(ProductionOrder $order): void
+    {
+        $status = $this->status($order);
+
+        if (!$status->allowsPackaging()) {
+            throw new RuntimeException(
+                $status === ProductionOrderStatus::DRAFT
+                    ? 'La producción debe completarse antes de poder empacar.'
+                    : "No se puede empacar una orden en estado {$status->label()}."
+            );
+        }
+    }
+
+    /**
+     * Granel de un producto que esta orden produjo y aún no se ha empacado, en
+     * la unidad base del granel. Null si el producto no es salida de la orden.
+     * Usa las relaciones `outputs` y `packagings` ya cargadas.
+     */
+    private function remainingSourceBaseQuantity(ProductionOrder $order, int $sourceProductId): ?float
+    {
+        $outputs = $order->outputs->where('product_id', $sourceProductId);
+
+        if ($outputs->isEmpty()) {
+            return null;
+        }
+
+        $produced = (float) $outputs->sum(fn($output) => $this->toBaseUnit(
+            $sourceProductId,
+            (int) $output->unit_id,
+            (float) $output->quantity
+        ));
+
+        return max(0.0, round($produced - $this->packedSourceBaseQuantity($order, $sourceProductId), 4));
+    }
+
+    private function formatQuantity(float $quantity): string
+    {
+        return rtrim(rtrim(number_format($quantity, 3, '.', ''), '0'), '.');
     }
 }

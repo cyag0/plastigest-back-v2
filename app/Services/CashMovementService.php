@@ -7,6 +7,7 @@ use App\Models\CashRegisterSession;
 use App\Models\Expense;
 use App\Models\PurchaseV2;
 use App\Models\Sale;
+use App\Support\CurrentLocation;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -26,6 +27,16 @@ class CashMovementService
     }
 
     /**
+     * Cómo se nombra el documento en el concepto: por su folio, que es el que
+     * conoce la gente ("SAL-20261015-0003"); el id interno solo si no tiene.
+     * Antes iban los dos ("Venta #4668 (SAL-20261015-0003)").
+     */
+    private static function documentLabel(?string $number, int|string $id): string
+    {
+        return !empty($number) ? $number : "#{$id}";
+    }
+
+    /**
      * Crea un movimiento de caja de tipo ingreso a partir de una venta.
      *
      * @param Sale   $sale          Venta de la cual proviene el ingreso
@@ -40,15 +51,20 @@ class CashMovementService
         }
 
         try {
-            $concept = 'Venta #' . $sale->id;
-            if (!empty($sale->sale_number)) {
-                $concept .= " ({$sale->sale_number})";
-            }
+            $concept = 'Venta ' . self::documentLabel($sale->sale_number, $sale->id);
+
+            // El turno indicado solo vale si está abierto y es de la sucursal de
+            // la venta. Sin turno indicado (p. ej. un abono posterior) entra al
+            // turno abierto de quien cobra en esa sucursal; nunca al de otra
+            // sucursal ni a un turno ya cerrado.
+            $sessionId = $sessionId !== null
+                ? self::openSessionAtLocation($sessionId, $sale->location_id)
+                : self::sessionForSale($sale);
 
             CashMovement::create([
                 'company_id'     => $sale->company_id,
                 'location_id'    => $sale->location_id,
-                'cash_register_session_id' => $sessionId ?? $sale->cash_register_session_id,
+                'cash_register_session_id' => $sessionId,
                 'user_id'        => Auth::id() ?? $sale->user_id,
                 'type'           => 'income',
                 'amount'         => $amount,
@@ -89,12 +105,9 @@ class CashMovementService
             ->groupBy('payment_method')
             ->get();
 
-        $sessionId = self::sessionForReversal($sale);
+        $sessionId = self::sessionForSale($sale);
 
-        $concept = 'Cancelación de venta #' . $sale->id;
-        if (!empty($sale->sale_number)) {
-            $concept .= " ({$sale->sale_number})";
-        }
+        $concept = 'Cancelación de venta ' . self::documentLabel($sale->sale_number, $sale->id);
 
         foreach ($collected as $row) {
             if ((float) $row->total <= 0) {
@@ -135,14 +148,15 @@ class CashMovementService
         }
 
         try {
-            $concept = 'Compra #' . $purchase->id;
-            if (!empty($purchase->purchase_number)) {
-                $concept .= " ({$purchase->purchase_number})";
-            }
+            $concept = 'Compra ' . self::documentLabel($purchase->purchase_number, $purchase->id);
 
             CashMovement::create([
                 'company_id'     => $purchase->company_id,
                 'location_id'    => $purchase->location_id,
+                // El dinero sale de la caja de quien recibe, si tiene turno
+                // abierto en esa sucursal. Antes la compra no quedaba en ningún
+                // turno y el efectivo esperado del cajero no la descontaba.
+                'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $purchase->location_id),
                 'user_id'        => Auth::id() ?? $purchase->user_id,
                 'type'           => 'expense',
                 'amount'         => $total,
@@ -183,8 +197,9 @@ class CashMovementService
         CashMovement::create([
             'company_id'     => $expense->company_id,
             'location_id'    => $expense->location_id,
-            // Si quien lo registra tiene turno abierto, el gasto sale de esa caja.
-            'cash_register_session_id' => self::openSessionIdOf(Auth::id()),
+            // Si quien lo registra tiene turno abierto en la sucursal del gasto,
+            // el gasto sale de esa caja (nunca de la caja de otra sucursal).
+            'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $expense->location_id),
             'user_id'        => Auth::id() ?? $expense->user_id,
             'type'           => 'expense',
             'amount'         => (float) $expense->amount,
@@ -192,7 +207,8 @@ class CashMovementService
             'payment_method' => self::mapPaymentMethod($expense->payment_method),
             'source_type'    => 'expense',
             'source_id'      => $expense->id,
-            'source_url'     => '/(tabs)/home/expenses/' . $expense->id,
+            // Los gastos se abren en su formulario (no hay pantalla de detalle).
+            'source_url'     => '/(tabs)/home/expenses/form?id=' . $expense->id,
             'notes'          => null,
             'movement_date'  => $expense->expense_date
                 ? $expense->expense_date->toDateString()
@@ -212,32 +228,62 @@ class CashMovementService
     }
 
     /**
-     * Turno al que se carga la devolución de una venta cancelada: el turno
-     * abierto de quien cancela o, si no tiene, el de la venta si sigue abierto.
-     * Si ninguno está abierto queda fuera de turno (no altera cortes cerrados).
+     * Turno al que entra el dinero de una venta que no trae turno propio (un
+     * abono posterior) o su devolución al cancelarla: el turno abierto de quien
+     * lo registra en la sucursal de la venta o, si no tiene, el de la venta si
+     * sigue abierto. Si ninguno aplica queda fuera de turno: no se altera un
+     * corte cerrado ni el de otra sucursal.
      */
-    private static function sessionForReversal(Sale $sale): ?int
+    private static function sessionForSale(Sale $sale): ?int
     {
-        if ($own = self::openSessionIdOf(Auth::id())) {
+        if ($own = self::openSessionIdFor(Auth::id(), $sale->location_id)) {
             return $own;
         }
 
-        $saleSession = $sale->cash_register_session_id
-            ? CashRegisterSession::find($sale->cash_register_session_id)
-            : null;
-
-        return $saleSession?->isOpen() ? $saleSession->id : null;
+        return self::openSessionAtLocation($sale->cash_register_session_id, $sale->location_id);
     }
 
-    /** Id del turno abierto de un usuario. */
-    public static function openSessionIdOf(?int $userId): ?int
+    /**
+     * El turno dado, solo si sigue abierto y es de esa sucursal.
+     */
+    private static function openSessionAtLocation(?int $sessionId, ?int $locationId): ?int
     {
-        if (!$userId) {
+        if (!$sessionId || !$locationId) {
+            return null;
+        }
+
+        $isUsable = CashRegisterSession::whereKey($sessionId)
+            ->where('location_id', $locationId)
+            ->where('status', CashRegisterSession::STATUS_OPEN)
+            ->exists();
+
+        return $isUsable ? $sessionId : null;
+    }
+
+    /**
+     * Id del turno abierto de un usuario en una sucursal. Un turno abierto en
+     * otra sucursal no cuenta: el efectivo de una sucursal no puede entrar al
+     * corte de la caja de otra.
+     */
+    public static function openSessionIdFor(?int $userId, ?int $locationId): ?int
+    {
+        if (!$userId || !$locationId) {
             return null;
         }
 
         return CashRegisterSession::where('user_id', $userId)
+            ->where('location_id', $locationId)
             ->where('status', CashRegisterSession::STATUS_OPEN)
             ->value('id');
+    }
+
+    /**
+     * Id del turno abierto de un usuario en la sucursal indicada o, si no se
+     * indica, en la sucursal actual (header X-Location-ID). Lo usan los
+     * movimientos manuales, que se registran en la sucursal actual.
+     */
+    public static function openSessionIdOf(?int $userId, ?int $locationId = null): ?int
+    {
+        return self::openSessionIdFor($userId, $locationId ?? CurrentLocation::id());
     }
 }

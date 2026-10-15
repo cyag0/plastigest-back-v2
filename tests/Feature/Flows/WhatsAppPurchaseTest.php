@@ -18,10 +18,15 @@ class WhatsAppPurchaseTest extends TestCase
 {
     use RefreshDatabase, CreatesTenant;
 
+    private const APP_SECRET = 'test-whatsapp-app-secret';
+
     protected function setUp(): void
     {
         parent::setUp();
         $this->createTenant();
+
+        // Con app_secret configurado, el webhook exige firma válida.
+        config(['services.whatsapp.app_secret' => self::APP_SECRET]);
     }
 
     private function message(string $from, string $text): array
@@ -31,6 +36,25 @@ class WhatsAppPurchaseTest extends TestCase
             'type' => 'text',
             'text' => ['body' => $text],
         ]]]]]]]];
+    }
+
+    /**
+     * Envía el webhook firmado con X-Hub-Signature-256, como lo hace Meta.
+     */
+    private function postSignedWebhook(array $payload): \Illuminate\Testing\TestResponse
+    {
+        $body = json_encode($payload);
+        $signature = 'sha256=' . hash_hmac('sha256', $body, self::APP_SECRET);
+
+        return $this->call(
+            'POST',
+            '/api/webhooks/whatsapp',
+            [],
+            [],
+            [],
+            ['HTTP_X-Hub-Signature-256' => $signature, 'CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json'],
+            $body
+        );
     }
 
     private function orderedPurchase(): PurchaseV2
@@ -57,7 +81,7 @@ class WhatsAppPurchaseTest extends TestCase
     {
         $purchase = $this->orderedPurchase();
 
-        $this->postJson('/api/webhooks/whatsapp', $this->message('5213221234567', 'Buenas, ya lo envio'))
+        $this->postSignedWebhook($this->message('5213221234567', 'Buenas, ya lo envio'))
             ->assertOk();
 
         $this->assertSame(PurchaseV2::STATUS_IN_TRANSIT, $purchase->fresh()->status);
@@ -71,8 +95,30 @@ class WhatsAppPurchaseTest extends TestCase
     {
         $purchase = $this->orderedPurchase();
 
-        $this->postJson('/api/webhooks/whatsapp', $this->message('5213221234567', 'Hola, ¿cómo están?'))
+        $this->postSignedWebhook($this->message('5213221234567', 'Hola, ¿cómo están?'))
             ->assertOk();
+
+        $this->assertSame(PurchaseV2::STATUS_ORDERED, $purchase->fresh()->status);
+    }
+
+    public function test_unsigned_webhook_is_rejected_and_does_not_change_the_purchase(): void
+    {
+        $purchase = $this->orderedPurchase();
+
+        // Sin firma: rechazado (403) y la compra no cambia de estado.
+        $this->postJson('/api/webhooks/whatsapp', $this->message('5213221234567', 'ya lo envio'))
+            ->assertStatus(403);
+
+        // Con firma inválida: también rechazado.
+        $this->call(
+            'POST',
+            '/api/webhooks/whatsapp',
+            [],
+            [],
+            [],
+            ['HTTP_X-Hub-Signature-256' => 'sha256=deadbeef', 'CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json'],
+            json_encode($this->message('5213221234567', 'ya lo envio'))
+        )->assertStatus(403);
 
         $this->assertSame(PurchaseV2::STATUS_ORDERED, $purchase->fresh()->status);
     }

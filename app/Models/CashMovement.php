@@ -30,7 +30,7 @@ class CashMovement extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
-        'movement_date' => 'date',
+        'movement_date' => 'date:Y-m-d',
     ];
 
     // -------------------------------------------------------------------------

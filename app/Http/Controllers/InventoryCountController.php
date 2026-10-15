@@ -38,6 +38,7 @@ class InventoryCountController extends CrudController
      */
     protected string $model = InventoryCount::class;
     protected ?string $permissionPrefix = 'inventory';
+    protected ?string $locationColumn = 'location_id';
 
     /**
      * Relaciones que se cargarán en el index
@@ -174,6 +175,25 @@ class InventoryCountController extends CrudController
         try {
             DB::beginTransaction();
 
+            // Bloqueo de fila: evita que dos cierres simultáneos apliquen las
+            // diferencias dos veces.
+            $locked = InventoryCount::whereKey($inventoryCount->id)->lockForUpdate()->first();
+
+            // Idempotencia: si este conteo ya generó sus ajustes de diferencia,
+            // ya fue cerrado antes. Un PUT con status=completed repetido NO debe
+            // volver a aplicar las diferencias (duplicaba los ajustes de stock).
+            $alreadyApplied = InventoryAdjustmentDetail::where('reference_type', 'inventory_count')
+                ->where('reference_id', $inventoryCount->id)
+                ->exists();
+
+            if ($alreadyApplied) {
+                if (($locked->status ?? null) !== 'completed') {
+                    $locked->update(['status' => 'completed']);
+                }
+                DB::commit();
+                return $inventoryCount->fresh(['details', 'location', 'user']);
+            }
+
             // Obtener todos los productos de la ubicación del inventario
             $location = $inventoryCount->location;
 
@@ -279,7 +299,7 @@ class InventoryCountController extends CrudController
                     Log::error('Conteo: error generando ajuste de diferencia', [
                         'inventory_count_id' => $inventoryCount->id,
                         'product_id' => $detail->product_id,
-                        'error' => $e->getMessage(),
+                        'error' => $this->errorDetail($e),
                     ]);
                 }
             }
@@ -297,59 +317,13 @@ class InventoryCountController extends CrudController
                 $this->createDiscrepanciesTask($inventoryCount, $discrepancies);
             }
 
-            // Verificar productos con stock bajo después de completar el inventario
-            $this->checkLowStockAfterCount($inventoryCount->company_id, $location);
+            // El aviso de stock bajo lo da MovementService al descontar (sólo
+            // cuando la existencia cruza el mínimo), no aquí.
 
             return $inventoryCount;
         } catch (\Exception $e) {
             DB::rollBack();
             throw $e;
-        }
-    }
-
-    /**
-     * Verificar productos con stock bajo después del conteo
-     */
-    protected function checkLowStockAfterCount($companyId, $location)
-    {
-        try {
-            // Consultar productos donde current_stock < minimum_stock
-            $lowStockProducts = DB::table('product_location')
-                ->join('products', 'product_location.product_id', '=', 'products.id')
-                ->where('product_location.location_id', $location->id)
-                ->whereColumn('product_location.current_stock', '<', 'product_location.minimum_stock')
-                ->where('product_location.active', true)
-                ->select(
-                    'products.id',
-                    'products.name',
-                    'products.code',
-                    'product_location.current_stock',
-                    'product_location.minimum_stock'
-                )
-                ->get()
-                ->map(function ($p) {
-                    return [
-                        'id' => $p->id,
-                        'name' => $p->name,
-                        'code' => $p->code,
-                        'current_stock' => $p->current_stock,
-                        'minimum_stock' => $p->minimum_stock,
-                    ];
-                })
-                ->toArray();
-
-            // Dispatch a low_stock notification for each product below minimum
-            foreach ($lowStockProducts as $p) {
-                NotificationEngine::dispatch('low_stock', $companyId, [
-                    'product'       => (object) $p,
-                    'location'      => $location,
-                    'current_stock' => $p['current_stock'],
-                    'minimum_stock' => $p['minimum_stock'],
-                ]);
-            }
-        } catch (\Exception $e) {
-            // No fallar el proceso de inventario si la notificación falla
-            Log::error('Error checking low stock: ' . $e->getMessage());
         }
     }
 
@@ -366,18 +340,23 @@ class InventoryCountController extends CrudController
                 return "- {$disc['product_name']}: {$sign}{$disc['difference']} (esperado: {$disc['expected_quantity']}, contado: {$disc['counted_quantity']})";
             })->take(10)->join("\n");
 
+            // La revisa quien administra el inventario de la sucursal (no quien
+            // contó, que puede ser un cajero sin acceso a Tareas); quien contó
+            // queda como "asignada por" y se entera cuando se resuelva.
             $task = Task::create([
-                'title' => "Revisar Discrepancias - Conteo #{$inventoryCount->id}",
-                'description' => "Se encontraron {$discrepanciesCount} discrepancia(s) en el conteo '{$inventoryCount->name}'.\n\nProductos con diferencias:\n{$discrepanciesList}",
+                'title' => "Revisar diferencias del conteo «{$inventoryCount->name}»",
+                'description' => "Se encontraron {$discrepanciesCount} diferencia(s) en el conteo '{$inventoryCount->name}'.\n\nProductos con diferencias:\n{$discrepanciesList}",
                 'type' => 'stock_check',
                 'priority' => $discrepanciesCount > 10 ? 'urgent' : 'high',
                 'status' => 'pending',
                 'due_date' => now()->addDay(),
                 'company_id' => $inventoryCount->company_id,
                 'location_id' => $inventoryCount->location_id,
-                'assigned_to' => $inventoryCount->user_id,
+                'assigned_by' => Auth::id() ?? $inventoryCount->user_id,
                 'assigned_users' => [],
                 'is_recurring' => false,
+                'related_type' => InventoryCount::class,
+                'related_id' => $inventoryCount->id,
             ]);
 
             Log::info('Discrepancies task created', [
@@ -395,12 +374,12 @@ class InventoryCountController extends CrudController
                 'discrepancies_count' => count($discrepancies),
             ]);
 
-            // 2. Notificar asignación de tarea (solo al usuario asignado)
-            app(TaskService::class)->notifyDiscrepanciesTaskCreated($task, $inventoryCount, $discrepancies);
+            // 2. Asignar la revisión (por permiso) y avisar al responsable.
+            app(TaskService::class)->assignAndNotify($task);
         } catch (\Exception $e) {
             Log::error('Error creating discrepancies task', [
                 'inventory_count_id' => $inventoryCount->id,
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
             ]);
         }
     }

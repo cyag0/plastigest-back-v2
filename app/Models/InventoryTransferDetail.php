@@ -37,7 +37,7 @@ class InventoryTransferDetail extends Model
         'quantity_received' => 'decimal:3',
         'unit_cost' => 'decimal:2',
         'total_cost' => 'decimal:2',
-        'expiry_date' => 'date',
+        'expiry_date' => 'date:Y-m-d',
         'has_difference' => 'boolean',
         'difference' => 'decimal:3',
     ];

@@ -10,6 +10,7 @@ use App\Models\Product;
 use App\Enums\StockLedgerReason;
 use App\Support\StockContext;
 use App\Models\Unit;
+use App\Notifications\NotificationEngine;
 use App\Services\MovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -86,8 +87,8 @@ class InventoryAdjustmentController extends Controller
                 ],
             ]);
         } catch (Throwable $e) {
-            Log::error('Error listing inventory adjustments', ['error' => $e->getMessage()]);
-            return response()->json(['message' => 'Error al listar ajustes', 'error' => $e->getMessage()], 500);
+            Log::error('Error listing inventory adjustments', ['error' => $this->errorDetail($e)]);
+            return response()->json(['message' => 'Error al listar ajustes', 'error' => $this->errorDetail($e)], 500);
         }
     }
 
@@ -110,7 +111,7 @@ class InventoryAdjustmentController extends Controller
                 'data' => new InventoryAdjustmentDetailResource($detail),
             ]);
         } catch (Throwable $e) {
-            return response()->json(['message' => 'Ajuste no encontrado', 'error' => $e->getMessage()], 404);
+            return response()->json(['message' => 'Ajuste no encontrado', 'error' => $this->errorDetail($e)], 404);
         }
     }
 
@@ -210,13 +211,31 @@ class InventoryAdjustmentController extends Controller
                 ->orderByDesc('id')
                 ->get();
 
+            // Aviso a quienes administran el inventario de la sucursal (mermas,
+            // extravíos, daños…). Quien registró el ajuste no se avisa a sí mismo.
+            foreach ($details as $detail) {
+                NotificationEngine::dispatch('inventory_adjustment', $companyId, [
+                    'adjustment'      => $detail,
+                    'product'         => $detail->product,
+                    'location'        => $detail->location,
+                    'adjustment_qty'  => ($detail->direction === 'out' ? -1 : 1) * (float) $detail->quantity,
+                    'new_stock'       => (float) $detail->new_stock,
+                    'unit'            => $detail->unit?->abbreviation,
+                    'reason'          => $detail->reason_code instanceof AdjustmentReasonCode
+                        ? $detail->reason_code->label()
+                        : 'Otro',
+                    'adjusted_by'     => Auth::user()?->name ?? 'Sistema',
+                    'exclude_user_id' => Auth::id(),
+                ]);
+            }
+
             return response()->json([
                 'message' => 'Ajustes creados y aplicados exitosamente',
                 'data' => InventoryAdjustmentDetailResource::collection($details),
             ], 201);
         } catch (Throwable $e) {
-            Log::error('Error creating inventory adjustment details', ['error' => $e->getMessage()]);
-            return response()->json(['message' => 'Error al crear ajustes', 'error' => $e->getMessage()], 500);
+            Log::error('Error creating inventory adjustment details', ['error' => $this->errorDetail($e)]);
+            return response()->json(['message' => 'Error al crear ajustes', 'error' => $this->errorDetail($e)], 500);
         }
     }
 
@@ -302,8 +321,8 @@ class InventoryAdjustmentController extends Controller
                 'data' => new InventoryAdjustmentDetailResource($detail),
             ]);
         } catch (Throwable $e) {
-            Log::error('Error updating inventory adjustment detail', ['error' => $e->getMessage()]);
-            return response()->json(['message' => 'Error al actualizar ajuste', 'error' => $e->getMessage()], 500);
+            Log::error('Error updating inventory adjustment detail', ['error' => $this->errorDetail($e)]);
+            return response()->json(['message' => 'Error al actualizar ajuste', 'error' => $this->errorDetail($e)], 500);
         }
     }
 
@@ -321,6 +340,19 @@ class InventoryAdjustmentController extends Controller
 
             $detail = InventoryAdjustmentDetail::where('company_id', $companyId)->findOrFail($id);
 
+            // Un ajuste generado al recibir una transferencia (merma/daño) no
+            // movió existencias por su cuenta: la recepción ya las manejó.
+            // Borrarlo aquí revertiría stock que nunca salió, así que se bloquea.
+            $content = $detail->content;
+            if (is_string($content)) {
+                $content = json_decode($content, true) ?: [];
+            }
+            if (!empty($content['created_from_transfer']) || ($content['source'] ?? null) === 'inventory_transfer_receive_difference') {
+                return response()->json([
+                    'message' => 'Este ajuste se generó al recibir una transferencia y no puede eliminarse aquí.',
+                ], 422);
+            }
+
             DB::transaction(function () use ($detail): void {
                 $product = Product::findOrFail((int) $detail->product_id);
                 $deleteContext = StockContext::for(StockLedgerReason::ADJUSTMENT, $detail, 'Ajuste eliminado');
@@ -335,8 +367,8 @@ class InventoryAdjustmentController extends Controller
 
             return response()->json(['message' => 'Ajuste eliminado exitosamente']);
         } catch (Throwable $e) {
-            Log::error('Error deleting inventory adjustment detail', ['error' => $e->getMessage()]);
-            return response()->json(['message' => 'Error al eliminar ajuste', 'error' => $e->getMessage()], 500);
+            Log::error('Error deleting inventory adjustment detail', ['exception' => get_class($e), 'error' => $this->errorDetail($e)]);
+            return response()->json(['message' => 'Error al eliminar ajuste'], 500);
         }
     }
 
@@ -400,7 +432,9 @@ class InventoryAdjustmentController extends Controller
 
             $extension = strtolower((string) $file->getClientOriginalExtension());
             $safeExtension = $extension !== '' ? $extension : 'jpg';
-            $customName = 'image_' . ($index + 1) . '.' . $safeExtension;
+            // Nombre con sufijo aleatorio: las evidencias se sirven por una ruta
+            // pública, y un nombre predecible (image_1.jpg) permitía adivinarlas.
+            $customName = 'image_' . ($index + 1) . '_' . \Illuminate\Support\Str::random(24) . '.' . $safeExtension;
             $result = AppUploadUtil::saveFile($file, $batchPath, $customName);
 
             if (!$result['success']) {

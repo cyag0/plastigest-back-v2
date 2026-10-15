@@ -28,7 +28,7 @@ class SalesReport extends Model
     ];
 
     protected $casts = [
-        'report_date' => 'date',
+        'report_date' => 'date:Y-m-d',
         'total_sales' => 'decimal:2',
         'total_cash' => 'decimal:2',
         'total_card' => 'decimal:2',

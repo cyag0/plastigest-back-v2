@@ -175,18 +175,17 @@ class SupplierController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        // Productos y compras guardan el proveedor con "set null": borrarlo
+        // dejaba el historial de compras sin proveedor.
+        $id = $model->id;
+        if (DB::table('purchases')->where('supplier_id', $id)->exists()
+            || DB::table('products')->where('supplier_id', $id)->exists()) {
+            return [
+                'can_delete' => false,
+                'message' => 'Este proveedor tiene compras o productos registrados. Desactívalo en su lugar.',
+            ];
+        }
 
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        return ['can_delete' => true, 'message' => ''];
     }
 }

@@ -21,6 +21,7 @@ class SalesReportController extends CrudController
     protected string $resource = SalesReportResource::class;
     protected string $model = SalesReport::class;
     protected ?string $permissionPrefix = 'reports';
+    protected ?string $locationColumn = 'location_id';
 
     protected function indexRelations(): array
     {

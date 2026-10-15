@@ -329,9 +329,10 @@ Route::middleware('auth:sanctum')->group(function () {
             });
             Route::apiResource('units', UnitControllerV2::class);
 
-            // Rutas de notas de clientes
-            Route::apiResource('customer-notes', CustomerNoteController::class);
+            // Rutas de notas de clientes. total-pending va antes del apiResource:
+            // si no, {customer-note} del resource captura "total-pending" como id.
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
+            Route::apiResource('customer-notes', CustomerNoteController::class);
 
             // === SALES REPORTS ===
             Route::apiResource('sales-reports', \App\Http\Controllers\SalesReportController::class);

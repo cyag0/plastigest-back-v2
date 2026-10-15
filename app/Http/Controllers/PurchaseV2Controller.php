@@ -10,6 +10,7 @@ use App\Enums\StockLedgerReason;
 use App\Support\StockContext;
 use App\Services\TaskService;
 use App\Notifications\NotificationEngine;
+use App\Notifications\Templates\PurchaseUpdateTemplate;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
@@ -77,7 +78,7 @@ class PurchaseV2Controller extends Controller
             }
 
             if (!$purchase) {
-                $purchase = PurchaseV2::create([
+                $attributes = [
                     'company_id' => $companyId,
                     'location_id' => $locationId,
                     'supplier_id' => $validated['supplier_id'] ?? null,
@@ -85,10 +86,15 @@ class PurchaseV2Controller extends Controller
                     'purchase_date' => now(),
                     'status' => PurchaseV2::STATUS_DRAFT,
                     'notes' => $validated['notes'] ?? null,
-                    'payment_method' => $validated['payment_method'] ?? null,
                     'paid_from_cash' => $validated['paid_from_cash'] ?? true,
                     'user_id' => $userId,
-                ]);
+                ];
+                // Sin forma de pago se deja la de la columna: un null explícito
+                // tronaba el alta del borrador ("payment_method cannot be null").
+                if (!empty($validated['payment_method'])) {
+                    $attributes['payment_method'] = $validated['payment_method'];
+                }
+                $purchase = PurchaseV2::create($attributes);
             } else {
                 // Actualizar notas y supplier si cambiaron
                 $purchase->update([
@@ -119,7 +125,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al guardar la compra',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -229,7 +235,7 @@ class PurchaseV2Controller extends Controller
                         'id' => $purchase->id,
                         'supplier_id' => $purchase->supplier_id,
                         'supplier_name' => $purchase->supplier?->name,
-                        'purchase_date' => $purchase->purchase_date,
+                        'purchase_date' => $purchase->purchase_date?->format('Y-m-d'),
                         'purchase_number' => $purchase->purchase_number,
                         'notes' => $purchase->notes,
                         'document_number' => $purchase->document_number,
@@ -276,7 +282,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Compra no encontrada',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 404);
         }
     }
@@ -303,6 +309,9 @@ class PurchaseV2Controller extends Controller
                 // ¿El dinero salió de la caja? Si no, al recibir no se registra
                 // egreso en el corte.
                 'paid_from_cash' => 'nullable|boolean',
+                // El encabezado se puede editar sobre un borrador ya creado.
+                'supplier_id' => 'nullable|exists:suppliers,id',
+                'purchase_date' => 'nullable|date',
             ]);
 
             $purchase = PurchaseV2::draft()->findOrFail($id);
@@ -322,6 +331,8 @@ class PurchaseV2Controller extends Controller
                 'document_number' => $validated['document_number'] ?? null,
                 'payment_method' => $validated['payment_method'] ?? $purchase->payment_method ?? 'other',
                 'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
+                'supplier_id' => $validated['supplier_id'] ?? $purchase->supplier_id,
+                'purchase_date' => $validated['purchase_date'] ?? $purchase->purchase_date,
             ]);
 
             $whatsappSent = $this->sendOrderToSupplier($purchase);
@@ -336,7 +347,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al confirmar la compra',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -368,6 +379,9 @@ class PurchaseV2Controller extends Controller
                 ]);
             }
 
+            // La plantilla tenía el caso "en camino" pero nunca se avisaba.
+            PurchaseUpdateTemplate::dispatchFor($purchase, 'in_transit', Auth::id());
+
             return response()->json([
                 'success' => true,
                 'message' => 'Compra marcada como en tránsito',
@@ -377,7 +391,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al actualizar el estado',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -394,13 +408,29 @@ class PurchaseV2Controller extends Controller
         try {
             $validated = $request->validate([
                 'details' => 'required|array',
-                'details.*.id' => 'required|exists:purchase_details,id',
+                'details.*.id' => 'required|distinct|exists:purchase_details,id',
                 'details.*.quantity_received' => 'required|numeric|min:0',
             ]);
 
             DB::beginTransaction();
 
-            $purchase = PurchaseV2::inTransit()->findOrFail($id);
+            // Bloqueo de fila + relectura del estado: sin esto, un doble envío
+            // (doble clic / dos dispositivos) recibía la compra dos veces y
+            // sumaba stock y caja por duplicado. Aislado por empresa/sucursal.
+            $purchase = PurchaseV2::where('id', $id)
+                ->where('company_id', CurrentCompany::id())
+                ->where('location_id', CurrentLocation::id())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($purchase->status !== PurchaseV2::STATUS_IN_TRANSIT) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'La compra ya fue recibida o no está en tránsito.',
+                ], 422);
+            }
+
             $movementService = new MovementService();
 
             // Actualizar cantidades recibidas e incrementar stock
@@ -470,19 +500,8 @@ class PurchaseV2Controller extends Controller
                 ]);
             }
 
-            $products = $purchase->details->map(function ($detail) {
-                return [
-                    'name'     => $detail->product?->name ?? '',
-                    'quantity' => $detail->quantity_received,
-                ];
-            })->toArray();
-
-            NotificationEngine::dispatch('purchase_update', $purchase->company_id, [
-                'purchase'      => $purchase,
-                'supplier_name' => $purchase->supplier?->name ?? '',
-                'sub_type'      => 'received',
-                'products'      => $products,
-            ]);
+            // Sale al confirmar la transacción (NotificationEngine::afterCommit).
+            PurchaseUpdateTemplate::dispatchFor($purchase, 'received', Auth::id());
 
             DB::commit();
 
@@ -493,10 +512,10 @@ class PurchaseV2Controller extends Controller
             ]);
         } catch (Exception $e) {
             DB::rollBack();
+            Log::error('Error al recibir la compra', ['exception' => get_class($e), 'message' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
                 'message' => 'Error al recibir la compra',
-                'error' => $e->getMessage()
             ], 500);
         }
     }
@@ -576,7 +595,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al agregar producto',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -650,7 +669,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al actualizar producto',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -695,7 +714,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al eliminar producto',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -729,7 +748,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al eliminar la compra',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -786,7 +805,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al cancelar la compra',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -881,7 +900,7 @@ class PurchaseV2Controller extends Controller
                 } catch (Exception $e) {
                     Log::warning('No se pudo notificar resolución de discrepancia', [
                         'task_id' => $task->id,
-                        'error' => $e->getMessage(),
+                        'error' => $this->errorDetail($e),
                     ]);
                 }
             }
@@ -901,7 +920,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error al resolver la discrepancia',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -1164,7 +1183,7 @@ class PurchaseV2Controller extends Controller
         } catch (\Throwable $e) {
             Log::warning('No se pudo enviar el pedido por WhatsApp', [
                 'purchase_id' => $purchase->id,
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
             ]);
             return false;
         }

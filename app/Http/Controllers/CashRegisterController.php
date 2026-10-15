@@ -20,6 +20,7 @@ class CashRegisterController extends CrudController
     protected string $resource = CashRegisterResource::class;
     protected string $model = CashRegister::class;
     protected ?string $permissionPrefix = 'cash_registers';
+    protected ?string $locationColumn = 'location_id';
 
     /**
      * El POS necesita listar las cajas de su sucursal para abrir turno, así

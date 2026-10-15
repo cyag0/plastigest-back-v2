@@ -24,7 +24,7 @@ class InventoryCount extends Model
     ];
 
     protected $casts = [
-        'count_date' => 'date',
+        'count_date' => 'date:Y-m-d',
         'content' => 'array',
     ];
 

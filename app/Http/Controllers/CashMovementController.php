@@ -17,6 +17,7 @@ class CashMovementController extends CrudController
     protected string $resource = CashMovementResource::class;
     protected string $model = CashMovement::class;
     protected ?string $permissionPrefix = 'cash_movements';
+    protected ?string $locationColumn = 'location_id';
     protected string $dateColumn = 'movement_date';
 
     // -------------------------------------------------------------------------
@@ -124,10 +125,67 @@ class CashMovementController extends CrudController
     // Reglas de negocio para eliminar
     // -------------------------------------------------------------------------
 
+    /**
+     * Tipos de movimiento generados por el sistema (ligados a una venta, compra,
+     * gasto o devolución). No se editan ni eliminan a mano: se sincronizan con
+     * su documento origen; borrarlos descuadraría la caja.
+     */
+    private const SYSTEM_SOURCES = ['sale', 'sale_cancellation', 'purchase_v2', 'expense', 'refund'];
+
+    private function isSystemMovement(Model $model): bool
+    {
+        return in_array($model->source_type, self::SYSTEM_SOURCES, true);
+    }
+
+    private function shiftIsClosed(Model $model): bool
+    {
+        if (!$model->cash_register_session_id) {
+            return false;
+        }
+
+        return DB::table('cash_register_sessions')
+            ->where('id', $model->cash_register_session_id)
+            ->where('status', 'closed')
+            ->exists();
+    }
+
     protected function canDelete(Model $model): array
     {
-        // Solo el creador o usuarios con permiso pueden eliminar
+        if ($this->isSystemMovement($model)) {
+            return ['can_delete' => false, 'message' => 'Este movimiento se generó automáticamente y no puede eliminarse.'];
+        }
+
+        if ($this->shiftIsClosed($model)) {
+            return ['can_delete' => false, 'message' => 'No se puede eliminar un movimiento de un turno ya cerrado.'];
+        }
+
         return ['can_delete' => true];
+    }
+
+    /**
+     * Igual que al eliminar: los movimientos del sistema o de turnos cerrados
+     * son inmutables.
+     */
+    public function update(Request $request, $id)
+    {
+        if (!$this->canEdit()) {
+            return $this->forbiddenResponse('editar este recurso');
+        }
+
+        $model = $this->findModel($id);
+        if (!$model) {
+            return response()->json(['message' => 'Recurso no encontrado'], 404);
+        }
+
+        if ($this->isSystemMovement($model)) {
+            return response()->json(['message' => 'Este movimiento se generó automáticamente y no puede editarse.'], 422);
+        }
+
+        if ($this->shiftIsClosed($model)) {
+            return response()->json(['message' => 'No se puede editar un movimiento de un turno ya cerrado.'], 422);
+        }
+
+        return parent::update($request, $id);
     }
 
     // -------------------------------------------------------------------------

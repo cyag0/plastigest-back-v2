@@ -117,7 +117,10 @@ class InventoryTransferResource extends JsonResource
      */
     protected function resolveGeneratedAdjustments(array $content): array
     {
-        $adjustments = data_get($content, 'step_3.adjustments', []);
+        // La recepción los guarda en workflow.step_3; step_3.adjustments es
+        // el formato anterior.
+        $adjustments = data_get($content, 'workflow.step_3.adjustments')
+            ?: data_get($content, 'step_3.adjustments', []);
         if (!is_array($adjustments) || empty($adjustments)) {
             return [];
         }

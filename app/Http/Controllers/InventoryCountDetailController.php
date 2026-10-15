@@ -22,6 +22,8 @@ class InventoryCountDetailController extends CrudController
      */
     protected string $model = InventoryCountDetail::class;
     protected ?string $permissionPrefix = 'inventory';
+    protected ?string $companyColumn = null;
+    protected ?string $locationColumn = 'location_id';
 
     /**
      * Relaciones que se cargarán en el index
@@ -74,10 +76,27 @@ class InventoryCountDetailController extends CrudController
             'inventory_count_id' => 'required|exists:inventory_counts,id',
             'product_id' => 'required|exists:products,id',
             /* 'location_id' => 'required|exists:locations,id', */
-            'system_quantity' => 'required|numeric|min:0',
+            // system_quantity ya no se toma del cliente: se calcula en el servidor
+            // (ver processStoreData) con el stock real, para que nadie pueda
+            // falsear la "cantidad del sistema" y con ella la diferencia/ajuste.
+            'system_quantity' => 'nullable|numeric',
             'counted_quantity' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
         ]);
+    }
+
+    /**
+     * La cantidad del sistema es la existencia real del producto en la sucursal
+     * del conteo, calculada en el servidor (no la que mande el cliente).
+     */
+    protected function processStoreData(array $validatedData, Request $request): array
+    {
+        $validatedData['system_quantity'] = (float) (DB::table('product_location')
+            ->where('product_id', $validatedData['product_id'])
+            ->where('location_id', CurrentLocation::id())
+            ->value('current_stock') ?? 0);
+
+        return $validatedData;
     }
 
     /**

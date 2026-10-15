@@ -23,6 +23,7 @@ class ProductionOrderController extends CrudController
     protected string $resource = ProductionOrderResource::class;
     protected string $model = ProductionOrder::class;
     protected ?string $permissionPrefix = 'production_orders';
+    protected ?string $locationColumn = 'location_id';
     protected string $dateColumn = 'production_date';
 
     public function __construct(
@@ -62,6 +63,27 @@ class ProductionOrderController extends CrudController
             'createdBy',
             'updatedBy',
         ];
+    }
+
+    /**
+     * Solo se pueden eliminar órdenes en borrador o canceladas. Una orden
+     * completada/empacada ya movió existencias; borrarla dejaría el stock
+     * descuadrado (CrudController::destroy no traía este resguardo).
+     */
+    protected function canDelete(\Illuminate\Database\Eloquent\Model $model): array
+    {
+        $status = $model->status instanceof ProductionOrderStatus
+            ? $model->status
+            : ProductionOrderStatus::tryFrom((string) $model->status);
+
+        if (!in_array($status, [ProductionOrderStatus::DRAFT, ProductionOrderStatus::CANCELLED], true)) {
+            return [
+                'can_delete' => false,
+                'message' => 'Solo se pueden eliminar órdenes en borrador o canceladas.',
+            ];
+        }
+
+        return ['can_delete' => true, 'message' => ''];
     }
 
     protected function handleQuery($query, array $params)
@@ -222,7 +244,7 @@ class ProductionOrderController extends CrudController
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['success' => false, 'message' => 'No se pudo completar', 'errors' => $e->errors()], 422);
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Error al completar producción', 'error' => $e->getMessage()], 422);
+            return response()->json(['success' => false, 'message' => 'Error al completar producción', 'error' => $this->errorDetail($e)], 422);
         }
     }
 
@@ -244,7 +266,7 @@ class ProductionOrderController extends CrudController
                 'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
             ]);
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Error al cancelar producción', 'error' => $e->getMessage()], 422);
+            return response()->json(['success' => false, 'message' => 'Error al cancelar producción', 'error' => $this->errorDetail($e)], 422);
         }
     }
 
@@ -351,7 +373,7 @@ class ProductionOrderController extends CrudController
             return response()->json([
                 'success' => false,
                 'message' => 'No se pudo registrar el empaque',
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
             ], 422);
         }
     }
@@ -379,7 +401,7 @@ class ProductionOrderController extends CrudController
             return response()->json([
                 'success' => false,
                 'message' => 'No se pudo revertir el empaque',
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
             ], 422);
         }
     }
@@ -408,7 +430,7 @@ class ProductionOrderController extends CrudController
             return response()->json([
                 'success' => false,
                 'message' => 'No se pudo cerrar el empaque',
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
             ], 422);
         }
     }

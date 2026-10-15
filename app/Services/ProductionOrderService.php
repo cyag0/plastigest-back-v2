@@ -30,6 +30,16 @@ use RuntimeException;
  */
 class ProductionOrderService
 {
+    /** Motivos de merma que se capturan en la orden. */
+    public const WASTE_REASONS = [
+        'damage' => 'Producto dañado',
+        'quality' => 'Defecto de calidad',
+        'expired' => 'Caducado / Vencido',
+        'process_loss' => 'Merma de proceso',
+        'spill' => 'Derrame / Desperdicio',
+        'other' => 'Otro',
+    ];
+
     public function __construct(
         private readonly MovementService $movementService,
         private readonly ProductionPackagingService $packagingService,
@@ -75,11 +85,16 @@ class ProductionOrderService
      */
     public function updateDraft(ProductionOrder $order, array $data): ProductionOrder
     {
-        if ($order->status !== ProductionOrderStatus::DRAFT) {
-            throw new RuntimeException('Solo se pueden editar órdenes en borrador.');
-        }
-
         return DB::transaction(function () use ($order, $data) {
+            // Si otra petición completó o canceló la orden mientras tanto, sus
+            // renglones ya movieron stock: editarlos dejaría la orden diciendo
+            // algo distinto de lo que realmente se descontó.
+            $order = $this->lockOrder($order);
+
+            if ($order->status !== ProductionOrderStatus::DRAFT) {
+                throw new RuntimeException('Solo se pueden editar órdenes en borrador.');
+            }
+
             $order->fill([
                 'formula_id' => array_key_exists('formula_id', $data) ? $data['formula_id'] : $order->formula_id,
                 'production_date' => $data['production_date'] ?? $order->production_date->toDateString(),
@@ -108,9 +123,14 @@ class ProductionOrderService
      */
     public function complete(ProductionOrder $order): ProductionOrder
     {
-        $order->assertCanTransitionTo(ProductionOrderStatus::COMPLETED);
-
         return DB::transaction(function () use ($order) {
+            // El estado se valida sobre la fila bloqueada, no sobre el modelo
+            // cargado antes: dos "completar" simultáneos (doble toque, reintento
+            // tras un timeout) descontaban los insumos y sumaban el producto dos
+            // veces. Ahora el segundo espera aquí y ve la orden ya completada.
+            $order = $this->lockOrder($order);
+            $order->assertCanTransitionTo(ProductionOrderStatus::COMPLETED);
+
             $locationId = (int) $order->location_id;
 
             // 1. Descontar stock por cada consumo
@@ -162,9 +182,12 @@ class ProductionOrderService
      */
     public function cancel(ProductionOrder $order): ProductionOrder
     {
-        $order->assertCanTransitionTo(ProductionOrderStatus::CANCELLED);
-
         return DB::transaction(function () use ($order) {
+            // Mismo motivo que en complete(): sin el bloqueo, dos cancelaciones
+            // simultáneas revertían el stock dos veces.
+            $order = $this->lockOrder($order);
+            $order->assertCanTransitionTo(ProductionOrderStatus::CANCELLED);
+
             if ($order->status->isProduced()) {
                 $locationId = (int) $order->location_id;
 
@@ -238,8 +261,15 @@ class ProductionOrderService
     {
         $today = Carbon::today()->toDateString();
 
+        // Una orden en empaque o empacada también se produjo hoy: antes salía
+        // de los KPIs en cuanto se empezaba a empacar.
+        $produced = array_values(array_filter(
+            ProductionOrderStatus::cases(),
+            fn(ProductionOrderStatus $status) => $status->isProduced()
+        ));
+
         $base = ProductionOrder::query()
-            ->where('status', ProductionOrderStatus::COMPLETED)
+            ->whereIn('status', array_map(fn(ProductionOrderStatus $s) => $s->value, $produced))
             ->whereDate('production_date', $today)
             ->byCompany($companyId)
             ->byLocation($locationId);
@@ -419,14 +449,11 @@ class ProductionOrderService
             ->orderBy('name')
             ->get(['id', 'name', 'email']);
 
-        $wasteReasons = [
-            ['value' => 'damage', 'label' => 'Producto dañado'],
-            ['value' => 'quality', 'label' => 'Defecto de calidad'],
-            ['value' => 'expired', 'label' => 'Caducado / Vencido'],
-            ['value' => 'process_loss', 'label' => 'Merma de proceso'],
-            ['value' => 'spill', 'label' => 'Derrame / Desperdicio'],
-            ['value' => 'other', 'label' => 'Otro'],
-        ];
+        $wasteReasons = array_map(
+            fn($value, $label) => ['value' => $value, 'label' => $label],
+            array_keys(self::WASTE_REASONS),
+            self::WASTE_REASONS,
+        );
 
         return [
             'statuses' => ProductionOrderStatus::options(),
@@ -441,6 +468,19 @@ class ProductionOrderService
     // -----------------------------------------------------------------
     // Helpers privados
     // -----------------------------------------------------------------
+
+    /**
+     * Relee la orden bloqueando su fila hasta que termine la transacción.
+     *
+     * Las transiciones que mueven stock tienen que decidir con el estado real
+     * de la fila: el modelo que llega se cargó antes de la transacción y otra
+     * petición pudo haberlo cambiado. Hay que llamarlo dentro de
+     * DB::transaction(), si no el bloqueo se suelta de inmediato.
+     */
+    private function lockOrder(ProductionOrder $order): ProductionOrder
+    {
+        return ProductionOrder::query()->lockForUpdate()->findOrFail($order->getKey());
+    }
 
     private function syncConsumptions(ProductionOrder $order, array $rows): void
     {

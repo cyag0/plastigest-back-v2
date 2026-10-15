@@ -21,10 +21,13 @@ class InventoryCountDetail extends Model
         'notes',
     ];
 
+    // Tres decimales, como product_location.current_stock. Con decimal:0 las
+    // cantidades se redondeaban a enteros al leerlas: contar 9 kg de un
+    // producto con 10.4 kg aplicaba una diferencia de -1 en vez de -1.4.
     protected $casts = [
-        'system_quantity' => 'decimal:0',
-        'counted_quantity' => 'decimal:0',
-        'difference' => 'decimal:0',
+        'system_quantity' => 'decimal:3',
+        'counted_quantity' => 'decimal:3',
+        'difference' => 'decimal:3',
     ];
 
     /**
@@ -58,7 +61,7 @@ class InventoryCountDetail extends Model
     {
         static::saving(function ($detail) {
             if ($detail->counted_quantity !== null) {
-                $detail->difference = $detail->counted_quantity - $detail->system_quantity;
+                $detail->difference = round((float) $detail->counted_quantity - (float) $detail->system_quantity, 3);
             }
         });
     }

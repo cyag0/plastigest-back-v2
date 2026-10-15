@@ -2,13 +2,11 @@
 
 namespace App\Services;
 
-use App\Models\Admin\Location;
 use App\Models\CashRegisterSession;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\SalePayment;
-use App\Notifications\NotificationEngine;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -109,8 +107,6 @@ class SaleService
                 CashMovementService::fromSale($sale, (float) $payment['amount'], $payment['method'], null, $session?->id);
             }
 
-            $this->notifyLowStock($sale);
-
             return $sale;
         });
     }
@@ -137,37 +133,22 @@ class SaleService
             }, $data['payments']);
         }
 
-        $paid = round((float) ($data['paid_amount'] ?? $total), 2);
+        $method = $data['payment_method'] ?? 'cash';
+
+        // Crédito sin anticipo: si no se indica monto, no se registra pago (antes
+        // tomaba el total por defecto y marcaba la venta como pagada).
+        $default = $method === 'credit' ? 0.0 : $total;
+        $paid = round((float) ($data['paid_amount'] ?? $default), 2);
+
+        // Nunca registrar como ingreso más que el total de la venta: pagar de
+        // más (500 en una venta de 380) no debe asentar 500 en caja; el cambio
+        // no es ingreso.
+        $paid = min($paid, $total);
+
         if ($paid <= 0) {
             return [];
         }
 
-        return [['method' => $data['payment_method'] ?? 'cash', 'amount' => $paid]];
-    }
-
-    /** Aviso de stock bajo; nunca debe tumbar la venta. */
-    private function notifyLowStock(Sale $sale): void
-    {
-        try {
-            foreach ($sale->details()->get() as $detail) {
-                $row = DB::table('product_location')
-                    ->where('product_id', $detail->product_id)
-                    ->where('location_id', $sale->location_id)
-                    ->first();
-
-                if (!$row || !$row->minimum_stock || $row->current_stock >= $row->minimum_stock) {
-                    continue;
-                }
-
-                NotificationEngine::dispatch('low_stock', $sale->company_id, [
-                    'product' => Product::find($detail->product_id),
-                    'location' => Location::find($sale->location_id),
-                    'current_stock' => $row->current_stock,
-                    'minimum_stock' => $row->minimum_stock,
-                ]);
-            }
-        } catch (\Throwable $e) {
-            Log::error('Error al verificar stock bajo: ' . $e->getMessage(), ['sale_id' => $sale->id]);
-        }
+        return [['method' => $method, 'amount' => $paid]];
     }
 }

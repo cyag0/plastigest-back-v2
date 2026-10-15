@@ -13,7 +13,7 @@ class SalesOrderResource extends Resources
         $item = [
             'id' => $resource->id,
             'order_number' => $resource->order_number,
-            'order_date' => $resource->order_date,
+            'order_date' => $resource->order_date?->format('Y-m-d'),
             'channel' => $resource->channel?->value,
             'channel_label' => $resource->channel?->label(),
             'service_mode' => $resource->service_mode?->value,

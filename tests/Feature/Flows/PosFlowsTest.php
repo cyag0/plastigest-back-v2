@@ -254,6 +254,34 @@ class PosFlowsTest extends TestCase
         $this->assertDatabaseHas('cash_movements', ['cash_register_session_id' => $sessionId, 'type' => 'income', 'amount' => 36, 'payment_method' => 'cash']);
     }
 
+    public function test_the_cash_movement_is_named_by_the_sale_folio(): void
+    {
+        $coca = $this->createProduct(['sale_price' => 18], 10);
+        $this->cashierWithShift();
+
+        $folio = $this->sell([['product_id' => $coca->id, 'quantity' => 1]], [['method' => 'cash', 'amount' => 18]])
+            ->assertCreated()
+            ->json('data.sale_number');
+
+        // Antes: "Venta #4668 (SAL-…)", con el id interno de más.
+        $this->assertNotEmpty($folio);
+        $this->assertDatabaseHas('cash_movements', ['concept' => "Venta {$folio}"]);
+    }
+
+    public function test_the_shift_list_reports_which_rows_it_shows(): void
+    {
+        $this->cashierWithShift(['cash_register_sessions_list']);
+
+        // La app mostraba "Mostrando 0 - 0 de N": faltaban from/to.
+        $this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/cash-register-sessions?paginated=true&per_page=20')
+            ->assertOk()
+            ->assertJsonPath('meta.from', 1)
+            ->assertJsonPath('meta.to', 1)
+            ->assertJsonPath('meta.per_page', 20)
+            ->assertJsonPath('meta.total', 1);
+    }
+
     public function test_mixed_payment_creates_one_movement_per_method_and_closes_correctly(): void
     {
         $leche = $this->createProduct(['sale_price' => 29], 10);

@@ -58,7 +58,15 @@ class CashRegisterSessionController extends Controller
 
         return response()->json([
             'data' => CashRegisterSessionResource::collection($page->items()),
-            'meta' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'total' => $page->total()],
+            // from/to/per_page: la lista mostraba "Mostrando 0 - 0 de 330".
+            'meta' => [
+                'current_page' => $page->currentPage(),
+                'last_page' => $page->lastPage(),
+                'per_page' => $page->perPage(),
+                'from' => $page->firstItem(),
+                'to' => $page->lastItem(),
+                'total' => $page->total(),
+            ],
         ]);
     }
 

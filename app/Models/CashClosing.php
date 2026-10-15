@@ -33,7 +33,7 @@ class CashClosing extends Model
     ];
 
     protected $casts = [
-        'closing_date'     => 'date',
+        'closing_date'     => 'date:Y-m-d',
         'opening_balance'  => 'decimal:2',
         'total_income'     => 'decimal:2',
         'total_expense'    => 'decimal:2',

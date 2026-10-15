@@ -5,8 +5,8 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UnitResource;
 use App\Models\Unit;
-use App\Models\UnitConversion;
 use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -78,6 +78,9 @@ class UnitControllerV2 extends CrudController
             'company_id' => 'required|exists:companies,id',
             'base_unit_id' => 'nullable|exists:units,id',
             'factor_to_base' => 'nullable|numeric|min:0.000001',
+            // Sin unidad de referencia hay que decir de qué tipo es (masa,
+            // volumen, pieza…): la columna no admite nulos y antes respondía 500.
+            'unit_type' => 'required_without:base_unit_id|nullable|string|max:50',
         ]);
     }
 
@@ -103,10 +106,39 @@ class UnitControllerV2 extends CrudController
         try {
             DB::beginTransaction();
 
+            // base_unit_id no es columna de la tabla (mandarlo respondía 500):
+            // indica de qué unidad se deriva esta y el factor es respecto a ella
+            // (1 caja = 12 piezas). Se traduce al tipo de la unidad de referencia
+            // y a un factor respecto a la base de ese tipo.
+            $baseUnitId = $data['base_unit_id'] ?? null;
+            unset($data['base_unit_id']);
 
-            // Si no viene base_unit_id, se asume unidad base -> factor 1
-            if (!isset($data['base_unit_id'])) {
+            if ($baseUnitId) {
+                $referenceUnit = Unit::findOrFail($baseUnitId);
+                $data['unit_type'] = $referenceUnit->unit_type;
+                $data['factor_to_base'] = (float) ($data['factor_to_base'] ?? 1) * (float) ($referenceUnit->factor_to_base ?: 1);
+                $data['is_base_unit'] = false;
+            } elseif ($method === 'create') {
+                // Unidad nueva sin referencia: es la base de su tipo.
                 $data['factor_to_base'] = 1;
+                $data['is_base_unit'] = !Unit::query()
+                    ->where('unit_type', $data['unit_type'])
+                    ->where('is_base_unit', true)
+                    ->where(fn($q) => $q->whereNull('company_id')->orWhere('company_id', $data['company_id'] ?? null))
+                    ->exists();
+            }
+            // En una edición sin unidad de referencia el factor se queda como
+            // está, salvo que se mande explícitamente. Antes se reescribía a 1:
+            // cambiarle el nombre a "Gramo" lo convertía en kilogramo y cada
+            // consumo de 500 g descontaba 500 kg.
+
+            if ($method === 'update') {
+                // La empresa dueña no cambia al editar: una unidad global no
+                // puede volverse de una empresa (ni al revés) desde aquí.
+                unset($data['company_id']);
+            } elseif (!CurrentWorker::hasPermission('system_admin')) {
+                // Solo un administrador del sistema crea unidades para otra empresa.
+                $data['company_id'] = CurrentCompany::id() ?? ($data['company_id'] ?? null);
             }
 
             /** @var Unit $model */
@@ -124,24 +156,69 @@ class UnitControllerV2 extends CrudController
         }
     }
 
+    public function update(Request $request, $id)
+    {
+        if (!$this->canEdit()) {
+            return $this->forbiddenResponse('editar este recurso');
+        }
+
+        return $this->denyIfNotEditable($id) ?? parent::update($request, $id);
+    }
+
+    public function destroy($id)
+    {
+        if (!$this->canDestroy()) {
+            return $this->forbiddenResponse('eliminar este recurso');
+        }
+
+        return $this->denyIfNotEditable($id) ?? parent::destroy($id);
+    }
+
+    /**
+     * Las unidades globales (company_id null) las comparten todas las empresas:
+     * cambiar su factor descuadra el inventario de todas. Solo las modifica un
+     * administrador del sistema (system_admin). Las de una empresa, solo esa
+     * empresa. Si la unidad no existe, el método padre responde 404.
+     */
+    private function denyIfNotEditable($id): ?JsonResponse
+    {
+        $unit = Unit::find($id);
+
+        if (!$unit) {
+            return null;
+        }
+
+        if ($unit->company_id === null) {
+            return CurrentWorker::hasPermission('system_admin')
+                ? null
+                : response()->json([
+                    'message' => 'Las unidades globales solo las puede modificar un administrador del sistema.',
+                ], 403);
+        }
+
+        if ((int) $unit->company_id !== (int) CurrentCompany::id()) {
+            return response()->json(['message' => 'Recurso no encontrado'], 404);
+        }
+
+        return null;
+    }
+
     /**
      * Validar si se puede eliminar
      */
     protected function canDelete(Model $model): array
     {
-        // Aquí puedes agregar validaciones si hay productos usando esta unidad
-        // Por ejemplo:
-        // if ($model->products()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque hay productos usando esta unidad'
-        //     ];
-        // }
+        $products = \Illuminate\Support\Facades\DB::table('products')->where('unit_id', $model->id)->count();
+        if ($products > 0) {
+            return [
+                'can_delete' => false,
+                'message' => $products === 1
+                    ? 'No se puede eliminar: 1 producto usa esta unidad.'
+                    : "No se puede eliminar: {$products} productos usan esta unidad.",
+            ];
+        }
 
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        return ['can_delete' => true, 'message' => ''];
     }
 
     /**
@@ -149,10 +226,9 @@ class UnitControllerV2 extends CrudController
      */
     protected function beforeDestroy(Model $model): void
     {
-        // Eliminar conversiones relacionadas antes de eliminar la unidad
-        UnitConversion::where('from_unit_id', $model->id)
-            ->orWhere('to_unit_id', $model->id)
-            ->delete();
+        // Las conversiones viven en la propia unidad (unit_type + factor_to_base).
+        // La tabla unit_conversions ya no existe: borrar de ella hacía fallar
+        // la eliminación de cualquier unidad.
     }
 
     /**
@@ -252,7 +328,7 @@ class UnitControllerV2 extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener unidades agrupadas: ' . $e->getMessage()
+                'message' => 'Error al obtener unidades agrupadas.', 'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -280,7 +356,7 @@ class UnitControllerV2 extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener unidades agrupadas: ' . $e->getMessage()
+                'message' => 'Error al obtener unidades agrupadas.', 'error' => $this->errorDetail($e)
             ], 500);
         }
     }

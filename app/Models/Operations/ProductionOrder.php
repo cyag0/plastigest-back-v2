@@ -44,7 +44,7 @@ class ProductionOrder extends Model
     ];
 
     protected $casts = [
-        'production_date' => 'date',
+        'production_date' => 'date:Y-m-d',
         'completed_at' => 'datetime',
         'packed_at' => 'datetime',
         'cancelled_at' => 'datetime',

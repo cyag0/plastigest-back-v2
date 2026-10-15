@@ -7,6 +7,8 @@ use App\Http\Resources\SaleResource;
 use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\Product;
+use App\Models\ProductPackage;
+use Illuminate\Validation\ValidationException;
 use App\Models\Expense;
 use App\Enums\SaleStatus;
 use App\Services\CashMovementService;
@@ -35,6 +37,7 @@ class SaleController extends CrudController
      */
     protected string $model = Sale::class;
     protected ?string $permissionPrefix = 'sales';
+    protected ?string $locationColumn = 'location_id';
 
     /**
      * Columna de fecha principal: los filtros date_from/date_to se aplican sobre sale_date.
@@ -59,7 +62,12 @@ class SaleController extends CrudController
     {
         return [
             'details.product.mainImage',
+            'details.unit',
+            'details.package',
             'location',
+            'user',
+            'cashRegister',
+            'payments',
         ];
     }
 
@@ -187,6 +195,17 @@ class SaleController extends CrudController
         if ($method === 'create') {
             $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
 
+            // Solo se adjunta el turno si es de la sucursal actual: si no, la
+            // venta quedaría apuntando al turno de otra sucursal e inflaría su
+            // total de ventas.
+            if ($session && $session->location_id !== CurrentLocation::id()) {
+                $session = null;
+            }
+
+            // Sin permiso sales_discount, el precio sale del catálogo: la
+            // pantalla anterior no debe poder cobrar a un precio arbitrario.
+            $data['details'] = $this->enforceCatalogPricing($data['details']);
+
             return app(\App\Services\SaleService::class)->create([
                 'company_id' => CurrentCompany::get()->id,
                 'location_id' => CurrentLocation::get()->id,
@@ -310,12 +329,65 @@ class SaleController extends CrudController
     }
 
     /**
+     * Precio de catálogo obligatorio salvo permiso sales_discount. Espeja la
+     * lógica del punto de venta (PosController::priceDetails) para que la
+     * pantalla de ventas anterior tampoco pueda cobrar a un precio arbitrario.
+     */
+    private function enforceCatalogPricing(array $details): array
+    {
+        if (CurrentWorker::hasPermission('sales_discount')) {
+            return $details; // puede fijar precio y aplicar descuentos
+        }
+
+        $companyId = CurrentCompany::id();
+        $products = Product::whereIn('id', array_column($details, 'product_id'))
+            ->where('company_id', $companyId)
+            ->get()->keyBy('id');
+        $packages = ProductPackage::whereIn('id', array_filter(array_column($details, 'package_id')))
+            ->get()->keyBy('id');
+
+        foreach ($details as $i => $d) {
+            $product = $products[$d['product_id']] ?? null;
+            if (!$product) {
+                throw ValidationException::withMessages(["details.{$i}.product_id" => ['Producto inválido.']]);
+            }
+
+            $package = !empty($d['package_id']) ? ($packages[$d['package_id']] ?? null) : null;
+            $catalog = $package
+                ? ((float) $package->sale_price > 0
+                    ? (float) $package->sale_price
+                    : round((float) $product->sale_price * (float) $package->quantity_per_package, 2))
+                : (float) $product->sale_price;
+
+            $sent = round((float) ($d['unit_price'] ?? $catalog), 2);
+            $discount = round((float) ($d['discount'] ?? 0), 2);
+
+            if (abs($sent - $catalog) > 0.009 || $discount > 0) {
+                throw ValidationException::withMessages([
+                    "details.{$i}.unit_price" => ['No tienes permiso para cambiar el precio o aplicar descuentos.'],
+                ]);
+            }
+
+            $details[$i]['unit_price'] = $catalog;
+            $details[$i]['discount'] = 0;
+        }
+
+        return $details;
+    }
+
+    /**
      * Cancelar venta
      */
     public function cancel(Request $request, int $id)
     {
+        if (!CurrentWorker::hasPermission('sales_update')) {
+            return $this->forbiddenResponse('cancelar ventas');
+        }
+
         try {
-            $sale = Sale::with($this->getShowRelations())->findOrFail($id);
+            // Aislada por empresa/sucursal: no se cancela una venta de otra
+            // empresa (ni de otra sucursal si no eres administrador).
+            $sale = $this->scopedQuery()->with($this->getShowRelations())->findOrFail($id);
 
             if ($sale->transitionTo(SaleStatus::CANCELLED)) {
                 return response()->json([
@@ -329,11 +401,13 @@ class SaleController extends CrudController
                 'success' => false,
                 'message' => 'No se puede cancelar esta venta',
             ], 400);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 400);
+            Log::error('Error al cancelar venta', ['exception' => get_class($e), 'message' => $e->getMessage()]);
+            // Mensaje de negocio seguro; los detalles internos no se exponen.
+            $message = $this->isInternalError($e) ? 'No se pudo cancelar la venta' : $e->getMessage();
+            return response()->json(['success' => false, 'message' => $message], 400);
         }
     }
 
@@ -356,13 +430,19 @@ class SaleController extends CrudController
      */
     public function salesStats(Request $request)
     {
+        if (!CurrentWorker::hasPermission('sales_read')) {
+            return $this->forbiddenResponse('ver estadísticas de ventas');
+        }
+
         try {
+            $companyId = CurrentCompany::id();
             $locationId = $request->input('location_id') ?? current_location_id();
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
 
-            // Query base
-            $query = Sale::where('location_id', $locationId);
+            // Query base, aislada por empresa (y sucursal del contexto).
+            $query = Sale::where('company_id', $companyId)
+                ->where('location_id', $locationId);
 
             if ($startDate) {
                 $query->where('sale_date', '>=', $startDate);
@@ -439,7 +519,10 @@ class SaleController extends CrudController
             $topProducts = DB::table('sales_details')
                 ->join('sales', 'sales_details.sale_id', '=', 'sales.id')
                 ->join('products', 'sales_details.product_id', '=', 'products.id')
+                ->where('sales.company_id', $companyId)
                 ->where('sales.location_id', $locationId)
+                // Los productos más vendidos no deben contar ventas canceladas.
+                ->where('sales.status', '!=', SaleStatus::CANCELLED->value)
                 ->when($startDate, function ($q) use ($startDate) {
                     return $q->where('sales.sale_date', '>=', $startDate);
                 })
@@ -494,9 +577,10 @@ class SaleController extends CrudController
                 ->where('status', 'cancelled')
                 ->count();
 
-            // Venta promedio por día
+            // Venta promedio por día. diffInDays es con signo en Carbon 3: se usa
+            // el valor absoluto para no obtener un divisor negativo/incorrecto.
             $daysInRange = $startDate && $endDate
-                ? max(1, now()->parse($endDate)->diffInDays(now()->parse($startDate)) + 1)
+                ? max(1, (int) abs(now()->parse($startDate)->diffInDays(now()->parse($endDate))) + 1)
                 : 30; // Default 30 días si no hay rango
 
             $averagePerDay = $totalAmount / $daysInRange;
@@ -521,9 +605,13 @@ class SaleController extends CrudController
                 ]
             ]);
         } catch (\Exception $e) {
+            Log::error('Error al obtener estadísticas de ventas', [
+                'exception' => get_class($e),
+                'message' => $e->getMessage(),
+            ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener estadísticas: ' . $e->getMessage()
+                'message' => 'Error al obtener estadísticas',
             ], 500);
         }
     }
@@ -533,19 +621,25 @@ class SaleController extends CrudController
      */
     public function cashRegister(Request $request)
     {
+        if (!CurrentWorker::hasPermission('sales_read')) {
+            return $this->forbiddenResponse('ver el corte de caja');
+        }
+
         try {
             $validated = $request->validate([
                 'date' => 'required|date',
                 'location_id' => 'nullable|exists:locations,id',
+                // company_id se ignora: el corte siempre es de la empresa del
+                // contexto (X-Company-ID validado). Se mantiene por compatibilidad.
                 'company_id' => 'nullable|exists:companies,id',
             ]);
 
             $date = $validated['date'];
             $locationId = $validated['location_id'] ?? CurrentLocation::get()?->id;
-            $company = CurrentCompany::get();
 
-            // Si no hay compañía del contexto, usar la del parámetro o la del usuario
-            $companyId = $validated['company_id'] ?? $company?->id ?? Auth::user()?->company_id ?? 1;
+            // Empresa SIEMPRE del contexto: no se toma del parámetro para que
+            // nadie pueda pedir el corte de otra empresa con company_id.
+            $companyId = CurrentCompany::id();
 
             // Obtener todas las ventas del día (closed y processed)
             $sales = Sale::where('company_id', $companyId)
@@ -557,7 +651,9 @@ class SaleController extends CrudController
                 ->with(['details.product'])
                 ->get();
 
-            // Calcular totales por método de pago
+            // Totales por método de pago a partir de sale_payments: así cuentan
+            // las ventas con pago mixto (su payment_method es 'mixed' y antes no
+            // entraba en ningún método) y refleja el dinero realmente cobrado.
             $paymentMethods = [
                 'cash' => 0,
                 'card' => 0,
@@ -565,20 +661,29 @@ class SaleController extends CrudController
                 'credit' => 0,
             ];
 
+            $paymentTotals = DB::table('sale_payments')
+                ->join('sales', 'sale_payments.sale_id', '=', 'sales.id')
+                ->where('sales.company_id', $companyId)
+                ->when($locationId, fn($q) => $q->where('sales.location_id', $locationId))
+                ->whereDate('sales.sale_date', $date)
+                ->whereIn('sales.status', ['closed', 'processed'])
+                ->groupBy('sale_payments.method')
+                ->selectRaw('sale_payments.method, SUM(sale_payments.amount) as total')
+                ->pluck('total', 'method');
+
+            foreach ($paymentTotals as $method => $total) {
+                if (isset($paymentMethods[$method])) {
+                    $paymentMethods[$method] = (float) $total;
+                }
+            }
+
             $totalSales = 0;
             $totalProducts = 0;
             $salesCount = $sales->count();
 
             foreach ($sales as $sale) {
-                $saleTotal = $sale->total;
-
-                $totalSales += $saleTotal;
+                $totalSales += $sale->total;
                 $totalProducts += $sale->details->sum('quantity');
-
-                $paymentMethod = $sale->payment_method ?? 'cash';
-                if (isset($paymentMethods[$paymentMethod])) {
-                    $paymentMethods[$paymentMethod] += $saleTotal;
-                }
             }
 
             // Productos más vendidos del día
@@ -650,12 +755,24 @@ class SaleController extends CrudController
             $totalExpenses = 0;
             $expensesByCategory = [];
 
+            // Los gastos guardan el método en español (efectivo/tarjeta/…) y
+            // aquí las llaves son en inglés; sin mapear, los gastos nunca se
+            // descontaban del método correcto (p. ej. efectivo).
+            $expenseMethodMap = [
+                'efectivo' => 'cash',
+                'tarjeta' => 'card',
+                'transferencia' => 'transfer',
+                'credito' => 'credit',
+                'crédito' => 'credit',
+            ];
+
             foreach ($expenses as $expense) {
                 $totalExpenses += $expense->amount;
 
-                // Sumar por método de pago
-                if (isset($expensesByPaymentMethod[$expense->payment_method])) {
-                    $expensesByPaymentMethod[$expense->payment_method] += $expense->amount;
+                // Sumar por método de pago (normalizando español → inglés)
+                $method = $expenseMethodMap[$expense->payment_method] ?? $expense->payment_method;
+                if (isset($expensesByPaymentMethod[$method])) {
+                    $expensesByPaymentMethod[$method] += $expense->amount;
                 }
 
                 // Sumar por categoría
@@ -761,7 +878,7 @@ class SaleController extends CrudController
 
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener corte de caja: ' . $e->getMessage()
+                'message' => 'Error al obtener corte de caja.', 'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -844,12 +961,11 @@ class SaleController extends CrudController
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Error al obtener datos iniciales para venta: ' . $e->getMessage());
+            Log::error('Error al obtener datos iniciales para venta', ['exception' => get_class($e), 'message' => $e->getMessage()]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Error al cargar datos iniciales',
-                'error' => $e->getMessage()
             ], 500);
         }
     }
@@ -859,6 +975,10 @@ class SaleController extends CrudController
      */
     public function addPayment(Request $request, int $id)
     {
+        if (!CurrentWorker::hasPermission('sales_update')) {
+            return $this->forbiddenResponse('registrar pagos de ventas');
+        }
+
         try {
             $validated = $request->validate([
                 'amount' => 'required|numeric|min:0.01',
@@ -866,56 +986,76 @@ class SaleController extends CrudController
                 'notes' => 'nullable|string',
             ]);
 
-            $sale = Sale::findOrFail($id);
+            // La venta debe ser de la empresa/sucursal del contexto.
+            $scopedId = $this->scopedQuery()->whereKey($id)->value('id');
+            if (!$scopedId) {
+                return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
+            }
 
-            // Obtener historial actual
-            $paymentHistory = $sale->payment_history ?? [];
+            // Turno de caja abierto del cajero en la sucursal actual: el pago
+            // entra a ESE turno, no al turno (posiblemente ya cerrado) en el que
+            // se creó la venta.
+            $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
 
-            // Calcular total pagado
-            $totalPaid = $sale->paid_amount ?? 0;
-            $newAmount = $validated['amount'];
-            $totalAfterPayment = $totalPaid + $newAmount;
+            $result = DB::transaction(function () use ($scopedId, $validated, $session) {
+                // Bloqueo de fila: evita que dos pagos simultáneos sobrepasen el total.
+                $sale = Sale::whereKey($scopedId)->lockForUpdate()->firstOrFail();
 
-            // Verificar que no exceda el total
-            if ($totalAfterPayment > $sale->total) {
-                return response()->json([
+                if ($sale->status === SaleStatus::CANCELLED) {
+                    return ['error' => 'No se puede registrar un pago en una venta cancelada', 'status' => 400];
+                }
+
+                $totalPaid = (float) ($sale->paid_amount ?? 0);
+                $newAmount = round((float) $validated['amount'], 2);
+                $total = (float) $sale->total;
+                $totalAfterPayment = round($totalPaid + $newAmount, 2);
+
+                // Comparación con tolerancia de centavo: pagar el saldo exacto en
+                // parcialidades (50.10 + 50.20 vs 100.30) ya no se rechaza por el
+                // error de punto flotante.
+                if ($totalAfterPayment > $total + 0.009) {
+                    return [
+                        'error' => 'El monto ingresado excede el saldo pendiente',
+                        'status' => 400,
+                        'pending_amount' => round($total - $totalPaid, 2),
+                    ];
+                }
+
+                $paymentHistory = $sale->payment_history ?? [];
+                $paymentHistory[] = [
+                    'amount' => $newAmount,
+                    'payment_method' => $validated['payment_method'],
+                    'date' => now()->toDateTimeString(),
+                    'notes' => $validated['notes'] ?? null,
+                ];
+
+                $sale->paid_amount = $totalAfterPayment;
+                $sale->payment_history = $paymentHistory;
+                $sale->payment_status = $totalAfterPayment >= $total - 0.009
+                    ? 'paid'
+                    : ($totalAfterPayment > 0 ? 'partial' : 'pending');
+                $sale->save();
+
+                CashMovementService::fromSale(
+                    $sale,
+                    $newAmount,
+                    $validated['payment_method'],
+                    $validated['notes'] ?? null,
+                    $session?->id
+                );
+
+                return ['sale' => $sale];
+            });
+
+            if (isset($result['error'])) {
+                return response()->json(array_filter([
                     'success' => false,
-                    'message' => 'El monto ingresado excede el saldo pendiente',
-                    'pending_amount' => $sale->total - $totalPaid,
-                ], 400);
+                    'message' => $result['error'],
+                    'pending_amount' => $result['pending_amount'] ?? null,
+                ], fn($v) => $v !== null), $result['status']);
             }
 
-            // Agregar nuevo pago al historial
-            $paymentHistory[] = [
-                'amount' => $newAmount,
-                'payment_method' => $validated['payment_method'],
-                'date' => now()->toDateTimeString(),
-                'notes' => $validated['notes'] ?? null,
-            ];
-
-            // Actualizar sale
-            $sale->paid_amount = $totalAfterPayment;
-            $sale->payment_history = $paymentHistory;
-
-            // Actualizar payment_status
-            if ($totalAfterPayment >= $sale->total) {
-                $sale->payment_status = 'paid';
-            } elseif ($totalAfterPayment > 0) {
-                $sale->payment_status = 'partial';
-            }
-
-            $sale->save();
-
-            // Registrar ingreso en caja por este pago
-            CashMovementService::fromSale(
-                $sale,
-                (float) $newAmount,
-                $validated['payment_method'],
-                $validated['notes'] ?? null
-            );
-
-            // Recargar relaciones
-            $sale->load($this->getShowRelations());
+            $sale = $result['sale']->load($this->getShowRelations());
 
             return response()->json([
                 'success' => true,
@@ -923,12 +1063,11 @@ class SaleController extends CrudController
                 'data' => new $this->resource($sale),
             ]);
         } catch (\Exception $e) {
-            Log::error('Error al registrar pago: ' . $e->getMessage());
+            Log::error('Error al registrar pago', ['exception' => get_class($e), 'message' => $e->getMessage()]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Error al registrar pago',
-                'error' => $e->getMessage()
             ], 500);
         }
     }

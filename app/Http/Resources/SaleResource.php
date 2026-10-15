@@ -23,7 +23,7 @@ class SaleResource extends Resources
         $item = [
             'id' => $resource->id,
             'sale_number' => $resource->sale_number ?? $resource->formatted_sale_number,
-            'sale_date' => $resource->sale_date,
+            'sale_date' => $resource->sale_date?->format('Y-m-d'),
             'status' => $resource->status->value,
             'status_label' => $resource->status->label(),
             'status_color' => $resource->status->color(),
@@ -36,6 +36,18 @@ class SaleResource extends Resources
             'payment_status' => $resource->payment_status,
             'paid_amount' => $resource->paid_amount,
             'content' => $resource->content,
+            'created_at' => $resource->created_at?->toISOString(),
+            // Para el detalle: quién atendió, en qué caja y cómo se pagó.
+            'user_name' => $resource->relationLoaded('user') ? $resource->user?->name : null,
+            'cash_register_name' => $resource->relationLoaded('cashRegister') ? $resource->cashRegister?->name : null,
+            'payments' => $resource->relationLoaded('payments')
+                ? $resource->payments->map(fn($p) => [
+                    'method' => $p->method,
+                    'amount' => (float) $p->amount,
+                    'tendered' => $p->tendered !== null ? (float) $p->tendered : null,
+                    'change' => $p->change !== null ? (float) $p->change : null,
+                ])->values()
+                : [],
         ];
 
         // Información del cliente (si existe)
@@ -60,6 +72,8 @@ class SaleResource extends Resources
                     'tax' => $detail->tax,
                     'discount' => $detail->discount,
                     'total' => $detail->total,
+                    'unit_abbreviation' => $detail->relationLoaded('unit') ? $detail->unit?->abbreviation : null,
+                    'package_name' => $detail->relationLoaded('package') ? $detail->package?->package_name : null,
                 ];
 
                 // Información del producto

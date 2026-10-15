@@ -161,18 +161,18 @@ class CategoryController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        // La llave de productos es "set null": al borrar la categoría sus
+        // productos se quedaban sin categoría, sin ningún aviso.
+        $products = DB::table('products')->where('category_id', $model->id)->count();
+        if ($products > 0) {
+            return [
+                'can_delete' => false,
+                'message' => $products === 1
+                    ? 'No se puede eliminar: 1 producto está en esta categoría. Muévelo a otra o desactiva la categoría.'
+                    : "No se puede eliminar: {$products} productos están en esta categoría. Muévelos a otra o desactiva la categoría.",
+            ];
+        }
 
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        return ['can_delete' => true, 'message' => ''];
     }
 }

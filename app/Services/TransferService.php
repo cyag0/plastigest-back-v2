@@ -8,6 +8,8 @@ use App\Enums\StockLedgerReason;
 use App\Support\StockContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use App\Notifications\NotificationEngine;
 use Exception;
 
 class TransferService
@@ -79,6 +81,7 @@ class TransferService
             $transfer->save();
 
             DB::commit();
+            $this->notifyTransferUpdate($transfer, 'approved', [$transfer->requested_by]);
             return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
         } catch (Exception $e) {
             DB::rollBack();
@@ -149,6 +152,7 @@ class TransferService
             $transfer->save();
 
             DB::commit();
+            $this->notifyTransferUpdate($transfer, 'rejected', [$transfer->requested_by], ['reason' => $reason]);
             return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
         } catch (Exception $e) {
             DB::rollBack();
@@ -169,6 +173,9 @@ class TransferService
             }
 
             $transfer->cancel($reason);
+
+            // Se avisa a la otra parte (quien la pidió y quien actuó en origen).
+            $this->notifyTransferUpdate($transfer, 'cancelled', [$transfer->requested_by, $this->originActor($transfer)], ['reason' => $reason]);
 
             return $transfer;
         });
@@ -213,6 +220,14 @@ class TransferService
 
         DB::beginTransaction();
         try {
+            // Bloqueo de fila + relectura del estado dentro de la transacción:
+            // evita que un doble envío (doble clic/dos dispositivos) procese el
+            // envío dos veces.
+            $locked = InventoryTransfer::whereKey($transfer->id)->lockForUpdate()->first();
+            if (!$locked || $locked->status !== TransferStatus::APPROVED) {
+                throw new Exception("La transferencia ya no está en estado aprobado");
+            }
+
             $content = $transfer->content;
             if (!is_array($content)) {
                 $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
@@ -294,6 +309,7 @@ class TransferService
             $transfer->save();
 
             DB::commit();
+            $this->notifyTransferUpdate($transfer, 'shipped', [$transfer->requested_by]);
             return $transfer->load([
                 'details.product.mainImage',
                 'fromLocation',
@@ -317,6 +333,13 @@ class TransferService
 
         DB::beginTransaction();
         try {
+            // Bloqueo de fila + relectura del estado: evita que un doble envío
+            // reciba la transferencia dos veces (sumaría stock por duplicado).
+            $locked = InventoryTransfer::whereKey($transfer->id)->lockForUpdate()->first();
+            if (!$locked || $locked->status !== TransferStatus::IN_TRANSIT) {
+                throw new Exception("La transferencia ya no está en tránsito");
+            }
+
             $content = $transfer->content;
             if (!is_array($content)) {
                 $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
@@ -396,6 +419,11 @@ class TransferService
             $transfer->save();
 
             DB::commit();
+            $this->notifyTransferUpdate($transfer, 'received', [$this->originActor($transfer)], [
+                'with_differences' => $transfer->details()->get()->contains(
+                    fn($detail) => (float) $detail->quantity_received !== (float) $detail->quantity_shipped
+                ),
+            ]);
             return $transfer->load([
                 'details.product.mainImage',
                 'fromLocation',
@@ -453,5 +481,53 @@ class TransferService
             'ended_here' => $endedHere,
             'updated_at' => now()->toISOString(),
         ];
+    }
+
+    /**
+     * Aviso de avance de la transferencia. Las tareas (aprobar, enviar,
+     * recibir) ya avisan a quien le toca actuar; esto avisa a la otra parte.
+     * Quien hizo la acción no se avisa a sí mismo. Sale al confirmar la
+     * transacción (NotificationEngine::afterCommit).
+     *
+     * @param array<int|null> $userIds
+     */
+    private function notifyTransferUpdate(InventoryTransfer $transfer, string $subType, array $userIds, array $extra = []): void
+    {
+        try {
+            $transfer->loadMissing(['fromLocation', 'toLocation']);
+
+            $recipients = collect($userIds)
+                ->filter()
+                ->map(fn($id) => (int) $id)
+                ->unique()
+                ->reject(fn($id) => $id === (int) Auth::id());
+
+            foreach ($recipients as $userId) {
+                NotificationEngine::dispatch('transfer_update', (int) $transfer->company_id, array_merge([
+                    'transfer'   => $transfer,
+                    'sub_type'   => $subType,
+                    'actor_name' => Auth::user()?->name ?? 'Sistema',
+                ], $extra), userId: $userId);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('No se pudo avisar el avance de la transferencia', [
+                'transfer_id' => $transfer->id,
+                'sub_type'    => $subType,
+                'error'       => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /** Quien la envió (o, si no llegó a enviarse, quien la aprobó) en origen. */
+    private function originActor(InventoryTransfer $transfer): ?int
+    {
+        $content = (array) ($transfer->content ?? []);
+
+        $id = data_get($content, 'step_2.shipped_by')
+            ?? data_get($content, 'workflow.step_2.shipped_by')
+            ?? data_get($content, 'step_1.approved_by')
+            ?? data_get($content, 'workflow.step_1.approved_by');
+
+        return $id ? (int) $id : null;
     }
 }

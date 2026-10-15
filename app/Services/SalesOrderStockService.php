@@ -4,9 +4,11 @@ namespace App\Services;
 
 use App\Enums\SaleStatus;
 use App\Enums\SalesOrderStatus;
+use App\Models\CashRegisterSession;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleDetail;
+use App\Models\SalePayment;
 use App\Models\SalesOrder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -95,89 +97,116 @@ class SalesOrderStockService
 
     public function reserveOrder(SalesOrder $order): void
     {
-        $order->loadMissing('details');
+        DB::transaction(function () use ($order): void {
+            // Estado y reservas se leen con el pedido bloqueado: dos "preparar"
+            // simultáneos (doble toque, reintento) reservaban el stock dos veces.
+            $locked = $this->lockOrder($order);
 
-        if ($order->details->isEmpty()) {
-            throw ValidationException::withMessages([
-                'details' => ['El pedido no tiene productos para reservar.'],
-            ]);
-        }
-
-        if ((float) $order->details->sum('reserved_quantity_base') > 0.000001) {
-            throw ValidationException::withMessages([
-                'status' => ['El pedido ya tiene inventario reservado.'],
-            ]);
-        }
-
-        $draftDetails = $order->details->map(fn ($detail) => [
-            'product_id' => $detail->product_id,
-            'package_id' => $detail->package_id,
-            'unit_id' => $detail->unit_id,
-            'requested_quantity' => $detail->requested_quantity,
-        ])->all();
-
-        DB::transaction(function () use ($order, $draftDetails): void {
-            $this->validateDraftDetails($order->location_id, $draftDetails);
-
-            $reservedByProduct = [];
-
-            foreach ($order->details as $detail) {
-                $baseQuantity = $this->movementService->quantityInProductUnit(
-                    $detail->product_id,
-                    $detail->unit_id,
-                    (float) $detail->requested_quantity,
-                    $detail->package_id,
-                );
-
-                $reservedByProduct[$detail->product_id] = ($reservedByProduct[$detail->product_id] ?? 0) + $baseQuantity;
-
-                $detail->forceFill([
-                    'prepared_quantity' => $detail->requested_quantity,
-                    'reserved_quantity_base' => $baseQuantity,
-                ])->save();
+            if ($locked->status !== SalesOrderStatus::PENDING) {
+                throw ValidationException::withMessages([
+                    'status' => ['El pedido ya no está pendiente: no se puede volver a reservar.'],
+                ]);
             }
 
-            $productStocks = DB::table('product_location')
-                ->where('location_id', $order->location_id)
-                ->whereIn('product_id', array_keys($reservedByProduct))
-                ->lockForUpdate()
-                ->get(['product_id', 'reserved_stock'])
-                ->keyBy('product_id');
-
-            foreach ($reservedByProduct as $productId => $reservedQuantity) {
-                $currentReservedStock = (float) ($productStocks->get($productId)->reserved_stock ?? 0);
-
-                DB::table('product_location')
-                    ->where('location_id', $order->location_id)
-                    ->where('product_id', $productId)
-                    ->update([
-                        'reserved_stock' => $currentReservedStock + $reservedQuantity,
-                        'updated_at' => now(),
-                    ]);
+            if ($locked->details->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'details' => ['El pedido no tiene productos para reservar.'],
+                ]);
             }
 
-            $order->forceFill(['reserved_at' => now()])->save();
+            if ((float) $locked->details->sum('reserved_quantity_base') > 0.000001) {
+                throw ValidationException::withMessages([
+                    'status' => ['El pedido ya tiene inventario reservado.'],
+                ]);
+            }
+
+            $draftDetails = $locked->details->map(fn ($detail) => [
+                'product_id' => $detail->product_id,
+                'package_id' => $detail->package_id,
+                'unit_id' => $detail->unit_id,
+                'requested_quantity' => $detail->requested_quantity,
+            ])->all();
+
+            $this->reserveLockedOrder($locked, $draftDetails);
+
+            // Quien llamó sigue con su instancia (el controlador la transiciona
+            // después): se le pasa el estado recién guardado.
+            $this->syncFrom($order, $locked);
         });
+    }
+
+    /**
+     * Reserva el stock de un pedido ya bloqueado y validado. Se llama dentro de
+     * la transacción de reserveOrder().
+     *
+     * @param  array<int, array{product_id:int, package_id:?int, unit_id:int, requested_quantity:mixed}>  $draftDetails
+     */
+    private function reserveLockedOrder(SalesOrder $order, array $draftDetails): void
+    {
+        $this->validateDraftDetails($order->location_id, $draftDetails);
+
+        $reservedByProduct = [];
+
+        foreach ($order->details as $detail) {
+            $baseQuantity = $this->movementService->quantityInProductUnit(
+                $detail->product_id,
+                $detail->unit_id,
+                (float) $detail->requested_quantity,
+                $detail->package_id,
+            );
+
+            $reservedByProduct[$detail->product_id] = ($reservedByProduct[$detail->product_id] ?? 0) + $baseQuantity;
+
+            $detail->forceFill([
+                'prepared_quantity' => $detail->requested_quantity,
+                'reserved_quantity_base' => $baseQuantity,
+            ])->save();
+        }
+
+        $productStocks = DB::table('product_location')
+            ->where('location_id', $order->location_id)
+            ->whereIn('product_id', array_keys($reservedByProduct))
+            ->lockForUpdate()
+            ->get(['product_id', 'reserved_stock'])
+            ->keyBy('product_id');
+
+        foreach ($reservedByProduct as $productId => $reservedQuantity) {
+            $currentReservedStock = (float) ($productStocks->get($productId)->reserved_stock ?? 0);
+
+            DB::table('product_location')
+                ->where('location_id', $order->location_id)
+                ->where('product_id', $productId)
+                ->update([
+                    'reserved_stock' => $currentReservedStock + $reservedQuantity,
+                    'updated_at' => now(),
+                ]);
+        }
+
+        $order->forceFill(['reserved_at' => now()])->save();
     }
 
     public function releaseOrder(SalesOrder $order): void
     {
-        $order->loadMissing('details');
+        DB::transaction(function () use ($order): void {
+            // Las reservas se leen con el pedido bloqueado y de la base, no de la
+            // instancia recibida: si dos peticiones liberaban el mismo pedido
+            // (dos cancelaciones, o cancelar y cobrar a la vez) se restaba dos
+            // veces y se perdían reservas de otros pedidos.
+            $locked = $this->lockOrder($order);
 
-        $reservedByProduct = [];
-        foreach ($order->details as $detail) {
-            $reservedQuantity = (float) $detail->reserved_quantity_base;
-            if ($reservedQuantity <= 0) {
-                continue;
+            $reservedByProduct = [];
+            foreach ($locked->details as $detail) {
+                $reservedQuantity = (float) $detail->reserved_quantity_base;
+                if ($reservedQuantity <= 0) {
+                    continue;
+                }
+
+                $reservedByProduct[$detail->product_id] = ($reservedByProduct[$detail->product_id] ?? 0) + $reservedQuantity;
             }
 
-            $reservedByProduct[$detail->product_id] = ($reservedByProduct[$detail->product_id] ?? 0) + $reservedQuantity;
-        }
-
-        DB::transaction(function () use ($order, $reservedByProduct): void {
             if ($reservedByProduct !== []) {
                 $productStocks = DB::table('product_location')
-                    ->where('location_id', $order->location_id)
+                    ->where('location_id', $locked->location_id)
                     ->whereIn('product_id', array_keys($reservedByProduct))
                     ->lockForUpdate()
                     ->get(['product_id', 'reserved_stock'])
@@ -187,7 +216,7 @@ class SalesOrderStockService
                     $currentReservedStock = (float) ($productStocks->get($productId)->reserved_stock ?? 0);
 
                     DB::table('product_location')
-                        ->where('location_id', $order->location_id)
+                        ->where('location_id', $locked->location_id)
                         ->where('product_id', $productId)
                         ->update([
                             'reserved_stock' => max(0, $currentReservedStock - $reservedQuantity),
@@ -196,13 +225,15 @@ class SalesOrderStockService
                 }
             }
 
-            foreach ($order->details as $detail) {
-                $detail->forceFill([
-                    'reserved_quantity_base' => 0,
-                ])->save();
+            foreach ($locked->details as $detail) {
+                if ((float) $detail->reserved_quantity_base != 0.0) {
+                    $detail->forceFill(['reserved_quantity_base' => 0])->save();
+                }
             }
 
-            $order->forceFill(['reserved_at' => null])->save();
+            $locked->forceFill(['reserved_at' => null])->save();
+
+            $this->syncFrom($order, $locked);
         });
     }
 
@@ -210,49 +241,68 @@ class SalesOrderStockService
      * Convert a sales order into a closed sale, releasing the reservation
      * and decrementing real stock atomically.
      *
+     * El cobro entra a caja igual que una venta normal: un movimiento de
+     * ingreso (y su pago) en el turno abierto de quien cobra en la sucursal
+     * del pedido, si lo tiene.
+     *
      * @param  array{payment_method?: string, paid_amount?: float|int, notes?: string|null}  $payment
      */
     public function checkoutOrder(SalesOrder $order, array $payment = []): Sale
     {
-        if ($order->status === SalesOrderStatus::CANCELLED || $order->status === SalesOrderStatus::DELIVERED) {
-            throw ValidationException::withMessages([
-                'status' => ['El pedido ya no puede cobrarse en su estado actual.'],
-            ]);
-        }
-
-        if ($order->sale_id) {
-            throw ValidationException::withMessages([
-                'status' => ['El pedido ya está vinculado a una venta.'],
-            ]);
-        }
-
-        $order->loadMissing('details');
-
-        if ($order->details->isEmpty()) {
-            throw ValidationException::withMessages([
-                'details' => ['El pedido no tiene productos para cobrar.'],
-            ]);
-        }
-
         return DB::transaction(function () use ($order, $payment): Sale {
+            // Se decide con el pedido bloqueado: dos cobros simultáneos (doble
+            // toque, reintento) creaban dos ventas y descontaban el stock dos veces.
+            $order = $this->lockOrder($order);
+
+            if ($order->status === SalesOrderStatus::CANCELLED || $order->status === SalesOrderStatus::DELIVERED) {
+                throw ValidationException::withMessages([
+                    'status' => ['El pedido ya no puede cobrarse en su estado actual.'],
+                ]);
+            }
+
+            if ($order->sale_id) {
+                throw ValidationException::withMessages([
+                    'status' => ['El pedido ya está vinculado a una venta.'],
+                ]);
+            }
+
+            if ($order->details->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'details' => ['El pedido no tiene productos para cobrar.'],
+                ]);
+            }
+
+            // El folio se pide antes de tocar stock: su contador queda bloqueado
+            // hasta el commit y una venta del POS lo toma en ese mismo orden
+            // (contador → stock). Al revés podían bloquearse mutuamente.
+            $saleNumber = Sale::generateSaleNumber((int) $order->company_id);
+
             // 1. Release any pending reservation so the sale's decrement
             //    operates on the same baseline as the previously available stock.
             $this->releaseOrder($order);
-            $order->refresh();
-            $order->loadMissing('details');
 
             // 2. Build a fresh Sale linked to the order.
-            $subtotal = (float) $order->details->sum('line_subtotal');
-            $total = (float) ($order->total_amount ?? $subtotal);
+            $subtotal = round((float) $order->details->sum('line_subtotal'), 2);
+            $total = round((float) ($order->total_amount ?? $subtotal), 2);
             $paymentMethod = $payment['payment_method'] ?? 'cash';
-            $paidAmount = isset($payment['paid_amount']) ? (float) $payment['paid_amount'] : $total;
-            $paymentStatus = $paidAmount >= $total
+            $paidAmount = isset($payment['paid_amount']) ? round((float) $payment['paid_amount'], 2) : $total;
+
+            // Lo que excede el total es cambio, no dinero que se queda: en
+            // efectivo se guarda como recibido/cambio, igual que en el POS.
+            $appliedAmount = min($paidAmount, $total);
+            $paymentStatus = $appliedAmount >= $total
                 ? 'paid'
-                : ($paidAmount > 0 ? 'partial' : 'pending');
+                : ($appliedAmount > 0 ? 'partial' : 'pending');
+
+            $sessionId = CashMovementService::openSessionIdFor(Auth::id(), (int) $order->location_id);
+            $session = $sessionId ? CashRegisterSession::find($sessionId) : null;
 
             $sale = Sale::create([
+                'sale_number' => $saleNumber,
                 'company_id' => $order->company_id,
                 'location_id' => $order->location_id,
+                'cash_register_id' => $session?->cash_register_id,
+                'cash_register_session_id' => $session?->id,
                 'user_id' => Auth::id() ?? $order->updated_by ?? $order->created_by,
                 'customer_id' => $order->customer_id,
                 'sale_date' => now()->toDateString(),
@@ -263,16 +313,17 @@ class SalesOrderStockService
                 'total' => $total,
                 'payment_method' => $paymentMethod,
                 'payment_status' => $paymentStatus,
-                'paid_amount' => $paidAmount,
-                'payment_history' => $paidAmount > 0
+                'paid_amount' => $appliedAmount,
+                'payment_history' => $appliedAmount > 0
                     ? [[
-                        'amount' => $paidAmount,
+                        'amount' => $appliedAmount,
                         'payment_method' => $paymentMethod,
                         'date' => now()->toDateTimeString(),
                         'notes' => $payment['notes'] ?? null,
                     ]]
                     : [],
                 'content' => [
+                    'payment_method' => $paymentMethod,
                     'customer_name' => $order->customer_name_snapshot,
                     'customer_phone' => $order->customer_phone_snapshot,
                     'customer_email' => $order->customer_email_snapshot,
@@ -305,7 +356,24 @@ class SalesOrderStockService
             $sale->load('details');
             $sale->validateAndUpdateStock();
 
-            // 4. Link the sale and mark the order as delivered.
+            // 4. Register the payment in cash, like any other sale. Antes el
+            //    cobro de un pedido no generaba movimiento de caja: el efectivo
+            //    no aparecía en el corte ni en el efectivo esperado del turno.
+            if ($appliedAmount > 0) {
+                if (in_array($paymentMethod, SalePayment::METHODS, true)) {
+                    $isCash = $paymentMethod === 'cash';
+                    $sale->payments()->create([
+                        'method' => $paymentMethod,
+                        'amount' => $appliedAmount,
+                        'tendered' => $isCash ? max($paidAmount, $appliedAmount) : null,
+                        'change' => $isCash ? round(max($paidAmount - $appliedAmount, 0), 2) : null,
+                    ]);
+                }
+
+                CashMovementService::fromSale($sale, $appliedAmount, $paymentMethod, null, $session?->id);
+            }
+
+            // 5. Link the sale and mark the order as delivered.
             $order->forceFill([
                 'sale_id' => $sale->id,
                 'status' => SalesOrderStatus::DELIVERED,
@@ -320,5 +388,30 @@ class SalesOrderStockService
 
             return $sale->fresh('details');
         });
+    }
+
+    /**
+     * Relee el pedido (con sus renglones) bloqueando su fila hasta que termine
+     * la transacción. Las decisiones que mueven stock o dinero se toman con
+     * este estado, no con el de la instancia que llegó, que pudo cargarse
+     * antes de que otra petición lo cambiara.
+     */
+    private function lockOrder(SalesOrder $order): SalesOrder
+    {
+        $locked = SalesOrder::query()->lockForUpdate()->findOrFail($order->getKey());
+        $locked->load('details');
+
+        return $locked;
+    }
+
+    /** Pasa a la instancia de quien llamó el estado recién guardado. */
+    private function syncFrom(SalesOrder $target, SalesOrder $source): void
+    {
+        if ($target === $source) {
+            return;
+        }
+
+        $target->setRawAttributes($source->getAttributes(), true);
+        $target->setRelation('details', $source->details);
     }
 }

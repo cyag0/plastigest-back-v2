@@ -29,6 +29,7 @@ class SalesOrderController extends CrudController
     protected string $dateColumn = 'order_date';
 
     protected ?string $permissionPrefix = 'sales_orders';
+    protected ?string $locationColumn = 'location_id';
 
     protected function indexRelations(): array
     {
@@ -310,6 +311,11 @@ class SalesOrderController extends CrudController
             'notes' => 'nullable|string',
         ]);
 
+        // Aislado por empresa/sucursal.
+        if (!$this->scopedQuery()->whereKey($id)->exists()) {
+            return response()->json(['success' => false, 'message' => 'Pedido no encontrado'], 404);
+        }
+
         try {
             $order = SalesOrder::with($this->getShowRelations())->findOrFail($id);
             $stockService = app()->make('App\\Services\\SalesOrderStockService');
@@ -349,11 +355,25 @@ class SalesOrderController extends CrudController
             return $this->forbiddenResponse('actualizar este pedido');
         }
 
+        // Aislado por empresa/sucursal: no se transiciona un pedido ajeno.
+        if (!$this->scopedQuery()->whereKey($id)->exists()) {
+            return response()->json(['success' => false, 'message' => 'Pedido no encontrado'], 404);
+        }
+
         try {
-            $order = SalesOrder::with($this->getShowRelations())->findOrFail($id);
             $stockService = app()->make('App\\Services\\SalesOrderStockService');
 
-            DB::transaction(function () use ($order, $targetStatus, $stockService): void {
+            DB::transaction(function () use ($id, $targetStatus, $stockService): void {
+                // Bloqueo de fila + relectura del estado: un cancel compitiendo
+                // con un checkout ya no puede pisar "entregado" con "cancelado".
+                $order = SalesOrder::whereKey($id)->lockForUpdate()->firstOrFail();
+
+                // Entregar exige que el pedido ya tenga una venta asociada
+                // (se cobró con checkout); si no, no debe pasar a entregado.
+                if ($targetStatus === SalesOrderStatus::DELIVERED && !$order->sale_id) {
+                    throw new \RuntimeException('El pedido debe cobrarse antes de marcarse como entregado.');
+                }
+
                 if ($targetStatus === SalesOrderStatus::PREPARING) {
                     $stockService->reserveOrder($order);
                 }
@@ -365,8 +385,7 @@ class SalesOrderController extends CrudController
                 }
             });
 
-            $order->refresh();
-            $order->load($this->getShowRelations());
+            $order = SalesOrder::with($this->getShowRelations())->findOrFail($id);
 
             return response()->json([
                 'success' => true,
@@ -374,10 +393,15 @@ class SalesOrderController extends CrudController
                 'data' => new $this->resource($order, ['editing' => true]),
             ]);
         } catch (\Throwable $exception) {
+            \Illuminate\Support\Facades\Log::error('Error al cambiar el estado del pedido', [
+                'exception' => get_class($exception),
+                'message' => $exception->getMessage(),
+            ]);
             return response()->json([
                 'success' => false,
                 'message' => 'Error al cambiar el estado del pedido',
-                'error' => $exception->getMessage(),
+                // Solo se expone el mensaje si es de negocio (no interno).
+                'error' => $this->isInternalError($exception) ? null : $exception->getMessage(),
             ], 422);
         }
     }

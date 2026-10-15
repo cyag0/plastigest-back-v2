@@ -25,7 +25,7 @@ class CustomerNote extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
-        'due_date' => 'date',
+        'due_date' => 'date:Y-m-d',
         'is_active' => 'boolean',
     ];
 

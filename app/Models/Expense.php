@@ -27,7 +27,7 @@ class Expense extends Model
 
     protected $casts = [
         'paid_from_cash' => 'boolean',
-        'expense_date' => 'date',
+        'expense_date' => 'date:Y-m-d',
         'amount' => 'decimal:2',
     ];
 

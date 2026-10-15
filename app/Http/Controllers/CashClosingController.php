@@ -25,6 +25,7 @@ class CashClosingController extends CrudController
     protected string $resource = CashClosingResource::class;
     protected string $model = CashClosing::class;
     protected ?string $permissionPrefix = 'cash_movements';
+    protected ?string $locationColumn = 'location_id';
 
     /**
      * El corte ahora se hace por turno de caja (cash-register-sessions). Los

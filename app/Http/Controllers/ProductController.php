@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\Activity\ActivityLogger;
+use App\Support\Activity\ActivityFormatter;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\ProductResource;
 use App\Models\InventoryType;
@@ -10,8 +12,10 @@ use App\Models\ProductImage;
 use App\Models\StockLedgerEntry;
 use App\Enums\StockLedgerReason;
 use App\Constants\Files;
+use App\Support\BarcodeLabelPdf;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -22,8 +26,6 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Exception;
-use Barryvdh\DomPDF\Facade\Pdf;
-use Picqer\Barcode\BarcodeGeneratorPNG;
 
 class ProductController extends CrudController
 {
@@ -642,9 +644,14 @@ class ProductController extends CrudController
      */
     public function deleteProductImage(Request $request, $productId, $imageId)
     {
+        if (!CurrentWorker::hasPermission('products_update')) {
+            return $this->forbiddenResponse('editar imágenes de productos');
+        }
+
         try {
-            $product = Product::findOrFail($productId);
-            $image = ProductImage::where('product_id', $productId)
+            // Aislado por empresa: no se tocan imágenes de productos de otra empresa.
+            $product = Product::where('company_id', CurrentCompany::id())->findOrFail($productId);
+            $image = ProductImage::where('product_id', $product->id)
                 ->where('id', $imageId)
                 ->firstOrFail();
 
@@ -678,10 +685,15 @@ class ProductController extends CrudController
      */
     public function getProductImages($productId)
     {
+        if (!CurrentWorker::hasPermission('products_read')) {
+            return $this->forbiddenResponse('ver imágenes de productos');
+        }
+
         try {
-            $product = Product::with(['images' => function ($query) {
-                $query->orderBy('sort_order');
-            }])->findOrFail($productId);
+            $product = Product::where('company_id', CurrentCompany::id())
+                ->with(['images' => function ($query) {
+                    $query->orderBy('sort_order');
+                }])->findOrFail($productId);
 
             return response()->json([
                 'success' => true,
@@ -700,7 +712,14 @@ class ProductController extends CrudController
      */
     public function updateImageOrder(Request $request, $productId)
     {
+        if (!CurrentWorker::hasPermission('products_update')) {
+            return $this->forbiddenResponse('editar imágenes de productos');
+        }
+
         try {
+            // Aislado por empresa.
+            $product = Product::where('company_id', CurrentCompany::id())->findOrFail($productId);
+
             $request->validate([
                 'images' => 'required|array',
                 'images.*.id' => 'required|exists:product_images,id',
@@ -709,7 +728,7 @@ class ProductController extends CrudController
 
             foreach ($request->input('images') as $imageData) {
                 ProductImage::where('id', $imageData['id'])
-                    ->where('product_id', $productId)
+                    ->where('product_id', $product->id)
                     ->update(['sort_order' => $imageData['sort_order']]);
             }
 
@@ -778,10 +797,17 @@ class ProductController extends CrudController
                     }
                     $updateData['updated_at'] = now();
 
+                    $before = DB::table('product_location')
+                        ->where('product_id', $product->id)
+                        ->where('location_id', $location->id)
+                        ->first();
+
                     DB::table('product_location')
                         ->where('product_id', $product->id)
                         ->where('location_id', $location->id)
                         ->update($updateData);
+
+                    $this->logBranchSettings($product, $location, $before, $updateData);
                 } else {
                     // Creación o registro nuevo: insertar/actualizar con current_stock = 0
                     $product->locations()->syncWithoutDetaching([
@@ -992,102 +1018,13 @@ class ProductController extends CrudController
             $product = Product::findOrFail($productId);
             $quantity = $validated['quantity'];
 
-            // Generar código de barras como imagen base64
-            $generator = new BarcodeGeneratorPNG();
-            $barcodeData = $generator->getBarcode($product->code, $generator::TYPE_CODE_128);
-            $barcodeBase64 = base64_encode($barcodeData);
-
-            // HTML optimizado para impresora térmica (58mm típicamente)
-            $html = '
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Etiquetas - ' . htmlspecialchars($product->name) . '</title>
-    <style>
-        @page {
-            size: 58mm auto;
-            margin: 2mm;
-        }
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: Arial, sans-serif;
-            width: 58mm;
-            font-size: 10pt;
-        }
-        .label {
-            page-break-after: always;
-            padding: 3mm;
-            text-align: center;
-            border: 1px dashed #ccc;
-            margin-bottom: 2mm;
-        }
-        .label:last-child {
-            page-break-after: auto;
-            margin-bottom: 0;
-        }
-        .product-name {
-            font-weight: bold;
-            font-size: 11pt;
-            margin-bottom: 2mm;
-            word-wrap: break-word;
-        }
-        .product-code {
-            font-size: 9pt;
-            margin-bottom: 2mm;
-            color: #333;
-        }
-        .barcode-container {
-            margin: 2mm 0;
-        }
-        .barcode-image {
-            width: 100%;
-            max-width: 50mm;
-            height: auto;
-        }
-        .price {
-            font-size: 12pt;
-            font-weight: bold;
-            margin-top: 2mm;
-        }
-    </style>
-</head>
-<body>';
-
-            // Generar etiquetas según la cantidad solicitada
-            for ($i = 0; $i < $quantity; $i++) {
-                $html .= '
-    <div class="label">
-        <div class="product-name">' . htmlspecialchars($product->name) . '</div>
-        <div class="product-code">Código: ' . htmlspecialchars($product->code) . '</div>
-        <div class="barcode-container">
-            <img src="data:image/png;base64,' . $barcodeBase64 . '" alt="Barcode" class="barcode-image">
-        </div>';
-
-                if ($product->sale_price) {
-                    $html .= '
-        <div class="price">$' . number_format($product->sale_price, 2) . '</div>';
-                }
-
-                $html .= '
-    </div>';
-            }
-
-            $html .= '
-</body>
-</html>';
-
-            // Generar PDF
-            $pdf = Pdf::loadHTML($html);
-
-            // Configurar el tamaño de página para impresora térmica de 58mm
-            $pdf->setPaper([0, 0, 165, 500], 'portrait'); // 58mm = 165 puntos aproximadamente
-
-            return $pdf->stream('etiquetas-' . $product->code . '.pdf');
+            return BarcodeLabelPdf::stream(
+                title: $product->name,
+                code: $product->code,
+                quantity: (int) $quantity,
+                fileName: 'etiquetas-' . $product->code . '.pdf',
+                price: $product->sale_price,
+            );
         } catch (\Exception $e) {
             // Re-emitir excepciones HTTP y ModelNotFound para que Laravel las maneje con su status code original
             if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
@@ -1099,5 +1036,39 @@ class ProductController extends CrudController
                 'message' => 'Error al generar el PDF'
             ], 500);
         }
+    }
+
+    /**
+     * Bitácora de lo que vive por sucursal (activo, stock mínimo y máximo):
+     * está en product_location y el observer del producto no lo ve.
+     */
+    private function logBranchSettings(Product $product, $location, ?object $before, array $after): void
+    {
+        if (!$before) {
+            return;
+        }
+
+        $changes = [];
+        foreach (['active' => 'is_active', 'minimum_stock' => 'minimum_stock', 'maximum_stock' => 'maximum_stock'] as $column => $field) {
+            if (!array_key_exists($column, $after)) {
+                continue;
+            }
+            $old = ActivityFormatter::display($field, $column === 'active' ? (bool) $before->{$column} : $before->{$column});
+            $new = ActivityFormatter::display($field, $column === 'active' ? (bool) $after[$column] : $after[$column]);
+            if ($old !== $new) {
+                $changes[$field] = [$old, $new];
+            }
+        }
+        if (!$changes) {
+            return;
+        }
+
+        $where = " en {$location->name}";
+        $sentence = array_keys($changes) === ['is_active']
+            ? ($changes['is_active'][1] === 'Sí' ? 'Activó' : 'Desactivó') . " el producto «{$product->name}»{$where}"
+            : "Editó el producto «{$product->name}»{$where}: " . collect($changes)
+                ->map(fn($c, $f) => ActivityFormatter::fieldLabel($f) . ": {$c[0]} → {$c[1]}")->implode('; ');
+
+        ActivityLogger::log('catalogo', 'updated', $sentence, $product, $product->name, $changes);
     }
 }

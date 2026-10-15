@@ -50,9 +50,18 @@ class InventoryTransferController extends Controller
                 'details.product'
             ]);
 
-            // Filtrar por company_id
-            if ($request->has('company_id')) {
-                $query->where('company_id', $request->company_id);
+            // Aislamiento por empresa: SIEMPRE la empresa del contexto, nunca el
+            // company_id que mande el cliente (antes se podían listar las
+            // transferencias de cualquier empresa).
+            $query->where('company_id', CurrentCompany::id());
+
+            // Aislamiento por sucursal: quien no es administrador solo ve las
+            // transferencias de su sucursal (entrantes o salientes).
+            if (!CurrentWorker::canAccessAllLocations() && ($currentLocationId = CurrentLocation::id())) {
+                $query->where(function ($q) use ($currentLocationId) {
+                    $q->where('from_location_id', $currentLocationId)
+                        ->orWhere('to_location_id', $currentLocationId);
+                });
             }
 
             // Filtrar por estado
@@ -82,17 +91,17 @@ class InventoryTransferController extends Controller
                 $query->where('to_location_id', $request->to_location_id);
             }
 
-            // Filtrar envíos salientes (desde mi ubicación)
+            // Filtrar envíos salientes (desde mi sucursal actual)
             if ($request->has('is_outgoing') && $request->is_outgoing) {
-                $userLocationId = $request->user_location_id ?? Auth::user()?->location_id;
+                $userLocationId = $request->user_location_id ?? CurrentLocation::id();
                 if ($userLocationId) {
                     $query->where('from_location_id', $userLocationId);
                 }
             }
 
-            // Filtrar recepciones entrantes (hacia mi ubicación)
+            // Filtrar recepciones entrantes (hacia mi sucursal actual)
             if ($request->has('is_incoming') && $request->is_incoming) {
-                $userLocationId = $request->user_location_id ?? Auth::user()?->location_id;
+                $userLocationId = $request->user_location_id ?? CurrentLocation::id();
                 if ($userLocationId) {
                     $query->where('to_location_id', $userLocationId);
                 }
@@ -136,7 +145,7 @@ class InventoryTransferController extends Controller
             Log::error('Error listing transfers: ' . $e->getMessage());
             return response()->json([
                 'message' => 'Error al obtener las transferencias',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -264,7 +273,7 @@ class InventoryTransferController extends Controller
             Log::error('Stack trace: ' . $e->getTraceAsString());
             return response()->json([
                 'message' => 'Error al crear la transferencia',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -287,7 +296,7 @@ class InventoryTransferController extends Controller
                 'details.product.mainImage',
                 'details.package',
                 'details.unit'
-            ])->findOrFail($id);
+            ])->where('company_id', CurrentCompany::id())->findOrFail($id);
 
             return response()->json([
                 'data' => new InventoryTransferResource($transfer),
@@ -296,7 +305,7 @@ class InventoryTransferController extends Controller
             Log::error('Error showing transfer: ' . $e->getMessage());
             return response()->json([
                 'message' => 'Transferencia no encontrada',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 404);
         }
     }
@@ -311,7 +320,7 @@ class InventoryTransferController extends Controller
         }
 
         try {
-            $transfer = InventoryTransfer::findOrFail($id);
+            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
 
             if ($transfer->status !== TransferStatus::PENDING) {
                 return response()->json([
@@ -401,7 +410,7 @@ class InventoryTransferController extends Controller
             Log::error('Error updating transfer: ' . $e->getMessage());
             return response()->json([
                 'message' => 'Error al actualizar la transferencia',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -416,7 +425,7 @@ class InventoryTransferController extends Controller
         }
 
         try {
-            $transfer = InventoryTransfer::findOrFail($id);
+            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
 
             if (!$transfer->status->canCancel()) {
                 return response()->json([
@@ -446,7 +455,7 @@ class InventoryTransferController extends Controller
             Log::error('Error canceling transfer: ' . $e->getMessage());
             return response()->json([
                 'message' => 'Error al cancelar la transferencia',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -468,7 +477,7 @@ class InventoryTransferController extends Controller
         ]);
 
         try {
-            $transfer = InventoryTransfer::findOrFail($id);
+            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
 
             $transfer = $this->transferService->approve($transfer, $request->all());
 
@@ -494,7 +503,7 @@ class InventoryTransferController extends Controller
         } catch (Exception $e) {
             Log::error('Error approving transfer: ' . $e->getMessage());
             return response()->json([
-                'message' => $e->getMessage()
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
             ], 400);
         }
     }
@@ -520,7 +529,7 @@ class InventoryTransferController extends Controller
                 ], 422);
             }
 
-            $transfer = InventoryTransfer::findOrFail($id);
+            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
 
             $transfer = $this->transferService->reject($transfer, $request->rejection_reason);
 
@@ -544,7 +553,7 @@ class InventoryTransferController extends Controller
         } catch (Exception $e) {
             Log::error('Error rejecting transfer: ' . $e->getMessage());
             return response()->json([
-                'message' => $e->getMessage()
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
             ], 400);
         }
     }
@@ -559,11 +568,11 @@ class InventoryTransferController extends Controller
         }
 
         try {
-            $transfer = InventoryTransfer::with('details')->findOrFail($id);
+            $transfer = InventoryTransfer::with('details')->where('company_id', CurrentCompany::id())->findOrFail($id);
 
             $validated = $request->validate([
                 'items' => 'required|array|min:1',
-                'items.*.detail_id' => 'required|exists:inventory_transfer_details,id',
+                'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
                 'items.*.quantity_shipped' => 'required|numeric|min:0',
                 'items.*.notes' => 'nullable|string|max:500',
                 'shipping_notes' => 'nullable|string|max:1000',
@@ -675,7 +684,7 @@ class InventoryTransferController extends Controller
         } catch (Exception $e) {
             Log::error('Error shipping transfer: ' . $e->getMessage());
             return response()->json([
-                'message' => $e->getMessage()
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
             ], 400);
         }
     }
@@ -690,11 +699,11 @@ class InventoryTransferController extends Controller
         }
 
         try {
-            $transfer = InventoryTransfer::with('details')->findOrFail($id);
+            $transfer = InventoryTransfer::with('details')->where('company_id', CurrentCompany::id())->findOrFail($id);
 
             $validated = $request->validate([
                 'items' => 'required|array|min:1',
-                'items.*.detail_id' => 'required|exists:inventory_transfer_details,id',
+                'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
                 'items.*.quantity_received' => 'required|numeric|min:0',
                 'items.*.adjustment_reason' => 'nullable|in:loss,damage',
                 'items.*.adjustment_comment' => 'nullable|string|max:500',
@@ -726,9 +735,10 @@ class InventoryTransferController extends Controller
 
                 $shippedQty = (float) $detail->quantity_shipped;
                 if ($shippedQty <= 0) {
-                    return response()->json([
-                        'message' => "El detalle {$detailId} no tiene cantidad enviada registrada",
-                    ], 422);
+                    // La app manda todos los renglones (TransferStepThreeReceive);
+                    // los que no se enviaron no tienen nada que recibir, así que
+                    // se ignoran en vez de responder 422 y bloquear la recepción.
+                    continue;
                 }
 
                 $receivedQty = (float) $item['quantity_received'];
@@ -921,7 +931,7 @@ class InventoryTransferController extends Controller
         } catch (Exception $e) {
             Log::error('Error receiving transfer: ' . $e->getMessage());
             return response()->json([
-                'message' => $e->getMessage()
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
             ], 400);
         }
     }
@@ -1161,7 +1171,9 @@ class InventoryTransferController extends Controller
 
             $extension = strtolower((string) $file->getClientOriginalExtension());
             $safeExtension = $extension !== '' ? $extension : 'jpg';
-            $customName = 'image_' . ($index + 1) . '.' . $safeExtension;
+            // Nombre con sufijo aleatorio: las evidencias se sirven por una ruta
+            // pública, y un nombre predecible (image_1.jpg) permitía adivinarlas.
+            $customName = 'image_' . ($index + 1) . '_' . \Illuminate\Support\Str::random(24) . '.' . $safeExtension;
             $stepPath = rtrim(Files::TRANSFER_EVIDENCE_PATH, '/') . '/transfer_' . $transferId . '/' . $step;
             $result = AppUploadUtil::saveFile($file, $stepPath, $customName);
 
