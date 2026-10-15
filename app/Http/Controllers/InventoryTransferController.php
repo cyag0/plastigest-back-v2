@@ -5,13 +5,13 @@ namespace App\Http\Controllers;
 use App\Constants\Files;
 use App\Exceptions\BusinessRuleException;
 use App\Exceptions\InsufficientStockException;
+use App\Http\Controllers\Concerns\EvidencePhotoMessages;
 use App\Models\Admin\Location;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Exists;
-use Illuminate\Validation\ValidationException;
 use App\Models\InventoryTransfer;
 use App\Models\InventoryTransferDetail;
 use App\Models\InventoryAdjustmentDetail;
@@ -31,6 +31,8 @@ use Exception;
 
 class InventoryTransferController extends Controller
 {
+    use EvidencePhotoMessages;
+
     protected TransferService $transferService;
     protected TaskService $taskService;
 
@@ -583,22 +585,25 @@ class InventoryTransferController extends Controller
             return $this->wrongLocationResponse("Esta transferencia la envía la sucursal de origen ({$transfer->fromLocation?->name}).");
         }
 
-        try {
-            $validated = $request->validate([
-                'items' => 'required|array|min:1',
-                'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
-                'items.*.quantity_shipped' => 'required|numeric|min:0',
-                'items.*.notes' => 'nullable|string|max:500',
-                'shipping_notes' => 'nullable|string|max:1000',
-                'evidence' => 'required|array|min:1',
-                'evidence.*' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
-            ]);
+        $validated = $request->validate([
+            'items' => 'required|array|min:1',
+            'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
+            'items.*.quantity_shipped' => 'required|numeric|min:0',
+            'items.*.notes' => 'nullable|string|max:500',
+            'shipping_notes' => 'nullable|string|max:1000',
+            'evidence' => 'required|array|min:1',
+            'evidence.*' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
+        ], array_merge([
+            'evidence.required' => 'Sube al menos una foto de evidencia del envío.',
+            'evidence.min' => 'Sube al menos una foto de evidencia del envío.',
+        ], $this->evidencePhotoMessages(['evidence.*'])));
 
+        try {
             $detailMap = $transfer->details->keyBy('id');
             $shipments = [];
             $auditItems = [];
 
-            foreach ($validated['items'] as $index => $item) {
+            foreach ($validated['items'] as $item) {
                 $detailId = (int) $item['detail_id'];
                 $detail = $detailMap->get($detailId);
 
@@ -640,37 +645,42 @@ class InventoryTransferController extends Controller
 
             $this->validateStockAvailability($shipments, (int) $transfer->from_location_id, 'quantity_shipped');
 
-            $savedEvidence = $this->saveEvidenceFiles($request, 'evidence', $transfer->id, 'step_2');
-            $savedEvidenceNames = array_values(array_map(
-                static fn(array $file) => (string) ($file['name'] ?? ''),
-                $savedEvidence
-            ));
-            $savedEvidenceNames = array_values(array_filter($savedEvidenceNames));
+            // Envío, evidencias y bitácora en una sola transacción: si algo
+            // falla (p. ej. no se puede guardar una foto) el stock no sale.
+            $transfer = DB::transaction(function () use ($request, $transfer, $shipments, $auditItems, $validated) {
+                $transfer = $this->transferService->ship($transfer, $shipments);
 
-            $transfer = $this->transferService->ship($transfer, $shipments);
+                $savedEvidence = $this->saveEvidenceFiles($request, 'evidence', $transfer->id, 'step_2');
+                $savedEvidenceNames = array_values(array_filter(array_map(
+                    static fn(array $file) => (string) ($file['name'] ?? ''),
+                    $savedEvidence
+                )));
 
-            $content = $transfer->content;
-            if (!is_array($content)) {
-                $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
-            }
+                $content = $transfer->content;
+                if (!is_array($content)) {
+                    $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
+                }
 
-            if (!is_array($content['step_2'] ?? null)) {
-                $content['step_2'] = [];
-            }
+                if (!is_array($content['step_2'] ?? null)) {
+                    $content['step_2'] = [];
+                }
 
-            $content['step_2']['evidence'] = $savedEvidenceNames;
-            $content['step_2']['evidence_count'] = count($savedEvidenceNames);
-            $content['step_2']['shipping_notes'] = $validated['shipping_notes'] ?? null;
-            $content['workflow']['step_2'] = [
-                'actor_id' => Auth::id(),
-                'actor_name' => Auth::user()?->name,
-                'at' => now()->toISOString(),
-                'items' => $auditItems,
-                'evidence' => $savedEvidence,
-            ];
+                $content['step_2']['evidence'] = $savedEvidenceNames;
+                $content['step_2']['evidence_count'] = count($savedEvidenceNames);
+                $content['step_2']['shipping_notes'] = $validated['shipping_notes'] ?? null;
+                $content['workflow']['step_2'] = [
+                    'actor_id' => Auth::id(),
+                    'actor_name' => Auth::user()?->name,
+                    'at' => now()->toISOString(),
+                    'items' => $auditItems,
+                    'evidence' => $savedEvidence,
+                ];
 
-            $transfer->content = $content;
-            $transfer->save();
+                $transfer->content = $content;
+                $transfer->save();
+
+                return $transfer;
+            });
 
             try {
                 $this->taskService->completeRelatedTask(
@@ -691,9 +701,6 @@ class InventoryTransferController extends Controller
                 'message' => 'Transferencia enviada exitosamente',
                 'data' => new InventoryTransferResource($transfer)
             ]);
-        } catch (ValidationException $e) {
-            // 422 con el detalle por campo, no un 400 genérico.
-            throw $e;
         } catch (Exception $e) {
             return $this->errorResponse($e, 'No se pudo enviar la transferencia');
         }
@@ -701,6 +708,11 @@ class InventoryTransferController extends Controller
 
     /**
      * Recibir transferencia (confirmar cantidades recibidas)
+     *
+     * Tiene que venir cada renglón enviado. Antes un renglón omitido no se
+     * acreditaba en el destino, no pedía motivo ni evidencia y la
+     * transferencia quedaba "recibida completa": lo que salió del origen
+     * desaparecía sin dejar rastro.
      */
     public function receive(Request $request, int $id): JsonResponse
     {
@@ -708,7 +720,7 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $transfer = $this->findVisibleTransfer($id, ['details', 'toLocation']);
+        $transfer = $this->findVisibleTransfer($id, ['details.product', 'toLocation']);
 
         if (!$transfer) {
             return $this->transferNotFoundResponse();
@@ -719,28 +731,41 @@ class InventoryTransferController extends Controller
             return $this->wrongLocationResponse("Esta transferencia la recibe la sucursal de destino ({$transfer->toLocation?->name}).");
         }
 
-        try {
-            $validated = $request->validate([
-                'items' => 'required|array|min:1',
-                'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
-                'items.*.quantity_received' => 'required|numeric|min:0',
-                'items.*.adjustment_reason' => 'nullable|in:loss,damage',
-                'items.*.adjustment_comment' => 'nullable|string|max:500',
-                'items.*.adjustment_notes' => 'nullable|string|max:500',
-                'items.*.adjustment_evidence' => 'nullable|array',
-                'items.*.adjustment_evidence.*' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
-                'receiving_notes' => 'nullable|string|max:1000',
-                'evidence' => 'nullable|array',
-                'evidence.*' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
-            ]);
+        $validated = $request->validate([
+            'items' => 'required|array|min:1',
+            'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
+            'items.*.quantity_received' => 'required|numeric|min:0',
+            'items.*.adjustment_reason' => 'nullable|in:loss,damage',
+            'items.*.adjustment_comment' => 'nullable|string|max:500',
+            'items.*.adjustment_notes' => 'nullable|string|max:500',
+            'items.*.adjustment_evidence' => 'nullable|array',
+            'items.*.adjustment_evidence.*' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'receiving_notes' => 'nullable|string|max:1000',
+            'evidence' => 'nullable|array',
+            'evidence.*' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
+        ], $this->evidencePhotoMessages(['evidence.*', 'items.*.adjustment_evidence.*']));
 
+        try {
             $detailMap = $transfer->details->keyBy('id');
-            $received = [];
-            $auditItems = [];
-            $adjustmentsByReason = [
-                'loss' => [],
-                'damage' => [],
-            ];
+
+            $submitted = collect($validated['items'])->map(fn($item) => (int) $item['detail_id']);
+            $missing = $transfer->details->filter(
+                fn($detail) => (float) $detail->quantity_shipped > 0 && !$submitted->contains((int) $detail->id)
+            );
+
+            if ($missing->isNotEmpty()) {
+                $names = $missing->map(fn($detail) => $detail->product?->name ?? "renglón {$detail->id}")->implode(', ');
+
+                return response()->json([
+                    'message' => "Falta indicar cuánto llegó de: {$names}.",
+                    'code' => 'missing_lines',
+                    'details' => ['detail_ids' => $missing->pluck('id')->values()->all()],
+                ], 422);
+            }
+
+            // Primero se revisa todo; las fotos se guardan hasta que la
+            // recepción se aplica (así un renglón inválido no deja archivos).
+            $lines = [];
 
             foreach ($validated['items'] as $index => $item) {
                 $detailId = (int) $item['detail_id'];
@@ -772,13 +797,7 @@ class InventoryTransferController extends Controller
                 $reason = $item['adjustment_reason'] ?? null;
                 $comment = $item['adjustment_comment'] ?? null;
                 $notes = $item['adjustment_notes'] ?? null;
-                $incidentEvidence = $this->saveEvidenceFiles(
-                    $request,
-                    "items.{$index}.adjustment_evidence",
-                    $transfer->id,
-                    "step_3_item_{$detailId}",
-                    false
-                );
+                $evidenceField = "items.{$index}.adjustment_evidence";
 
                 if ($difference > 0 && !$reason) {
                     return response()->json([
@@ -792,133 +811,154 @@ class InventoryTransferController extends Controller
                     ], 422);
                 }
 
-                if ($difference > 0 && count($incidentEvidence) === 0) {
+                if ($difference > 0 && count($this->uploadedFiles($request, $evidenceField)) === 0) {
                     return response()->json([
                         'message' => "Debes subir evidencia para el detalle {$detailId}",
                     ], 422);
                 }
 
-                $received[] = [
-                    'detail_id' => $detail->id,
-                    'quantity_received' => $receivedQty,
-                    'damage_report' => $difference > 0 ? ($notes ?? "Faltante: {$difference}") : null,
+                $lines[] = compact('detail', 'shippedQty', 'receivedQty', 'difference', 'reason', 'comment', 'notes', 'evidenceField');
+            }
+
+            // Recepción, evidencias, ajustes de registro y bitácora en una sola
+            // transacción: antes, si algo fallaba después de recibir, la
+            // transferencia quedaba completada sin sus ajustes ni su evidencia.
+            [$transfer, $auditItems] = DB::transaction(function () use ($request, $transfer, $lines, $validated) {
+                $received = array_map(fn(array $line) => [
+                    'detail_id' => $line['detail']->id,
+                    'quantity_received' => $line['receivedQty'],
+                    'damage_report' => $line['difference'] > 0 ? ($line['notes'] ?? "Faltante: {$line['difference']}") : null,
+                ], $lines);
+
+                $transfer = $this->transferService->receive($transfer, $received);
+
+                $auditItems = [];
+                $adjustmentsByReason = [
+                    'loss' => [],
+                    'damage' => [],
                 ];
 
-                $auditItems[] = [
-                    'detail_id' => $detail->id,
-                    'quantity_shipped' => $shippedQty,
-                    'quantity_received' => $receivedQty,
-                    'difference' => $difference,
-                    'adjustment_reason' => $reason,
-                    'adjustment_comment' => $comment,
-                    'adjustment_notes' => $notes,
-                    'adjustment_evidence' => $incidentEvidence,
-                ];
+                foreach ($lines as $line) {
+                    $detail = $line['detail'];
+                    $incidentEvidence = $this->saveEvidenceFiles(
+                        $request,
+                        $line['evidenceField'],
+                        $transfer->id,
+                        "step_3_item_{$detail->id}",
+                        false
+                    );
 
-                if ($difference > 0 && in_array($reason, ['loss', 'damage'])) {
-                    $adjustmentsByReason[$reason][] = [
-                        'detail' => $detail,
-                        'quantity' => $difference,
-                        'comment' => $comment,
-                        'notes' => $notes,
-                        'evidence' => $incidentEvidence,
-                    ];
-                }
-            }
-
-            $savedEvidence = $this->saveEvidenceFiles($request, 'evidence', $transfer->id, 'step_3', false);
-            $savedEvidenceNames = array_values(array_map(
-                static fn(array $file) => (string) ($file['name'] ?? ''),
-                $savedEvidence
-            ));
-            $savedEvidenceNames = array_values(array_filter($savedEvidenceNames));
-
-            $transfer = $this->transferService->receive($transfer, $received);
-
-            $content = $transfer->content;
-            if (!is_array($content)) {
-                $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
-            }
-
-            if (!is_array($content['step_3'] ?? null)) {
-                $content['step_3'] = [];
-            }
-
-            $content['step_3']['evidence'] = $savedEvidenceNames;
-            $content['step_3']['evidence_count'] = count($savedEvidenceNames);
-            $content['step_3']['receiving_notes'] = $validated['receiving_notes'] ?? null;
-
-            $createdAdjustments = [];
-            foreach ($adjustmentsByReason as $reason => $entries) {
-                if (empty($entries)) {
-                    continue;
-                }
-
-                foreach ($entries as $entry) {
-                    /** @var InventoryTransferDetail $detail */
-                    $detail = $entry['detail'];
-                    $currentStock = (float) (DB::table('product_location')
-                        ->where('location_id', $transfer->to_location_id)
-                        ->where('product_id', $detail->product_id)
-                        ->value('current_stock') ?? 0);
-
-                    // Solo registrar el ajuste; no mutar stock porque la recepción ya maneja existencias.
-                    $createdDetail = InventoryAdjustmentDetail::create([
-                        'company_id' => $transfer->company_id,
-                        'location_id' => $transfer->to_location_id,
-                        'created_by' => Auth::id(),
-                        'product_id' => $detail->product_id,
-                        'direction' => 'out',
-                        'quantity' => (float) ($entry['quantity'] ?? 0),
-                        'unit_id' => $detail->unit_id,
-                        'previous_stock' => $currentStock,
-                        'new_stock' => $currentStock,
-                        'reason_code' => $reason,
-                        'notes' => $entry['notes'] ?? $entry['comment'] ?? null,
-                        'content' => [
-                            'source' => 'inventory_transfer_receive_difference',
-                            'transfer_id' => $transfer->id,
-                            'transfer_detail_id' => $detail->id,
-                            'adjustment_comment' => $entry['comment'] ?? null,
-                            'evidence_files' => $entry['evidence'] ?? [],
-                            'created_from_transfer' => true,
-                        ],
-                        'applied_at' => now(),
-                    ]);
-
-                    $createdAdjustments[] = [
-                        'id' => $createdDetail->id,
-                        'reason' => $reason,
+                    $auditItems[] = [
                         'detail_id' => $detail->id,
-                        'type' => 'inventory_adjustment_detail',
+                        'quantity_shipped' => $line['shippedQty'],
+                        'quantity_received' => $line['receivedQty'],
+                        'difference' => $line['difference'],
+                        'adjustment_reason' => $line['reason'],
+                        'adjustment_comment' => $line['comment'],
+                        'adjustment_notes' => $line['notes'],
+                        'adjustment_evidence' => $incidentEvidence,
                     ];
 
-                    foreach ($auditItems as &$auditItem) {
-                        if ((int) ($auditItem['detail_id'] ?? 0) === (int) $detail->id) {
-                            $auditItem['adjustment_id'] = $createdDetail->id;
-                            $auditItem['adjustment_type'] = 'inventory_adjustment_detail';
-                        }
+                    if ($line['difference'] > 0 && in_array($line['reason'], ['loss', 'damage'])) {
+                        $adjustmentsByReason[$line['reason']][] = [
+                            'detail' => $detail,
+                            'quantity' => $line['difference'],
+                            'comment' => $line['comment'],
+                            'notes' => $line['notes'],
+                            'evidence' => $incidentEvidence,
+                        ];
                     }
-                    unset($auditItem);
                 }
-            }
 
-            $hasDifferences = collect($auditItems)->contains(fn($item) => (float) $item['difference'] > 0);
-            $content['step_3']['has_differences'] = $hasDifferences;
-            $content['step_3']['received_complete'] = !$hasDifferences;
-            $content['step_3']['received_partial'] = $hasDifferences;
-            $content['workflow']['step_3'] = [
-                'actor_id' => Auth::id(),
-                'actor_name' => Auth::user()?->name,
-                'at' => now()->toISOString(),
-                'items' => $auditItems,
-                'adjustments' => $createdAdjustments,
-                'has_differences' => $hasDifferences,
-                'evidence' => $savedEvidence,
-            ];
+                $savedEvidence = $this->saveEvidenceFiles($request, 'evidence', $transfer->id, 'step_3', false);
+                $savedEvidenceNames = array_values(array_filter(array_map(
+                    static fn(array $file) => (string) ($file['name'] ?? ''),
+                    $savedEvidence
+                )));
 
-            $transfer->content = $content;
-            $transfer->save();
+                $content = $transfer->content;
+                if (!is_array($content)) {
+                    $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
+                }
+
+                if (!is_array($content['step_3'] ?? null)) {
+                    $content['step_3'] = [];
+                }
+
+                $content['step_3']['evidence'] = $savedEvidenceNames;
+                $content['step_3']['evidence_count'] = count($savedEvidenceNames);
+                $content['step_3']['receiving_notes'] = $validated['receiving_notes'] ?? null;
+
+                $createdAdjustments = [];
+                foreach ($adjustmentsByReason as $reason => $entries) {
+                    foreach ($entries as $entry) {
+                        /** @var InventoryTransferDetail $detail */
+                        $detail = $entry['detail'];
+                        $currentStock = (float) (DB::table('product_location')
+                            ->where('location_id', $transfer->to_location_id)
+                            ->where('product_id', $detail->product_id)
+                            ->value('current_stock') ?? 0);
+
+                        // Solo registrar el ajuste; no mutar stock porque la recepción ya maneja existencias.
+                        $createdDetail = InventoryAdjustmentDetail::create([
+                            'company_id' => $transfer->company_id,
+                            'location_id' => $transfer->to_location_id,
+                            'created_by' => Auth::id(),
+                            'product_id' => $detail->product_id,
+                            'direction' => 'out',
+                            'quantity' => (float) ($entry['quantity'] ?? 0),
+                            'unit_id' => $detail->unit_id,
+                            'previous_stock' => $currentStock,
+                            'new_stock' => $currentStock,
+                            'reason_code' => $reason,
+                            'notes' => $entry['notes'] ?? $entry['comment'] ?? null,
+                            'content' => [
+                                'source' => 'inventory_transfer_receive_difference',
+                                'transfer_id' => $transfer->id,
+                                'transfer_detail_id' => $detail->id,
+                                'adjustment_comment' => $entry['comment'] ?? null,
+                                'evidence_files' => $entry['evidence'] ?? [],
+                                'created_from_transfer' => true,
+                            ],
+                            'applied_at' => now(),
+                        ]);
+
+                        $createdAdjustments[] = [
+                            'id' => $createdDetail->id,
+                            'reason' => $reason,
+                            'detail_id' => $detail->id,
+                            'type' => 'inventory_adjustment_detail',
+                        ];
+
+                        foreach ($auditItems as &$auditItem) {
+                            if ((int) ($auditItem['detail_id'] ?? 0) === (int) $detail->id) {
+                                $auditItem['adjustment_id'] = $createdDetail->id;
+                                $auditItem['adjustment_type'] = 'inventory_adjustment_detail';
+                            }
+                        }
+                        unset($auditItem);
+                    }
+                }
+
+                $hasDifferences = collect($auditItems)->contains(fn($item) => (float) $item['difference'] > 0);
+                $content['step_3']['has_differences'] = $hasDifferences;
+                $content['step_3']['received_complete'] = !$hasDifferences;
+                $content['step_3']['received_partial'] = $hasDifferences;
+                $content['workflow']['step_3'] = [
+                    'actor_id' => Auth::id(),
+                    'actor_name' => Auth::user()?->name,
+                    'at' => now()->toISOString(),
+                    'items' => $auditItems,
+                    'adjustments' => $createdAdjustments,
+                    'has_differences' => $hasDifferences,
+                    'evidence' => $savedEvidence,
+                ];
+
+                $transfer->content = $content;
+                $transfer->save();
+
+                return [$transfer, $auditItems];
+            });
 
             $differenceTasksData = array_values(array_filter(
                 $auditItems,
@@ -947,9 +987,6 @@ class InventoryTransferController extends Controller
                 'message' => 'Transferencia recibida exitosamente',
                 'data' => new InventoryTransferResource($transfer)
             ]);
-        } catch (ValidationException $e) {
-            // 422 con el detalle por campo, no un 400 genérico.
-            throw $e;
         } catch (Exception $e) {
             return $this->errorResponse($e, 'No se pudo recibir la transferencia');
         }
@@ -1238,18 +1275,8 @@ class InventoryTransferController extends Controller
      */
     protected function saveEvidenceFiles(Request $request, string $field, int $transferId, string $step, bool $required = true): array
     {
-        $files = $request->file($field, []);
-
-        if ($files instanceof UploadedFile) {
-            $files = [$files];
-        }
-
         $saved = [];
-        foreach ($files as $index => $file) {
-            if (!$file instanceof UploadedFile) {
-                continue;
-            }
-
+        foreach ($this->uploadedFiles($request, $field) as $index => $file) {
             $extension = strtolower((string) $file->getClientOriginalExtension());
             $safeExtension = $extension !== '' ? $extension : 'jpg';
             // Nombre con sufijo aleatorio: las evidencias se sirven por una ruta
@@ -1271,9 +1298,25 @@ class InventoryTransferController extends Controller
         }
 
         if (empty($saved) && $required) {
-            throw new Exception('Debes adjuntar al menos una evidencia válida');
+            throw new BusinessRuleException('Debes adjuntar al menos una evidencia válida', 'missing_evidence');
         }
 
         return $saved;
+    }
+
+    /**
+     * Archivos subidos en un campo (uno o varios), ya sin lo que no es archivo.
+     *
+     * @return array<int, UploadedFile>
+     */
+    protected function uploadedFiles(Request $request, string $field): array
+    {
+        $files = $request->file($field, []);
+
+        if ($files instanceof UploadedFile) {
+            $files = [$files];
+        }
+
+        return array_filter(is_array($files) ? $files : [], fn($file) => $file instanceof UploadedFile);
     }
 }
