@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Support\Activity\ActivityLogger;
 use App\Enums\Resources;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\Permissions\RolesResource;
 use App\Models\Admin\Permission;
 use App\Models\Admin\Role;
 use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -62,16 +64,16 @@ class RolesController extends CrudController
      */
     protected function validateStoreData(Request $request): array
     {
-        return $request->validate([
-            // Agregar aquí las reglas de validación para crear
-            // Ejemplo:
-            // 'name' => 'required|string|max:255',
-            // 'email' => 'required|email|unique:permissionss,email',
+        $validated = $request->validate([
             'name' => 'required|string',
             'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
             'permissions' => 'array',
         ]);
+
+        $this->guardGrantedPermissions($request);
+
+        return $validated;
     }
 
     /**
@@ -79,16 +81,48 @@ class RolesController extends CrudController
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        return $request->validate([
-            // Agregar aquí las reglas de validación para actualizar
-            // Ejemplo:
-            // 'name' => 'required|string|max:255',
-            // 'email' => 'required|email|unique:permissionss,email,' . $model->id,
+        // El rol de sistema (Super Admin) siempre tiene todos los permisos:
+        // quitarle alguno, o desactivarlo, deja sin acceso al dueño.
+        if ($model->is_system) {
+            abort(response()->json(['message' => 'El rol del sistema no se puede modificar.'], 422));
+        }
+
+        $validated = $request->validate([
             'name' => 'required|string',
             'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
             'permissions' => 'array',
         ]);
+
+        $this->guardGrantedPermissions($request);
+
+        // Para la bitácora: los permisos no son atributos del modelo y el
+        // observer no los ve.
+        $this->permissionsBefore = $model->permissions()->pluck('permissions.name')->all();
+
+        return $validated;
+    }
+
+    /** Permisos del rol antes de editarlo (bitácora). */
+    private ?array $permissionsBefore = null;
+
+    /**
+     * Salvo el administrador del sistema, nadie puede dar a un rol permisos
+     * que él mismo no tiene: bastaba con editar su propio rol para escalar.
+     */
+    private function guardGrantedPermissions(Request $request): void
+    {
+        if (!$request->has('permissions') || CurrentWorker::isSystemAdmin()) {
+            return;
+        }
+
+        $requested = Permission::whereIn('id', array_keys(array_filter((array) $request->input('permissions'))))
+            ->pluck('name');
+        $extra = $requested->diff(CurrentWorker::permissions());
+
+        if ($extra->isNotEmpty()) {
+            abort(response()->json(['message' => 'No puedes asignar permisos que tú no tienes.'], 403));
+        }
     }
 
     /**
@@ -123,9 +157,51 @@ class RolesController extends CrudController
             abort(422, 'No hay una empresa seleccionada para actualizar el rol.');
         }
 
-        $validatedData['company_id'] = $company->id;
+        // Nunca reasignar la empresa de un rol de sistema/global (company_id
+        // null, como "Super Admin"): hacerlo lo secuestraba hacia la empresa
+        // actual. Se conserva su empresa original.
+        if (!$model->is_system && $model->company_id !== null) {
+            $validatedData['company_id'] = $company->id;
+        }
+
+        // is_system no se cambia desde la API.
+        unset($validatedData['is_system']);
 
         return $validatedData;
+    }
+
+    /**
+     * Aislamiento: salvo el administrador del sistema, solo se pueden
+     * ver/editar/eliminar roles de la empresa actual. Los roles de sistema
+     * (company_id null) quedan fuera para que nadie los edite por su id.
+     */
+    protected function findModel($id): ?Model
+    {
+        return $this->accessibleRoleQuery()->find($id);
+    }
+
+    protected function findModelForShow($id): ?Model
+    {
+        $query = $this->accessibleRoleQuery();
+
+        $relations = $this->getShowRelations();
+        if (!empty($relations)) {
+            $query->with($relations);
+        }
+
+        return $query->find($id);
+    }
+
+    private function accessibleRoleQuery()
+    {
+        $query = Role::query();
+
+        if (!CurrentWorker::isSystemAdmin()) {
+            $query->where('company_id', CurrentCompany::id())
+                ->where('is_system', false);
+        }
+
+        return $query;
     }
 
     /**
@@ -150,7 +226,35 @@ class RolesController extends CrudController
         if ($request->has('permissions')) {
             $permissions = array_keys(array_filter($request->input('permissions')));
             $model->permissions()->sync($permissions);
+
+            $this->logPermissionChanges($model);
         }
+    }
+
+    private function logPermissionChanges(Model $model): void
+    {
+        if ($this->permissionsBefore === null) {
+            return;
+        }
+
+        $after = $model->permissions()->pluck('permissions.name')->all();
+        $added = array_values(array_diff($after, $this->permissionsBefore));
+        $removed = array_values(array_diff($this->permissionsBefore, $after));
+        if (!$added && !$removed) {
+            return;
+        }
+
+        $parts = array_filter([
+            $added ? count($added) . ' agregado' . (count($added) > 1 ? 's' : '') : null,
+            $removed ? count($removed) . ' quitado' . (count($removed) > 1 ? 's' : '') : null,
+        ]);
+
+        ActivityLogger::log(
+            'administracion', 'permissions',
+            "Cambió los permisos del rol «{$model->name}»: " . implode(', ', $parts),
+            $model, $model->name,
+            ['agregados' => $added, 'quitados' => $removed],
+        );
     }
 
     /**
@@ -158,19 +262,24 @@ class RolesController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        if ($model->is_system) {
+            return ['can_delete' => false, 'message' => 'El rol del sistema no se puede eliminar.'];
+        }
 
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        // Al borrar el rol, sus usuarios se quedaban sin permisos en la
+        // sucursal sin ningún aviso (la FK lo pone en null).
+        $users = DB::table('user_location_roles')->where('role_id', $model->id)->distinct()->count('user_id')
+            + DB::table('users_roles')->where('role_id', $model->id)->count();
+        if ($users > 0) {
+            return [
+                'can_delete' => false,
+                'message' => $users === 1
+                    ? 'No se puede eliminar: 1 usuario tiene este rol. Asígnale otro rol primero.'
+                    : "No se puede eliminar: {$users} usuarios tienen este rol. Asígnales otro rol primero.",
+            ];
+        }
+
+        return ['can_delete' => true, 'message' => ''];
     }
 
     public function getPermissionsByResource()

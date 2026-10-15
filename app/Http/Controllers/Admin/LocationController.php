@@ -151,15 +151,51 @@ class LocationController extends CrudController
     }
 
     /**
+     * La empresa de la sucursal tiene que ser una del actor (o ser
+     * administrador del sistema). Sin esto, un administrador de la empresa A
+     * podía crear/mover sucursales hacia la empresa B.
+     */
+    private function companyIsAccessible(Request $request): bool
+    {
+        $companyId = $request->input('company_id');
+        if ($companyId === null) {
+            return true; // validate() se encarga de exigirlo
+        }
+
+        return CurrentWorker::canAccessCompany((int) $companyId, Auth::user());
+    }
+
+    public function store(Request $request)
+    {
+        if (!$this->canStore()) {
+            return $this->forbiddenResponse('crear este recurso');
+        }
+        if (!$this->companyIsAccessible($request)) {
+            return $this->forbiddenResponse('crear sucursales en esa empresa');
+        }
+
+        return parent::store($request);
+    }
+
+    public function update(Request $request, $id)
+    {
+        if (!$this->canEdit()) {
+            return $this->forbiddenResponse('editar este recurso');
+        }
+        if (!$this->companyIsAccessible($request)) {
+            return $this->forbiddenResponse('mover la sucursal a esa empresa');
+        }
+
+        return parent::update($request, $id);
+    }
+
+    /**
      * Procesar datos antes de actualizar (opcional)
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
-        // Validar que no se cambie de compañía si hay restricciones
-        // Por ejemplo, si tiene transacciones asociadas
-        if (isset($validatedData['company_id']) && $model->company_id !== $validatedData['company_id']) {
-            // Aquí podrías agregar validaciones adicionales si es necesario
-        }
+        // La validación de empresa accesible se hace en update() antes de llegar
+        // aquí (companyIsAccessible), para devolver 403 y no un 500.
 
         return $validatedData;
     }
@@ -191,8 +227,28 @@ class LocationController extends CrudController
      */
     protected function afterStore(Model $model, Request $request): void
     {
-        // Lógica adicional después de crear
-        // Ejemplo: crear relaciones, enviar notificaciones, etc.
+        // Dar de alta en la sucursal nueva los productos que ya existen en la
+        // empresa. El listado, compras y ventas filtran por product_location:
+        // sin esta fila la sucursal nace sin catálogo.
+        $now = now();
+        $rows = DB::table('products')
+            ->where('company_id', $model->company_id)
+            ->pluck('id')
+            ->map(fn($productId) => [
+                'product_id'    => $productId,
+                'location_id'   => $model->id,
+                'active'        => true,
+                'current_stock' => 0,
+                'minimum_stock' => 0,
+                'maximum_stock' => 0,
+                'created_at'    => $now,
+                'updated_at'    => $now,
+            ])
+            ->all();
+
+        foreach (array_chunk($rows, 500) as $chunk) {
+            DB::table('product_location')->insert($chunk);
+        }
     }
 
     /**
@@ -209,18 +265,25 @@ class LocationController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        // Las ventas, compras, movimientos de caja, cortes, kárdex y gastos de
+        // la sucursal se borran en cascada con ella: un clic borraba todo su
+        // historial. Con actividad solo se puede desactivar.
+        $id = $model->id;
+        $inUse = DB::table('sales')->where('location_id', $id)->exists()
+            || DB::table('purchases')->where('location_id', $id)->exists()
+            || DB::table('stock_ledger_entries')->where('location_id', $id)->exists()
+            || DB::table('cash_movements')->where('location_id', $id)->exists()
+            || DB::table('inventory_transfers')->where('from_location_id', $id)->orWhere('to_location_id', $id)->exists()
+            || DB::table('product_location')->where('location_id', $id)->where('current_stock', '!=', 0)->exists()
+            || DB::table('cash_registers')->where('location_id', $id)->exists();
 
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        if ($inUse) {
+            return [
+                'can_delete' => false,
+                'message' => 'Esta sucursal ya tiene movimientos (ventas, compras, stock o cajas) y borrarla eliminaría su historial. Desactívala en su lugar.',
+            ];
+        }
+
+        return ['can_delete' => true, 'message' => ''];
     }
 }

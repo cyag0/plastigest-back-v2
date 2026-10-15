@@ -23,6 +23,16 @@ class CustomerController extends CrudController
     protected ?string $permissionPrefix = 'customers';
 
     /**
+     * El punto de venta necesita elegir al cliente de la venta: quien puede
+     * cobrar en caja (sales_pos) también puede consultar la lista, aunque no
+     * administre el catálogo de clientes.
+     */
+    protected function canIndex(): bool
+    {
+        return parent::canIndex() || \App\Support\CurrentWorker::hasPermission('sales_pos');
+    }
+
+    /**
      * Relaciones que se cargarán en el index
      */
     protected function indexRelations(): array
@@ -167,18 +177,18 @@ class CustomerController extends CrudController
      */
     protected function canDelete(Model $model): array
     {
-        // Validaciones para eliminar
-        // Ejemplo:
-        // if ($model->orders()->exists()) {
-        //     return [
-        //         'can_delete' => false,
-        //         'message' => 'No se puede eliminar porque tiene órdenes asociadas'
-        //     ];
-        // }
+        // Ventas y pedidos guardan el cliente con "set null": borrarlo dejaba
+        // su historial (y lo que debe) sin cliente.
+        $id = $model->id;
+        if (DB::table('sales')->where('customer_id', $id)->exists()
+            || DB::table('sales_orders')->where('customer_id', $id)->exists()
+            || DB::table('customer_notes')->where('customer_id', $id)->exists()) {
+            return [
+                'can_delete' => false,
+                'message' => 'Este cliente tiene ventas, pedidos o notas registradas. Desactívalo en su lugar.',
+            ];
+        }
 
-        return [
-            'can_delete' => true,
-            'message' => ''
-        ];
+        return ['can_delete' => true, 'message' => ''];
     }
 }

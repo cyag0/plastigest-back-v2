@@ -7,6 +7,7 @@ use App\Models\Reminder;
 use App\Services\FirebaseService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
@@ -17,6 +18,7 @@ class ReminderController extends CrudController
     protected string $resource = ReminderResource::class;
     protected string $model = Reminder::class;
     protected ?string $permissionPrefix = 'reminders';
+    protected ?string $locationColumn = 'location_id';
 
     protected function indexRelations(): array
     {
@@ -228,8 +230,13 @@ class ReminderController extends CrudController
      */
     public function markAsCompleted($id)
     {
+        if (!CurrentWorker::hasPermission('reminders_update')) {
+            return $this->forbiddenResponse('completar recordatorios');
+        }
+
         try {
-            $reminder = Reminder::findOrFail($id);
+            // Aislado por empresa: no se completa un recordatorio de otra empresa.
+            $reminder = Reminder::where('company_id', CurrentCompany::id())->findOrFail($id);
             $reminder->markAsCompleted();
 
             return response()->json([
@@ -237,11 +244,10 @@ class ReminderController extends CrudController
                 'message' => 'Recordatorio marcado como completado',
                 'data' => new ReminderResource($reminder->fresh($this->getShowRelations())),
             ]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json(['success' => false, 'message' => 'Recordatorio no encontrado'], 404);
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al completar recordatorio: ' . $e->getMessage()
-            ], 500);
+            return $this->errorResponse($e, 'Error al completar recordatorio');
         }
     }
 
@@ -272,6 +278,10 @@ class ReminderController extends CrudController
      */
     public function statistics(Request $request)
     {
+        if (!CurrentWorker::hasPermission('reminders_list')) {
+            return $this->forbiddenResponse('ver estadísticas de recordatorios');
+        }
+
         try {
             $company = CurrentCompany::get();
             $location = CurrentLocation::get();
@@ -311,7 +321,7 @@ class ReminderController extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener estadísticas: ' . $e->getMessage()
+                'message' => 'Error al obtener estadísticas.', 'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -321,6 +331,10 @@ class ReminderController extends CrudController
      */
     public function getUsers()
     {
+        if (!CurrentWorker::hasPermission('reminders_read')) {
+            return $this->forbiddenResponse('ver usuarios de recordatorios');
+        }
+
         try {
             $company = CurrentCompany::get();
             if (!$company) {
@@ -342,7 +356,7 @@ class ReminderController extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener usuarios: ' . $e->getMessage()
+                'message' => 'Error al obtener usuarios.', 'error' => $this->errorDetail($e)
             ], 500);
         }
     }

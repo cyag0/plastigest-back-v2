@@ -24,6 +24,7 @@ class CompanyController extends CrudController
      */
     protected string $model = Company::class;
     protected ?string $permissionPrefix = 'companies';
+    protected ?string $companyColumn = null;
 
     /**
      * El listado de compañías no requiere permiso.
@@ -251,6 +252,37 @@ class CompanyController extends CrudController
     }
 
     /**
+     * Aislamiento: show/update/destroy solo sobre compañías a las que el actor
+     * tiene acceso (pertenece a ellas o es administrador del sistema). El modelo
+     * es la propia empresa, así que no se aísla con la columna company_id
+     * genérica de CrudController (companyColumn = null).
+     */
+    protected function findModel($id): ?Model
+    {
+        return $this->accessibleCompany($id);
+    }
+
+    protected function findModelForShow($id): ?Model
+    {
+        return $this->accessibleCompany($id);
+    }
+
+    private function accessibleCompany($id): ?Company
+    {
+        $company = Company::find($id);
+        if (!$company) {
+            return null;
+        }
+
+        $actor = Auth::user();
+        if ($actor && !CurrentWorker::canAccessCompany((int) $company->id, $actor)) {
+            return null; // 404: no es su empresa
+        }
+
+        return $company;
+    }
+
+    /**
      * Validar si se puede eliminar (opcional)
      */
     protected function canDelete(Model $model): array
@@ -263,19 +295,13 @@ class CompanyController extends CrudController
             ];
         }
 
-        // Verificar si la compañía tiene ubicaciones asociadas
-        if ($model->locations()->exists()) {
+        // Verificar si la compañía tiene ubicaciones asociadas.
+        // Se consulta por tabla para no depender de relaciones inexistentes en
+        // el modelo (Company::locations() no existe y rompía el borrado con 500).
+        if (DB::table('locations')->where('company_id', $model->id)->exists()) {
             return [
                 'can_delete' => false,
                 'message' => 'No se puede eliminar la compañía porque tiene ubicaciones asociadas'
-            ];
-        }
-
-        // Verificar si la compañía tiene órdenes de compra/venta
-        if ($model->purchaseOrders()->exists() || $model->salesOrders()->exists()) {
-            return [
-                'can_delete' => false,
-                'message' => 'No se puede eliminar la compañía porque tiene órdenes asociadas'
             ];
         }
 

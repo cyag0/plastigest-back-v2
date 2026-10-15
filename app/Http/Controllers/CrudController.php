@@ -4,6 +4,9 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
+use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 
 abstract class CrudController extends Controller
@@ -42,10 +45,113 @@ abstract class CrudController extends Controller
     protected ?string $permissionPrefix = null;
 
     /**
+     * Columna de empresa del recurso. Se usa para aislar los datos por empresa
+     * (tenant) en index/show/update/destroy. Si el modelo no tiene esta columna
+     * (p. ej. permisos, usuarios, la propia compañía) se pone en null y la
+     * clase hija resuelve el aislamiento por su cuenta.
+     */
+    protected ?string $companyColumn = 'company_id';
+
+    /**
+     * Columna de sucursal del recurso. Cuando está definida, los usuarios que
+     * NO pueden ver todas las sucursales (no son administradores) solo ven los
+     * registros de su sucursal actual. Los administradores (locations_list) ven
+     * todas las sucursales de la empresa. null = el recurso no se filtra por
+     * sucursal (catálogos de empresa como productos, clientes, etc.).
+     */
+    protected ?string $locationColumn = null;
+
+    /**
+     * Cache de existencia de columnas por tabla, para no consultar el esquema
+     * en cada petición.
+     *
+     * @var array<string,bool>
+     */
+    private static array $columnCache = [];
+
+    /**
      * Relaciones que se cargarán en el index
      * Debe ser implementado por las clases hijas
      */
     abstract protected function indexRelations(): array;
+
+    // ─── Aislamiento por empresa/sucursal (tenant) ────────────────────────────
+
+    /**
+     * ¿La tabla del modelo tiene la columna indicada? (cacheado)
+     */
+    protected function modelHasColumn(string $column): bool
+    {
+        $table = (new $this->model)->getTable();
+        $key = $table . '.' . $column;
+
+        return self::$columnCache[$key] ??= Schema::hasColumn($table, $column);
+    }
+
+    /**
+     * Empresa del registro nuevo. Si la petición no la trae, se usa la del
+     * contexto (antes formularios como Categorías fallaban con "company_id es
+     * obligatorio"). Si trae otra, el usuario tiene que pertenecer a ella:
+     * antes se podía crear un registro en cualquier empresa mandando su id.
+     */
+    protected function resolveStoreCompany(Request $request): ?\Illuminate\Http\JsonResponse
+    {
+        $column = $this->companyColumn;
+        if (!$column || !$this->modelHasColumn($column) || !($current = CurrentCompany::id())) {
+            return null;
+        }
+
+        $requested = $request->input($column);
+        if ($requested === null || $requested === '') {
+            $request->merge([$column => $current]);
+
+            return null;
+        }
+
+        if (is_numeric($requested) && (int) $requested !== (int) $current
+            && !CurrentWorker::canAccessCompany((int) $requested)) {
+            return $this->forbiddenResponse('crear registros en otra empresa');
+        }
+
+        return null;
+    }
+
+    /**
+     * Aplica el aislamiento por empresa y sucursal a una query del modelo.
+     * Es el mecanismo central: index(), findModel() y findModelForShow() lo
+     * usan, así que show/update/destroy de un id de otra empresa responden 404.
+     */
+    protected function applyTenantScope($query)
+    {
+        if ($this->companyColumn && ($companyId = CurrentCompany::id()) && $this->modelHasColumn($this->companyColumn)) {
+            // Los registros sin empresa son catálogos globales compartidos
+            // (unidades, tipos de inventario): visibles para todas las empresas.
+            // Los registros con empresa solo los ve esa empresa.
+            $query->where(function ($q) use ($companyId) {
+                $q->where($this->companyColumn, $companyId)
+                    ->orWhereNull($this->companyColumn);
+            });
+        }
+
+        if (
+            $this->locationColumn
+            && $this->modelHasColumn($this->locationColumn)
+            && !CurrentWorker::canAccessAllLocations()
+            && ($locationId = CurrentLocation::id())
+        ) {
+            $query->where($this->locationColumn, $locationId);
+        }
+
+        return $query;
+    }
+
+    /**
+     * Query base del modelo ya aislada por empresa/sucursal.
+     */
+    protected function scopedQuery()
+    {
+        return $this->applyTenantScope($this->model::query());
+    }
 
     /**
      * Manejo de filtros personalizados
@@ -138,8 +244,8 @@ abstract class CrudController extends Controller
         // Obtener parámetros de la request
         $params = $request->all();
 
-        // Crear query base del modelo
-        $query = $this->model::query();
+        // Crear query base del modelo, ya aislada por empresa/sucursal.
+        $query = $this->scopedQuery();
 
         // Cargar relaciones definidas
         $relations = $this->indexRelations();
@@ -168,27 +274,35 @@ abstract class CrudController extends Controller
      */
     protected function applyBasicFilters($query, array $params)
     {
-        // Filtro por búsqueda general
+        // Filtro por búsqueda general. Solo busca en las columnas que existen en
+        // la tabla: muchas (permisos, roles, notificaciones, ventas…) no tienen
+        // code/description y la búsqueda genérica respondía 500 ("Unknown column").
         if (isset($params['search']) && !empty($params['search'])) {
             $search = $params['search'];
-            // Buscar en campos comunes (name, code, description)
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('code', 'like', "%{$search}%")
-                    ->orWhere('description', 'like', "%{$search}%");
-            });
+            $columns = array_values(array_filter(
+                ['name', 'code', 'description'],
+                fn($column) => $this->modelHasColumn($column)
+            ));
+
+            if (!empty($columns)) {
+                $query->where(function ($q) use ($search, $columns) {
+                    foreach ($columns as $i => $column) {
+                        $i === 0
+                            ? $q->where($column, 'like', "%{$search}%")
+                            : $q->orWhere($column, 'like', "%{$search}%");
+                    }
+                });
+            }
         }
 
         // Filtro por estado activo/inactivo
         // Acepta booleanos reales, "true"/"false" como string, 1/0, etc.
-        if (isset($params['is_active'])) {
+        if (isset($params['is_active']) && $this->modelHasColumn('is_active')) {
             $query->where('is_active', filter_var($params['is_active'], FILTER_VALIDATE_BOOLEAN));
         }
 
-        // Filtro por company_id si existe
-        if (isset($params['company_id'])) {
-            $query->where('company_id', $params['company_id']);
-        }
+        // El filtro por empresa ya no se toma del cliente: lo aplica
+        // applyTenantScope() con la empresa del contexto (X-Company-ID validado).
 
         // Filtro por fecha principal del recurso.
         // Acepta date_from/date_to (estándar) o start_date/end_date (alias para compatibilidad).
@@ -265,10 +379,7 @@ abstract class CrudController extends Controller
             // Retornar el recurso
             return new $this->resource($model, ['editing' => true]);
         } catch (\Exception $e) {
-            return response()->json([
-                'message' => 'Error al obtener el recurso',
-                'error' => $e->getMessage()
-            ], 500);
+            return $this->errorResponse($e, 'Error al obtener el recurso');
         }
     }
 
@@ -277,7 +388,8 @@ abstract class CrudController extends Controller
      */
     protected function findModelForShow($id): ?Model
     {
-        $query = $this->model::query();
+        // Aislada por empresa/sucursal: un id de otra empresa responde 404.
+        $query = $this->scopedQuery();
 
         // Cargar relaciones si están definidas
         $relations = $this->getShowRelations();
@@ -304,6 +416,10 @@ abstract class CrudController extends Controller
     {
         if (!$this->canStore()) {
             return $this->forbiddenResponse('crear este recurso');
+        }
+
+        if ($denied = $this->resolveStoreCompany($request)) {
+            return $denied;
         }
 
         try {
@@ -340,10 +456,7 @@ abstract class CrudController extends Controller
                 'errors' => $e->errors()
             ], 422);
         } catch (\Exception $e) {
-            return response()->json([
-                'message' => 'Error al crear el recurso',
-                'error' => $e->getMessage()
-            ], 500);
+            return $this->errorResponse($e, 'Error al crear el recurso');
         }
     }
 
@@ -445,10 +558,7 @@ abstract class CrudController extends Controller
                 'errors' => $e->errors()
             ], 422);
         } catch (\Exception $e) {
-            return response()->json([
-                'message' => 'Error al actualizar el recurso',
-                'error' => $e->getMessage()
-            ], 500);
+            return $this->errorResponse($e, 'Error al actualizar el recurso');
         }
     }
 
@@ -457,7 +567,9 @@ abstract class CrudController extends Controller
      */
     protected function findModel($id): ?Model
     {
-        return $this->model::find($id);
+        // Aislada por empresa/sucursal: update/destroy de un id de otra empresa
+        // responde 404.
+        return $this->scopedQuery()->find($id);
     }
 
     /**
@@ -532,11 +644,19 @@ abstract class CrudController extends Controller
             return response()->json([
                 'message' => 'Recurso eliminado exitosamente'
             ], 200);
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Una llave foránea lo impide: el registro está en uso (productos
+            // con esa categoría, compras de ese proveedor, stock en la
+            // sucursal…). Antes salía un 500 genérico sin explicación.
+            if (($e->errorInfo[1] ?? null) === 1451 || $e->getCode() === '23000') {
+                return response()->json([
+                    'message' => 'No se puede eliminar porque está en uso. Puedes desactivarlo en su lugar.',
+                ], 422);
+            }
+
+            return $this->errorResponse($e, 'Error al eliminar el recurso');
         } catch (\Exception $e) {
-            return response()->json([
-                'message' => 'Error al eliminar el recurso',
-                'error' => $e->getMessage()
-            ], 500);
+            return $this->errorResponse($e, 'Error al eliminar el recurso');
         }
     }
 

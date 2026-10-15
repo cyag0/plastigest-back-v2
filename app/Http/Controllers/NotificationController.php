@@ -115,6 +115,28 @@ class NotificationController extends CrudController
     }
 
     /**
+     * Las notificaciones son por usuario: show/update/destroy solo sobre las
+     * propias (además del aislamiento por empresa de CrudController). Antes se
+     * podía leer la notificación de otro usuario por su id.
+     */
+    protected function findModel($id): ?Model
+    {
+        return $this->scopedQuery()->where('user_id', Auth::id())->find($id);
+    }
+
+    protected function findModelForShow($id): ?Model
+    {
+        $query = $this->scopedQuery()->where('user_id', Auth::id());
+
+        $relations = $this->getShowRelations();
+        if (!empty($relations)) {
+            $query->with($relations);
+        }
+
+        return $query->find($id);
+    }
+
+    /**
      * Marcar una notificación como leída
      */
     public function markAsRead(Request $request, int $id)
@@ -135,7 +157,7 @@ class NotificationController extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.',
             ], 400);
         }
     }
@@ -161,7 +183,7 @@ class NotificationController extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.',
             ], 400);
         }
     }
@@ -189,7 +211,7 @@ class NotificationController extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.',
             ], 400);
         }
     }
@@ -225,7 +247,7 @@ class NotificationController extends CrudController
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.',
             ], 500);
         }
     }

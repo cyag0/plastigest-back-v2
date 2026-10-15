@@ -56,9 +56,13 @@ use App\Http\Controllers\ReminderController;
 Route::prefix('auth')->group(function () {
     // Ruta para servir archivos públicos con CORS
     Route::get('files/{path}', function ($path) {
-        $fullPath = storage_path('app/public/' . $path);
+        // Sólo archivos dentro de storage/app/public. realpath resuelve "../"
+        // (también llegan codificados como %2F), así que cualquier ruta que se
+        // salga de esa carpeta —por ejemplo hacia el .env— responde 404.
+        $root = realpath(storage_path('app/public'));
+        $fullPath = $root ? realpath($root . DIRECTORY_SEPARATOR . $path) : false;
 
-        if (!file_exists($fullPath)) {
+        if (!$fullPath || !str_starts_with($fullPath, $root . DIRECTORY_SEPARATOR) || !is_file($fullPath)) {
             abort(404);
         }
 
@@ -68,8 +72,9 @@ Route::prefix('auth')->group(function () {
     // Laravel inyecta automaticamente los headers X-RateLimit-Limit / -Remaining
     // en TODAS las respuestas (exitosas o no) y devuelve 429 con Retry-After
     // cuando se excede. Ver bootstrap/app.php para personalizar la respuesta 429.
-    Route::post('register', [AuthController::class, 'register'])
-        ->middleware('throttle:3,1');
+    // El registro público está deshabilitado: las cuentas las crea un
+    // administrador desde /auth/admin/users. Dejar /auth/register abierto
+    // permitía que cualquiera creara un usuario con token válido.
     Route::post('login', [AuthController::class, 'login'])
         ->middleware('throttle:5,1');
 
@@ -124,15 +129,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('change-password', [AuthController::class, 'changePassword']);
 
         Route::prefix('admin')->group(function () {
-
-            Route::post("test", function (Request $request) {
-                $data = $request->all();
-
-                return response()->json([
-                    'message' => json_encode($data),
-                    'user' => $request->user(),
-                ]);
-            });
 
             // Controlador de permisos
             Route::get('permissions/by-resource', [PermissionsController::class, 'getPermissionsByResource']);
@@ -355,10 +351,5 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('reset', [SettingsController::class, 'reset']);
             });
         });
-    });
-
-    // Ruta para obtener el usuario autenticado
-    Route::get('/user', function (Request $request) {
-        return $request->user();
     });
 });

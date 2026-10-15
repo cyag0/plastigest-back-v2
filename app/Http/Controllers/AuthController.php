@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\Activity\ActivityLogger;
 use App\Models\Admin\Role;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use Error;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -55,7 +57,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error interno del servidor',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -78,7 +80,19 @@ class AuthController extends Controller
             }
 
             $user = User::where('email', $credentials['email'])->firstOrFail();
+
+            // Una cuenta desactivada no puede iniciar sesión aunque la
+            // contraseña sea correcta. No se emite token ni sesión.
+            if (!$user->is_active) {
+                return response()->json([
+                    'message' => 'Tu cuenta está desactivada. Contacta a un administrador.',
+                    'code' => 'account_inactive',
+                ], 403);
+            }
+
             $token = $user->createToken('auth_token')->plainTextToken;
+
+            ActivityLogger::log('sesion', 'login', 'Inició sesión', $user, $user->name);
 
             return response()->json([
                 'message' => 'Inicio de sesión exitoso',
@@ -98,7 +112,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error interno del servidor',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -118,7 +132,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al cerrar sesión',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -129,8 +143,11 @@ class AuthController extends Controller
     public function logoutAll(Request $request): JsonResponse
     {
         try {
-            // Revocar todos los tokens del usuario
+            // Revocar todos los tokens del usuario y dejar de mandar push a
+            // sus dispositivos (si no, seguían recibiendo avisos sin sesión).
             $request->user()->tokens()->delete();
+            \App\Models\DeviceToken::where('user_id', $request->user()->id)
+                ->update(['is_active' => false]);
 
             return response()->json([
                 'message' => 'Todas las sesiones han sido cerradas'
@@ -138,7 +155,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al cerrar las sesiones',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -198,7 +215,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al obtener información del usuario',
-                'error'   => $e->getMessage()
+                'error'   => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -231,8 +248,12 @@ class AuthController extends Controller
                 'password' => Hash::make($validated['new_password'])
             ]);
 
-            // Opcional: revocar todos los tokens existentes para forzar re-login
+            // Revocar todos los tokens existentes para forzar re-login, y
+            // apagar los push de sus dispositivos: la app ya no puede darlos de
+            // baja porque su token quedó revocado.
             $user->tokens()->delete();
+            \App\Models\DeviceToken::where('user_id', $user->id)
+                ->update(['is_active' => false]);
 
             return response()->json([
                 'message' => 'Contraseña cambiada exitosamente'
@@ -245,7 +266,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al cambiar la contraseña',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -268,18 +289,10 @@ class AuthController extends Controller
                 ], 200);
             }
 
-            $entry = DB::table('user_location_roles')
-                ->where('user_id', $user->id)
-                ->where('location_id', $locationId)
-                ->first();
-
-            $role = ($entry && $entry->role_id)
-                ? Role::with('permissions')->find($entry->role_id)
-                : null;
-
-            $permissions = $role
-                ? $role->permissions->pluck('name')->values()->toArray()
-                : [];
+            // Misma resolución que usa el backend al autorizar: un administrador
+            // sin rol en esta sucursal hereda los de sus otras sucursales.
+            $role = CurrentWorker::role();
+            $permissions = CurrentWorker::permissions();
 
             return response()->json([
                 'permissions' => $permissions,
@@ -290,7 +303,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error al obtener permisos',
-                'error'   => $e->getMessage(),
+                'error'   => $this->errorDetail($e),
             ], 500);
         }
     }

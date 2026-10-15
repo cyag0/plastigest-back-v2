@@ -8,6 +8,7 @@ use App\Models\Admin\Location;
 use App\Models\Unit;
 use App\Models\InventoryCount;
 use App\Models\Product;
+use App\Models\ProductPackage;
 use App\Models\SalesReport;
 use App\Models\User;
 use App\Support\CurrentCompany;
@@ -84,7 +85,7 @@ class PdfTenantScopingTest extends TestCase
 
     // ─── InventoryCount ─────────────────────────────────────────────────────
 
-    public function test_inventory_count_pdf_url_is_404_for_other_tenant(): void
+    public function test_inventory_count_pdf_url_is_403_for_other_tenant(): void
     {
         $inventoryCount = $this->makeInventoryCount($this->companyA, $this->locationA);
 
@@ -93,7 +94,8 @@ class PdfTenantScopingTest extends TestCase
             'X-Location-ID' => $this->locationB->id,
         ])->getJson("/api/auth/admin/inventory-counts/{$inventoryCount->id}/pdf-url");
 
-        $response->assertStatus(404);
+        // El header de otra empresa se rechaza en la puerta (company_forbidden).
+        $response->assertStatus(403);
     }
 
     public function test_inventory_count_pdf_url_is_200_for_own_tenant(): void
@@ -126,7 +128,7 @@ class PdfTenantScopingTest extends TestCase
 
     // ─── SalesReport ────────────────────────────────────────────────────────
 
-    public function test_sales_report_pdf_url_is_404_for_other_tenant(): void
+    public function test_sales_report_pdf_url_is_403_for_other_tenant(): void
     {
         $salesReport = $this->makeSalesReport($this->companyA, $this->locationA);
 
@@ -135,7 +137,7 @@ class PdfTenantScopingTest extends TestCase
             'X-Location-ID' => $this->locationB->id,
         ])->getJson("/api/auth/admin/sales-reports/{$salesReport->id}/pdf-url");
 
-        $response->assertStatus(404);
+        $response->assertStatus(403);
     }
 
     public function test_sales_report_pdf_url_is_200_for_own_tenant(): void
@@ -167,7 +169,7 @@ class PdfTenantScopingTest extends TestCase
 
     // ─── Product (label printing) ────────────────────────────────────────────
 
-    public function test_product_label_pdf_url_is_404_for_other_tenant(): void
+    public function test_product_label_pdf_url_is_403_for_other_tenant(): void
     {
         $product = $this->makeProduct($this->companyA);
 
@@ -176,7 +178,7 @@ class PdfTenantScopingTest extends TestCase
             'X-Location-ID' => $this->locationB->id,
         ])->getJson("/api/auth/admin/products/{$product->id}/labels/pdf-url?quantity=2");
 
-        $response->assertStatus(404);
+        $response->assertStatus(403);
     }
 
     public function test_product_label_pdf_url_is_200_for_own_tenant(): void
@@ -204,6 +206,83 @@ class PdfTenantScopingTest extends TestCase
 
         $response = $this->get($signedUrl);
         $response->assertStatus(404);
+    }
+
+    public function test_product_label_render_returns_pdf_for_matching_company(): void
+    {
+        $product = $this->makeProduct($this->companyA);
+
+        $signedUrl = URL::temporarySignedRoute(
+            'products.labels.pdf',
+            now()->addHour(),
+            ['product' => $product->id, 'quantity' => 2, 'company_id' => $this->companyA->id]
+        );
+
+        $response = $this->get($signedUrl);
+        $response->assertOk();
+        $this->assertStringContainsString('application/pdf', $response->headers->get('Content-Type'));
+    }
+
+    // ─── ProductPackage (label printing) ─────────────────────────────────────
+
+    public function test_package_label_pdf_url_is_403_for_other_tenant(): void
+    {
+        $package = $this->makePackage($this->companyA);
+
+        $response = $this->withHeaders([
+            'X-Company-ID'  => $this->companyB->id,
+            'X-Location-ID' => $this->locationB->id,
+        ])->getJson("/api/auth/admin/product-packages/{$package->id}/labels/pdf-url?quantity=2");
+
+        $response->assertStatus(403);
+    }
+
+    public function test_package_label_pdf_url_is_200_for_own_tenant_and_renders_pdf(): void
+    {
+        $package = $this->makePackage($this->companyA);
+
+        $response = $this->withHeaders([
+            'X-Company-ID'  => $this->companyA->id,
+            'X-Location-ID' => $this->locationA->id,
+        ])->getJson("/api/auth/admin/product-packages/{$package->id}/labels/pdf-url?quantity=3");
+
+        $response->assertStatus(200)->assertJsonStructure(['url', 'expires_at']);
+
+        $pdf = $this->get($response->json('url'));
+        $pdf->assertOk();
+        $this->assertStringContainsString('application/pdf', $pdf->headers->get('Content-Type'));
+    }
+
+    public function test_package_label_pdf_url_validates_quantity(): void
+    {
+        $package = $this->makePackage($this->companyA);
+
+        $this->withHeaders([
+            'X-Company-ID'  => $this->companyA->id,
+            'X-Location-ID' => $this->locationA->id,
+        ])->getJson("/api/auth/admin/product-packages/{$package->id}/labels/pdf-url?quantity=500")
+            ->assertStatus(422);
+    }
+
+    public function test_package_label_render_rejects_signed_url_with_wrong_company(): void
+    {
+        $package = $this->makePackage($this->companyA);
+
+        $signedUrl = URL::temporarySignedRoute(
+            'product-packages.labels.pdf',
+            now()->addHour(),
+            ['package' => $package->id, 'quantity' => 1, 'company_id' => $this->companyB->id]
+        );
+
+        $this->get($signedUrl)->assertStatus(404);
+    }
+
+    public function test_package_label_render_rejects_unsigned_url(): void
+    {
+        $package = $this->makePackage($this->companyA);
+
+        $this->get("/api/product-packages/{$package->id}/labels/pdf?quantity=1&company_id={$this->companyA->id}")
+            ->assertStatus(403);
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────
@@ -235,6 +314,21 @@ class PdfTenantScopingTest extends TestCase
             'total_expenses'     => 0,
             'net_income'         => 0,
             'transactions_count' => 0,
+        ]);
+    }
+
+    private function makePackage(Company $company): ProductPackage
+    {
+        $product = $this->makeProduct($company);
+
+        return ProductPackage::create([
+            'product_id'           => $product->id,
+            'company_id'           => $company->id,
+            'package_name'         => 'Caja',
+            'barcode'              => 'PKG-' . $product->id . '-' . random_int(1000, 9999),
+            'quantity_per_package' => 12,
+            'sale_price'           => 216.00,
+            'is_active'            => true,
         ]);
     }
 

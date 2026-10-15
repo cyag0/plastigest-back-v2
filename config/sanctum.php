@@ -47,7 +47,10 @@ return [
     |
     */
 
-    'expiration' => null,
+    // Minutos hasta que un token caduca. Por defecto 30 días. Antes era null
+    // (los tokens no caducaban nunca), así que un token filtrado valía para
+    // siempre. Configurable con SANCTUM_TOKEN_EXPIRATION.
+    'expiration' => (int) env('SANCTUM_TOKEN_EXPIRATION', 43200),
 
     /*
     |--------------------------------------------------------------------------

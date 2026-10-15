@@ -47,6 +47,9 @@ class PasswordResetController extends Controller
                 ->first();
 
             if (!$user) {
+                // Se hace el mismo trabajo de hashing que en el camino exitoso
+                // para no revelar por tiempo de respuesta si el correo existe.
+                Hash::make(str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT));
                 return $genericResponse;
             }
 
@@ -75,7 +78,7 @@ class PasswordResetController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error interno del servidor',
-                'error'   => $e->getMessage(),
+                'error'   => $this->errorDetail($e),
             ], 500);
         }
     }
@@ -109,7 +112,7 @@ class PasswordResetController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error interno del servidor',
-                'error'   => $e->getMessage(),
+                'error'   => $this->errorDetail($e),
             ], 500);
         }
     }
@@ -153,7 +156,7 @@ class PasswordResetController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Error interno del servidor',
-                'error'   => $e->getMessage(),
+                'error'   => $this->errorDetail($e),
             ], 500);
         }
     }

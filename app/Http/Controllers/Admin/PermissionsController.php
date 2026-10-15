@@ -21,6 +21,7 @@ class PermissionsController extends CrudController
      */
     protected string $model = Permission::class;
     protected ?string $permissionPrefix = 'permissions';
+    protected ?string $companyColumn = null;
 
     /**
      * Relaciones que se cargarán en el index

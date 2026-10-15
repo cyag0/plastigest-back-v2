@@ -101,6 +101,11 @@ class CurrentWorker
      * tiene locations_list es administrador. Se busca en todos sus roles —los
      * directos y los de cualquier sucursal—, no solo en el de la sucursal
      * actual, porque esto se usa justamente para decidir si puede estar en ella.
+     *
+     * El permiso se evalúa SOLO con los roles que aplican a la empresa actual
+     * (los de la empresa + los roles de sistema sin empresa, como Super Admin).
+     * Así un administrador de la empresa A no hereda "todas las sucursales"
+     * cuando manda el contexto de la empresa B.
      */
     public static function canAccessAllLocations(?Authenticatable $user = null): bool
     {
@@ -116,9 +121,62 @@ class CurrentWorker
             ->merge($user->roles()->pluck('roles.id'))
             ->unique();
 
-        return $roleIds->isNotEmpty() && Role::whereIn('id', $roleIds)
+        if ($roleIds->isEmpty()) {
+            return false;
+        }
+
+        $companyId = CurrentCompany::id();
+
+        return Role::whereIn('id', $roleIds)
+            ->when($companyId, fn($q) => $q->where(
+                fn($w) => $w->where('company_id', $companyId)->orWhereNull('company_id')
+            ))
             ->whereHas('permissions', fn($q) => $q->where('name', 'locations_list'))
             ->exists();
+    }
+
+    /**
+     * ¿El usuario es administrador del sistema? (permiso system_admin en
+     * cualquiera de sus roles, directos o de sucursal). Independiente de la
+     * empresa/sucursal actual: lo usamos justamente para decidir si puede
+     * seleccionar una empresa a la que no pertenece ("Gestión de compañías").
+     */
+    public static function isSystemAdmin(?Authenticatable $user = null): bool
+    {
+        $user ??= Auth::user();
+        if (!$user) {
+            return false;
+        }
+
+        $roleIds = DB::table('user_location_roles')
+            ->where('user_id', $user->getAuthIdentifier())
+            ->whereNotNull('role_id')
+            ->pluck('role_id')
+            ->merge($user->roles()->pluck('roles.id'))
+            ->unique();
+
+        return $roleIds->isNotEmpty() && Role::whereIn('id', $roleIds)
+            ->whereHas('permissions', fn($q) => $q->where('name', 'system_admin'))
+            ->exists();
+    }
+
+    /**
+     * ¿El usuario puede operar en la empresa indicada? Pertenece a ella
+     * (user_company) o es administrador del sistema (puede elegir cualquiera).
+     */
+    public static function canAccessCompany(int $companyId, ?Authenticatable $user = null): bool
+    {
+        $user ??= Auth::user();
+        if (!$user) {
+            return false;
+        }
+
+        $belongs = DB::table('user_company')
+            ->where('user_id', $user->getAuthIdentifier())
+            ->where('company_id', $companyId)
+            ->exists();
+
+        return $belongs || self::isSystemAdmin($user);
     }
 
     /**

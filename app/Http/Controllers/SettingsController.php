@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\Admin\Location;
+use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Gate;
@@ -10,23 +12,38 @@ use Illuminate\Support\Facades\Gate;
 class SettingsController extends Controller
 {
     /**
+     * La sucursal debe pertenecer a la empresa del contexto y el usuario debe
+     * tener el permiso indicado. Antes esto usaba $user->workers(), un método
+     * inexistente que hacía que TODA la pantalla de configuración respondiera 500.
+     *
+     * @return Location|\Illuminate\Http\JsonResponse
+     */
+    private function authorizeLocation($locationId, string $permission)
+    {
+        $location = Location::findOrFail($locationId);
+
+        if ((int) $location->company_id !== (int) CurrentCompany::id()) {
+            return response()->json(['success' => false, 'message' => 'Sucursal no encontrada'], 404);
+        }
+
+        if (!CurrentWorker::hasPermission($permission)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No tienes permiso para realizar esta acción.',
+            ], 403);
+        }
+
+        return $location;
+    }
+
+    /**
      * Get settings for a specific location
      */
     public function show(Request $request, $locationId)
     {
-        $location = Location::findOrFail($locationId);
-
-        // Ensure user has access to this location's company
-        $user = $request->user();
-        $hasAccess = $user->workers()
-            ->where('company_id', $location->company_id)
-            ->exists();
-
-        if (!$hasAccess) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized access to this location',
-            ], 403);
+        $location = $this->authorizeLocation($locationId, 'settings_read');
+        if (!$location instanceof Location) {
+            return $location; // respuesta 403/404
         }
 
         // Parse settings if they exist
@@ -51,22 +68,9 @@ class SettingsController extends Controller
      */
     public function update(Request $request, $locationId)
     {
-        $location = Location::findOrFail($locationId);
-
-        // Ensure user has access to update this location
-        $user = $request->user();
-        $isAdmin = $user->workers()
-            ->where('company_id', $location->company_id)
-            ->whereHas('role', function ($query) {
-                $query->whereIn('name', ['Admin', 'Manager', 'Administrador', 'Gerente']);
-            })
-            ->exists();
-
-        if (!$isAdmin) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized to update settings',
-            ], 403);
+        $location = $this->authorizeLocation($locationId, 'settings_update');
+        if (!$location instanceof Location) {
+            return $location; // respuesta 403/404
         }
 
         // Get settings from request (could be in 'settings' key or directly in body)
@@ -95,22 +99,9 @@ class SettingsController extends Controller
      */
     public function updateSection(Request $request, $locationId, $section)
     {
-        $location = Location::findOrFail($locationId);
-
-        // Ensure user has access to update this location
-        $user = $request->user();
-        $isAdmin = $user->workers()
-            ->where('company_id', $location->company_id)
-            ->whereHas('role', function ($query) {
-                $query->whereIn('name', ['Admin', 'Manager', 'Administrador', 'Gerente']);
-            })
-            ->exists();
-
-        if (!$isAdmin) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized to update settings',
-            ], 403);
+        $location = $this->authorizeLocation($locationId, 'settings_update');
+        if (!$location instanceof Location) {
+            return $location; // respuesta 403/404
         }
 
         $validSections = ['notifications', 'working_hours', 'auto_tasks', 'limits', 'features'];
@@ -146,22 +137,9 @@ class SettingsController extends Controller
      */
     public function reset(Request $request, $locationId)
     {
-        $location = Location::findOrFail($locationId);
-
-        // Ensure user has access to update this location
-        $user = $request->user();
-        $isAdmin = $user->workers()
-            ->where('company_id', $location->company_id)
-            ->whereHas('role', function ($query) {
-                $query->whereIn('name', ['Admin', 'Manager', 'Administrador', 'Gerente']);
-            })
-            ->exists();
-
-        if (!$isAdmin) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized to reset settings',
-            ], 403);
+        $location = $this->authorizeLocation($locationId, 'settings_update');
+        if (!$location instanceof Location) {
+            return $location; // respuesta 403/404
         }
 
         $location->settings = $this->getDefaultSettings();

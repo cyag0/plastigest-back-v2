@@ -37,6 +37,11 @@ class WhatsAppWebhookController extends Controller
      */
     public function handle(Request $request)
     {
+        if (!$this->signatureIsValid($request)) {
+            Log::warning('WhatsApp webhook con firma inválida o ausente');
+            return response()->json(['error' => 'Invalid signature'], 403);
+        }
+
         try {
             $data = $request->all();
 
@@ -60,13 +65,40 @@ class WhatsAppWebhookController extends Controller
             return response()->json(['status' => 'ok']);
         } catch (\Exception $e) {
             Log::error('WhatsApp webhook error', [
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
                 'trace' => $e->getTraceAsString()
             ]);
 
             // Siempre retornar 200 para que Meta no reintente
             return response()->json(['status' => 'error'], 200);
         }
+    }
+
+    /**
+     * Valida la firma X-Hub-Signature-256 = 'sha256=' + HMAC-SHA256(cuerpo
+     * crudo, app_secret). Sin esto cualquiera podía forjar un webhook y mover
+     * compras de estado.
+     *
+     * - Con app_secret configurado: se exige una firma válida (siempre).
+     * - Sin app_secret: solo se permite en local/testing (comodidad de
+     *   desarrollo); en cualquier otro entorno se rechaza.
+     */
+    protected function signatureIsValid(Request $request): bool
+    {
+        $secret = config('services.whatsapp.app_secret');
+
+        if (empty($secret)) {
+            return app()->environment('local', 'testing');
+        }
+
+        $header = $request->header('X-Hub-Signature-256', '');
+        if (!is_string($header) || !str_starts_with($header, 'sha256=')) {
+            return false;
+        }
+
+        $expected = 'sha256=' . hash_hmac('sha256', $request->getContent(), $secret);
+
+        return hash_equals($expected, $header);
     }
 
     /**
@@ -214,7 +246,17 @@ class WhatsAppWebhookController extends Controller
         } catch (\Throwable $e) {
             Log::error('Error creating purchase reception task', [
                 'purchase_id' => $purchase->id,
-                'error' => $e->getMessage(),
+                'error' => $this->errorDetail($e),
+            ]);
+        }
+
+        // El proveedor avisó que ya la envió: aviso de "compra en camino".
+        try {
+            \App\Notifications\Templates\PurchaseUpdateTemplate::dispatchFor($purchase, 'in_transit');
+        } catch (\Throwable $e) {
+            Log::error('Error notifying purchase in transit', [
+                'purchase_id' => $purchase->id,
+                'error' => $this->errorDetail($e),
             ]);
         }
     }

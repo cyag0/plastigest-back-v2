@@ -4,26 +4,40 @@ namespace App\Http\Controllers;
 
 use App\Models\CustomerNote;
 use App\Http\Resources\CustomerNoteResource;
+use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
 class CustomerNoteController extends Controller
 {
+    private function forbidden(): JsonResponse
+    {
+        return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+    }
+
+    /**
+     * Query base aislada por la empresa del contexto. Antes el company_id venía
+     * del cliente, así que se podían leer/editar las notas de otra empresa.
+     */
+    private function scoped()
+    {
+        return CustomerNote::query()->where('company_id', CurrentCompany::id());
+    }
+
     /**
      * Obtener todas las notas de un cliente
      */
     public function index(Request $request): JsonResponse
     {
-        $customerId = $request->input('customer_id');
-        $companyId = $request->input('company_id');
+        if (!CurrentWorker::hasPermission('customers_read')) {
+            return $this->forbidden();
+        }
 
-        $notes = CustomerNote::query()
-            ->when($customerId, function ($query) use ($customerId) {
-                $query->where('customer_id', $customerId);
-            })
-            ->when($companyId, function ($query) use ($companyId) {
-                $query->where('company_id', $companyId);
-            })
+        $customerId = $request->input('customer_id');
+
+        $notes = $this->scoped()
+            ->when($customerId, fn($query) => $query->where('customer_id', $customerId))
             ->where('is_active', true)
             ->orderBy('created_at', 'desc')
             ->get();
@@ -38,14 +52,20 @@ class CustomerNoteController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        if (!CurrentWorker::hasPermission('customers_create')) {
+            return $this->forbidden();
+        }
+
         $validated = $request->validate([
             'customer_id' => 'required|exists:customers,id',
             'description' => 'required|string',
             'amount' => 'required|numeric|min:0',
             'status' => 'required|in:pending,paid',
             'due_date' => 'nullable|date',
-            'company_id' => 'required|exists:companies,id',
         ]);
+
+        // La empresa sale del contexto, no del cliente.
+        $validated['company_id'] = CurrentCompany::id();
 
         $note = CustomerNote::create($validated);
 
@@ -60,7 +80,11 @@ class CustomerNoteController extends Controller
      */
     public function show($id): JsonResponse
     {
-        $note = CustomerNote::findOrFail($id);
+        if (!CurrentWorker::hasPermission('customers_read')) {
+            return $this->forbidden();
+        }
+
+        $note = $this->scoped()->findOrFail($id);
 
         return response()->json([
             'data' => new CustomerNoteResource($note)
@@ -72,7 +96,11 @@ class CustomerNoteController extends Controller
      */
     public function update(Request $request, $id): JsonResponse
     {
-        $note = CustomerNote::findOrFail($id);
+        if (!CurrentWorker::hasPermission('customers_update')) {
+            return $this->forbidden();
+        }
+
+        $note = $this->scoped()->findOrFail($id);
 
         $validated = $request->validate([
             'description' => 'sometimes|required|string',
@@ -95,7 +123,11 @@ class CustomerNoteController extends Controller
      */
     public function destroy($id): JsonResponse
     {
-        $note = CustomerNote::findOrFail($id);
+        if (!CurrentWorker::hasPermission('customers_delete')) {
+            return $this->forbidden();
+        }
+
+        $note = $this->scoped()->findOrFail($id);
         $note->update(['is_active' => false]);
 
         return response()->json([
@@ -108,11 +140,14 @@ class CustomerNoteController extends Controller
      */
     public function getTotalPending(Request $request): JsonResponse
     {
-        $customerId = $request->input('customer_id');
-        $companyId = $request->input('company_id');
+        if (!CurrentWorker::hasPermission('customers_read')) {
+            return $this->forbidden();
+        }
 
-        $total = CustomerNote::where('customer_id', $customerId)
-            ->where('company_id', $companyId)
+        $customerId = $request->input('customer_id');
+
+        $total = $this->scoped()
+            ->where('customer_id', $customerId)
             ->where('status', 'pending')
             ->where('is_active', true)
             ->sum('amount');

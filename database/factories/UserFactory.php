@@ -29,6 +29,9 @@ class UserFactory extends Factory
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
+            // El modelo no carga el default de la BD, así que se fija aquí para
+            // que el usuario de prueba nazca activo (el middleware exige is_active).
+            'is_active' => true,
         ];
     }
 
