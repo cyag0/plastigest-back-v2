@@ -249,6 +249,24 @@ class LocationController extends CrudController
         foreach (array_chunk($rows, 500) as $chunk) {
             DB::table('product_location')->insert($chunk);
         }
+
+        // Los administradores del sistema de la empresa están en todas las
+        // sucursales con su rol de sistema (UserSeeder): así les llegan los
+        // avisos de cada una. Sin esto, la sucursal nueva no les avisaba nada.
+        $admins = DB::table('users_roles')
+            ->join('rol_permission', 'rol_permission.role_id', '=', 'users_roles.role_id')
+            ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
+            ->join('user_company', 'user_company.user_id', '=', 'users_roles.user_id')
+            ->where('permissions.name', 'system_admin')
+            ->where('user_company.company_id', $model->company_id)
+            ->pluck('users_roles.role_id', 'users_roles.user_id');
+
+        foreach ($admins as $userId => $roleId) {
+            DB::table('user_location_roles')->insertOrIgnore([
+                'user_id' => $userId, 'location_id' => $model->id, 'role_id' => $roleId,
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+        }
     }
 
     /**
