@@ -62,6 +62,16 @@ class StockLedgerEntryResource extends JsonResource
             'reference' => $this->reference_type ? [
                 'type' => self::REFERENCE_TYPES[$this->reference_type] ?? 'other',
                 'id' => $this->reference_id,
+                // Lo agrega ReferenceLabels::attach() cuando el listado lo pide.
+                'label' => $this->getAttribute('reference_label'),
+            ] : null,
+
+            // Sólo en el kárdex general (el de un producto ya sabe cuál es).
+            'product' => $this->relationLoaded('product') && $this->product ? [
+                'id' => $this->product->id,
+                'name' => $this->product->name,
+                'code' => $this->product->code,
+                'unit' => $this->product->unit?->abbreviation ?? $this->product->unit?->name,
             ] : null,
 
             'notes' => $this->notes,

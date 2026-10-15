@@ -6,6 +6,7 @@ use App\Enums\StockLedgerReason;
 use App\Http\Resources\StockLedgerEntryResource;
 use App\Models\Product;
 use App\Models\StockLedgerEntry;
+use App\Support\Activity\ReferenceLabels;
 use App\Support\CurrentCompany;
 use App\Support\CurrentWorker;
 use Illuminate\Http\JsonResponse;
@@ -74,6 +75,8 @@ class ProductMovementController extends Controller
         $entries = $query->orderByDesc('created_at')
             ->orderByDesc('id')
             ->paginate(min((int) $request->input('per_page', 25), 100));
+
+        ReferenceLabels::attach($entries->items());
 
         return response()->json([
             'data' => StockLedgerEntryResource::collection($entries->items()),

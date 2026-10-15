@@ -14,6 +14,8 @@ use App\Http\Controllers\ProductionOrderController;
 use App\Http\Controllers\FormulaController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ProductMovementController;
+use App\Http\Controllers\InventoryMovementController;
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\PrintController;
 use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
@@ -127,6 +129,10 @@ Route::get('print/production-orders/{order}/sheet', [PrintController::class, 'pr
 // Reportes del dueño en PDF o Excel (URL firmada; ver BusinessReportController).
 Route::get('business-reports/{report}/download', [BusinessReportController::class, 'download'])
     ->name('business-reports.download')->middleware('signed');
+
+Route::get('inventory-movements/export', [InventoryMovementController::class, 'export'])
+    ->name('inventory-movements.export')
+    ->middleware('signed');
 
 Route::get('product-packages/{package}/labels/pdf', [ProductPackageController::class, 'printLabels'])
     ->name('product-packages.labels.pdf')
@@ -298,6 +304,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Existencia puntual (la usa la tabla editable de la app)
             Route::get('inventory/stock/current', [InventoryController::class, 'getCurrentStock']);
+
+            // Kárdex general (todos los movimientos de inventario) y bitácora.
+            Route::get('inventory-movements', [InventoryMovementController::class, 'index']);
+            Route::get('inventory-movements/export-url', [InventoryMovementController::class, 'exportUrl']);
+            Route::get('activity', [ActivityLogController::class, 'index']);
             // URL firmadas de los documentos para imprimir.
             Route::get('sales/{id}/ticket-url', [PrintController::class, 'saleTicketUrl'])->whereNumber('id');
             Route::get('cash-register-sessions/{id}/ticket-url', [PrintController::class, 'shiftTicketUrl'])->whereNumber('id');
