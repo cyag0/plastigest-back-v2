@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\DeviceToken;
 use Kreait\Firebase\Factory;
+use Kreait\Firebase\Http\HttpClientOptions;
 use Kreait\Firebase\Messaging\CloudMessage;
 use Kreait\Firebase\Messaging\Notification;
 use Illuminate\Support\Facades\Log;
@@ -23,12 +24,45 @@ class FirebaseService
                 return;
             }
 
-            $factory = (new Factory)->withServiceAccount($credentialsPath);
+            $factory = (new Factory)
+                ->withServiceAccount($credentialsPath)
+                ->withHttpClientOptions(self::httpClientOptions());
             $this->messaging = $factory->createMessaging();
         } catch (\Exception $e) {
             Log::error('Error initializing Firebase: ' . $e->getMessage());
             $this->messaging = null;
         }
+    }
+
+    /**
+     * Timeouts de las llamadas a Google (token OAuth y FCM). Sin ellos, un FCM
+     * lento dejaba colgado el SendNotificationJob hasta que el worker lo
+     * mataba (--timeout=60) y el reintento volvía a avisar a todos.
+     */
+    public static function httpClientOptions(): HttpClientOptions
+    {
+        return HttpClientOptions::default()
+            ->withConnectTimeout(5)
+            ->withReadTimeout(15)
+            ->withTimeout(20);
+    }
+
+    /**
+     * Token FCM recortado para el log: con el token completo cualquiera que
+     * lea el log puede mandar push a ese dispositivo.
+     */
+    public static function maskToken(string $token): string
+    {
+        return strlen($token) <= 12 ? '…' : substr($token, 0, 8) . '…' . substr($token, -4);
+    }
+
+    /**
+     * Mensaje de una excepción sin el token completo (los errores de FCM lo
+     * incluyen).
+     */
+    private static function scrub(string $message, string $token): string
+    {
+        return $token === '' ? $message : str_replace($token, self::maskToken($token), $message);
     }
 
     /**
@@ -87,11 +121,16 @@ class FirebaseService
                 $deviceToken->update(['last_used_at' => now()]);
             } catch (\Kreait\Firebase\Exception\Messaging\NotFound $e) {
                 // Token no válido, desactivarlo
-                Log::warning("Invalid FCM token, deactivating: {$deviceToken->token}");
+                Log::warning('Invalid FCM token, deactivating: ' . self::maskToken($deviceToken->token), [
+                    'device_token_id' => $deviceToken->id,
+                ]);
                 $deviceToken->update(['is_active' => false]);
                 $failedTokens[] = $deviceToken->token;
             } catch (\Exception $e) {
-                Log::error("Error sending notification to token {$deviceToken->token}: " . $e->getMessage());
+                Log::error('Error sending notification to token ' . self::maskToken($deviceToken->token) . ': '
+                    . self::scrub($e->getMessage(), $deviceToken->token), [
+                    'device_token_id' => $deviceToken->id,
+                ]);
                 $failedTokens[] = $deviceToken->token;
             }
         }
@@ -193,11 +232,12 @@ class FirebaseService
                 ]);
             } catch (\Kreait\Firebase\Exception\Messaging\NotFound $e) {
                 // Token no válido, desactivarlo
-                Log::warning("Invalid FCM token, deactivating: {$token}");
+                Log::warning('Invalid FCM token, deactivating: ' . self::maskToken($token));
                 DeviceToken::where('token', $token)->update(['is_active' => false]);
                 $failedTokens[] = $token;
             } catch (\Exception $e) {
-                Log::error("Error sending notification to token {$token}: " . $e->getMessage());
+                Log::error('Error sending notification to token ' . self::maskToken($token) . ': '
+                    . self::scrub($e->getMessage(), $token));
                 $failedTokens[] = $token;
             }
         }
@@ -239,7 +279,7 @@ class FirebaseService
 
             return true;
         } catch (\Exception $e) {
-            Log::error("Error sending notification: " . $e->getMessage());
+            Log::error('Error sending notification: ' . self::scrub($e->getMessage(), $token));
             return false;
         }
     }

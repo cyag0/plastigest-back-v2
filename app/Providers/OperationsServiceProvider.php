@@ -3,14 +3,22 @@
 namespace App\Providers;
 
 use App\Support\SystemAlerts;
+use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Console\Events\ScheduledTaskFailed;
 use Illuminate\Http\Request;
+use Illuminate\Mail\Transport\ResendTransport;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use Resend\Client as ResendClient;
+use Resend\Transporters\HttpTransporter;
+use Resend\ValueObjects\ApiKey;
+use Resend\ValueObjects\Transporter\BaseUri;
+use Resend\ValueObjects\Transporter\Headers;
 
 /**
  * Operación en producción: lo que no es del negocio pero decide si el
@@ -55,6 +63,20 @@ class OperationsServiceProvider extends ServiceProvider
             ScheduledTaskFailed::class,
             fn(ScheduledTaskFailed $event) => $this->app->make(SystemAlerts::class)->scheduledTaskFailed($event)
         );
+
+        // Resend con timeouts: el SDK arma su cliente Guzzle sin límite y un
+        // proveedor lento dejaba colgado al worker (el correo de las
+        // notificaciones se manda dentro del SendNotificationJob) hasta que
+        // --timeout lo mataba. Mismo cliente que Resend::client(), con límite.
+        Mail::extend('resend', function (array $config) {
+            $timeout = (float) ($config['timeout'] ?? 15);
+
+            return new ResendTransport(new ResendClient(new HttpTransporter(
+                new GuzzleClient(['connect_timeout' => min(5.0, $timeout), 'timeout' => $timeout]),
+                BaseUri::from(getenv('RESEND_BASE_URL') ?: 'api.resend.com'),
+                Headers::withAuthorization(ApiKey::from((string) ($config['key'] ?? config('services.resend.key')))),
+            )));
+        });
 
         // Reportes de errores de la app (POST auth/admin/client-errors): un
         // error en un render puede repetirse en bucle; 20 por minuto por
