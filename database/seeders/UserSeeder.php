@@ -14,15 +14,20 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
-        // Crear un super admin
-        $superAdmin = User::firstOrCreate(
-            ['email' => 'admin@cocos-francisco.com'],
-            [
+        // Super Admin. La contraseña NUNCA va en el código (el repositorio es
+        // público): viene de ADMIN_PASSWORD y solo se usa al crear el usuario,
+        // así que volver a correr el seeder no la pide ni la cambia.
+        $email = env('ADMIN_EMAIL') ?: 'admin@cocos-francisco.com';
+        $superAdmin = User::where('email', $email)->first();
+
+        if (!$superAdmin) {
+            $superAdmin = User::create([
                 'name' => 'Administrador',
-                'password' => Hash::make('GCStock2026$Admin'),
+                'email' => $email,
+                'password' => Hash::make($this->adminPassword()),
                 'email_verified_at' => now(),
-            ]
-        );
+            ]);
+        }
 
         // Asociar con todas las compañías
         $companies = DB::table('companies')->get();
@@ -90,5 +95,34 @@ class UserSeeder extends Seeder
 
         $this->command->info('✅ Usuarios creados exitosamente: ' . User::count() . ' usuarios');
         $this->command->info('🔑 Super Admin con ' . $allPermissions->count() . ' permisos asignados en ' . $allLocations->count() . ' ubicaciones');
+    }
+
+    /**
+     * Contraseña del Super Admin desde ADMIN_PASSWORD. En local/testing, si no
+     * está definida, se usa "password" para no complicar el desarrollo; en
+     * cualquier otro entorno (producción, staging) se aborta con un mensaje.
+     */
+    private function adminPassword(): string
+    {
+        $password = (string) env('ADMIN_PASSWORD', '');
+
+        if (app()->environment('local', 'testing')) {
+            if ($password === '') {
+                $this->command->warn('⚠️  ADMIN_PASSWORD no está definido: se usa "password" (solo local/testing).');
+
+                return 'password';
+            }
+
+            return $password;
+        }
+
+        if (strlen($password) < 12) {
+            throw new \RuntimeException(
+                'UserSeeder: define ADMIN_PASSWORD (mínimo 12 caracteres) en las variables de entorno para crear '
+                . 'el Super Admin en "' . app()->environment() . '". Nunca la pongas en el código.'
+            );
+        }
+
+        return $password;
     }
 }

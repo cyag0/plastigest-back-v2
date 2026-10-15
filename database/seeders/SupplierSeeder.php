@@ -246,6 +246,15 @@ class SupplierSeeder extends Seeder
 
         foreach ($companies as $company) {
             foreach ($suppliersData as $supplierData) {
+                // Idempotente: correrlo otra vez no duplica proveedores.
+                $exists = DB::table('suppliers')
+                    ->where('company_id', $company->id)
+                    ->where('name', $supplierData['name'])
+                    ->exists();
+                if ($exists) {
+                    continue;
+                }
+
                 DB::table('suppliers')->insert([
                     'company_id' => $company->id,
                     'name' => $supplierData['name'],

@@ -16,10 +16,24 @@ class CompaniesSeeder extends Seeder
      */
     public function run(): void
     {
+        $hasData = Company::query()->exists() || Location::query()->exists();
+
+        // Fuera de local/testing nunca se borran datos: si ya hay empresas o
+        // sucursales, se aborta. En una BD vacía sí crea la empresa y sus
+        // sucursales reales (útil en la primera instalación).
+        if ($hasData && !app()->environment('local', 'testing')) {
+            $this->command->error(
+                'CompaniesSeeder: ya existen empresas o sucursales. En "' . app()->environment()
+                . '" este seeder no borra datos; no se hizo nada.'
+            );
+
+            return;
+        }
+
         // Desactivar restricciones de foreign keys temporalmente
         DB::statement('SET FOREIGN_KEY_CHECKS=0;');
 
-        // Limpiar datos anteriores
+        // Limpiar datos anteriores (solo llega aquí en local/testing o con la BD vacía)
         Location::query()->delete();
         Company::query()->delete();
 

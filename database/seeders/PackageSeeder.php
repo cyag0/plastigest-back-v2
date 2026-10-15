@@ -87,6 +87,13 @@ class PackageSeeder extends Seeder
                 continue;
             }
 
+            // Idempotente: el código de barras es único; si ya existe se respeta
+            // (y sus precios, que pudieron cambiarse desde la app).
+            if (ProductPackage::where('barcode', $barcode)->exists()) {
+                $skipped++;
+                continue;
+            }
+
             ProductPackage::create([
                 'product_id' => $productId,
                 'company_id' => $company->id,
