@@ -100,8 +100,7 @@
     @endif
 
     <h2 class="section">Turnos con diferencia</h2>
-    @php $withDifference = array_values(array_filter($sessions, fn($s) => abs($s['difference']) >= 0.005)); @endphp
-    @if(empty($withDifference))
+    @if(empty($listed_differences))
         <div class="empty">Todos los turnos del periodo cuadraron.</div>
     @else
         <table>
@@ -119,7 +118,7 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach($withDifference as $s)
+                @foreach($listed_differences as $s)
                     <tr class="{{ $s['difference'] < 0 ? 'row-danger' : 'row-warning' }}">
                         <td>#{{ $s['id'] }}</td>
                         <td class="nowrap">{{ F::dateTime($s['closed_at']) }}</td>
@@ -134,6 +133,10 @@
                 @endforeach
             </tbody>
         </table>
-        <div class="footnote">Los {{ count($sessions) }} turnos del periodo, incluidos los que cuadraron, están en el Excel.</div>
+        @if($with_difference_count > count($listed_differences))
+            <div class="footnote">Se muestran los {{ count($listed_differences) }} turnos con mayor diferencia de {{ number_format($with_difference_count) }}; la lista completa está en el Excel, con los {{ number_format(count($sessions)) }} turnos del periodo.</div>
+        @else
+            <div class="footnote">Los {{ count($sessions) }} turnos del periodo, incluidos los que cuadraron, están en el Excel.</div>
+        @endif
     @endif
 @endsection
