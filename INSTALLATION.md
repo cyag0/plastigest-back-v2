@@ -82,13 +82,7 @@ php artisan key:generate
 ./vendor/bin/sail artisan db:seed
 ```
 
-### 7. **Instalar Dependencias de Node (Opcional)**
-```bash
-# Solo si planeas usar Vite para assets
-./vendor/bin/sail npm install
-```
-
-### 8. **Verificar Instalación**
+### 7. **Verificar Instalación**
 ```bash
 # Verificar que la aplicación esté funcionando
 curl http://localhost/api/auth/login
@@ -140,14 +134,9 @@ curl http://localhost/api/auth/login
 ./vendor/bin/sail artisan migrate:fresh --seed
 ```
 
-### **Composer y NPM**
+### **Composer**
 ```bash
-# Composer
 ./vendor/bin/sail composer [comando]
-
-# NPM
-./vendor/bin/sail npm [comando]
-./vendor/bin/sail npm run dev
 ```
 
 ---
