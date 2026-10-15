@@ -10,6 +10,7 @@ use App\Models\InventoryType;
 use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\StockLedgerEntry;
+use App\Services\StockDefinitionGuard;
 use App\Enums\StockLedgerReason;
 use App\Constants\Files;
 use App\Support\BarcodeLabelPdf;
@@ -86,10 +87,24 @@ class ProductController extends CrudController
 
     /**
      * Override del método show para incluir unidades disponibles
+     *
+     * Responde la vista de detalle (sin el contexto `editing` del show
+     * genérico, que cambia la forma). Antes no pedía permiso ni empresa:
+     * cualquier usuario veía por id el producto de cualquier empresa, con
+     * costo, receta y existencias.
      */
     public function show($id)
     {
-        $product = Product::with($this->getShowRelations())->findOrFail($id);
+        // Ver un producto, con el mismo permiso que listarlos: la ficha la
+        // abren también el ajuste de inventario y el resumen de producción.
+        if (!CurrentWorker::hasPermission('products_read') && !CurrentWorker::hasPermission('products_list')) {
+            return $this->forbiddenResponse('ver este producto');
+        }
+
+        $product = $this->scopedQuery()->with($this->getShowRelations())->find($id);
+        if (!$product) {
+            return response()->json(['message' => 'Recurso no encontrado'], 404);
+        }
 
         return new ProductResource($product);
     }
@@ -498,6 +513,14 @@ class ProductController extends CrudController
      */
     protected function processUpdateData(array $validatedData, Request $request, Model $model): array
     {
+        // La unidad base no cambia si el producto ya tiene existencia,
+        // movimientos o documentos abiertos: la existencia y el historial
+        // están en esa unidad y no se reescalan (422 product_unit_locked).
+        if (array_key_exists('unit_id', $validatedData)
+            && (int) ($validatedData['unit_id'] ?? 0) !== (int) $model->unit_id) {
+            app(StockDefinitionGuard::class)->assertProductUnitCanChange($model);
+        }
+
         // Remover campos que no van a la base de datos (se procesan después de actualizar)
         unset($validatedData['activate_in_all_locations']);
         unset($validatedData['activate_in_current_location']);
@@ -512,8 +535,6 @@ class ProductController extends CrudController
 
         // Remover is_active ya que ahora se maneja en el pivot table
         unset($validatedData['is_active']);
-
-        Log::info('Mensaje informativo', ['data' => $request->all()]);
 
         return $validatedData;
     }

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\AdjustmentReasonCode;
 use App\Enums\ProductionOrderStatus;
 use App\Enums\StockLedgerReason;
+use App\Exceptions\BusinessRuleException;
 use App\Models\InventoryAdjustmentDetail;
 use App\Models\Operations\Formula;
 use App\Models\Operations\ProductionOrder;
@@ -16,10 +17,10 @@ use App\Models\Unit;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 /**
  * Servicio central para gestión de Órdenes de Producción.
@@ -92,7 +93,7 @@ class ProductionOrderService
             $order = $this->lockOrder($order);
 
             if ($order->status !== ProductionOrderStatus::DRAFT) {
-                throw new RuntimeException('Solo se pueden editar órdenes en borrador.');
+                throw new BusinessRuleException('Solo se pueden editar órdenes en borrador.', 'invalid_status');
             }
 
             $order->fill([
@@ -220,8 +221,16 @@ class ProductionOrderService
                     );
                 }
 
-                // Marcar mermas (inventory_adjustment_details) como canceladas: revertimos stock
-                foreach ($order->wastes()->get() as $waste) {
+                // Mermas (inventory_adjustment_details): se devuelve su salida y
+                // quedan marcadas como revertidas (content.reverted_at). Una merma
+                // ya revertida no se vuelve a revertir, y los ajustes generados
+                // por producción no se editan ni eliminan desde Ajustes (antes,
+                // eliminarla ahí después de cancelar la revertía otra vez).
+                foreach ($order->wastes()->lockForUpdate()->get() as $waste) {
+                    if (!empty($waste->content['reverted_at'])) {
+                        continue;
+                    }
+
                     // Las mermas originalmente fueron 'out' — para revertir hacemos 'in'
                     $this->movementService->increment(
                         (int) $waste->location_id,
@@ -234,6 +243,11 @@ class ProductionOrderService
 
                     $waste->update([
                         'notes' => trim(($waste->notes ?? '') . "\n[CANCELADA] Ajuste revertido por cancelación de producción"),
+                        'content' => array_merge($waste->content ?? [], [
+                            'reverted_at' => now()->toIso8601String(),
+                            'reverted_by' => Auth::id(),
+                            'reverted_reason' => 'production_order_cancelled',
+                        ]),
                     ]);
                 }
             }
@@ -440,14 +454,13 @@ class ProductionOrderService
             ->orderBy('name')
             ->get(['id', 'name', 'version']);
 
+        // Unidades globales y las de la empresa (no las de otras empresas).
         $units = Unit::query()
+            ->where(fn($q) => $q->whereNull('company_id')->when($companyId, fn($w) => $w->orWhere('company_id', $companyId)))
             ->orderBy('name')
             ->get(['id', 'name', 'unit_type', 'factor_to_base']);
 
-        $responsibles = User::query()
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get(['id', 'name', 'email']);
+        $responsibles = $this->responsibles($companyId, $locationId);
 
         $wasteReasons = array_map(
             fn($value, $label) => ['value' => $value, 'label' => $label],
@@ -463,6 +476,44 @@ class ProductionOrderService
             'units' => $units,
             'responsibles' => $responsibles,
         ];
+    }
+
+    /**
+     * Responsables que se pueden elegir en una orden de la sucursal: usuarios
+     * activos de la empresa que pueden entrar a ella (asignados, o con acceso
+     * a todas las sucursales). Sin sucursal, todos los de la empresa.
+     *
+     * Antes salían todos los usuarios activos de todas las empresas, con su
+     * correo.
+     *
+     * @return array<int, array{id: int, name: string}>
+     */
+    public function responsibles(?int $companyId, ?int $locationId): array
+    {
+        if (!$companyId) {
+            return [];
+        }
+
+        $users = User::query()
+            ->where('is_active', true)
+            ->whereIn('id', DB::table('user_company')->where('company_id', $companyId)->select('user_id'))
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        if ($locationId) {
+            $assigned = DB::table('user_location_roles')
+                ->where('location_id', $locationId)
+                ->pluck('user_id')
+                ->map(fn($id) => (int) $id)
+                ->all();
+
+            $users = $users->filter(
+                fn(User $user) => in_array((int) $user->id, $assigned, true)
+                    || CurrentWorker::canAccessLocation($locationId, $user)
+            );
+        }
+
+        return $users->map(fn(User $user) => ['id' => (int) $user->id, 'name' => $user->name])->values()->all();
     }
 
     // -----------------------------------------------------------------

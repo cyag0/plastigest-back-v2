@@ -11,6 +11,7 @@ use App\Support\CurrentWorker;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
 
 class FormulaController extends CrudController
 {
@@ -78,6 +79,16 @@ class FormulaController extends CrudController
         parent::applyBasicFilters($query, array_diff_key($params, ['search' => true]));
     }
 
+    /**
+     * Ingredientes y productos resultantes: de la empresa actual. Antes
+     * bastaba con que el id existiera, y una fórmula con el producto de otra
+     * empresa movía su stock al producir.
+     */
+    private function companyProductRule()
+    {
+        return Rule::exists('products', 'id')->where('company_id', CurrentCompany::id());
+    }
+
     protected function validateStoreData(Request $request): array
     {
         $this->pruneEmptyRows($request, 'items', 'product_id');
@@ -91,14 +102,14 @@ class FormulaController extends CrudController
 
             // Ingredientes que consume el proceso.
             'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.product_id' => ['required', $this->companyProductRule()],
             'items.*.unit_id' => 'required|exists:units,id',
             'items.*.expected_quantity' => 'required|numeric|min:0',
             'items.*.notes' => 'nullable|string',
 
             // Productos que entrega el proceso.
             'outputs' => 'required_without:product_id|array|min:1',
-            'outputs.*.product_id' => 'required|exists:products,id',
+            'outputs.*.product_id' => ['required', $this->companyProductRule()],
             'outputs.*.unit_id' => 'required|exists:units,id',
             'outputs.*.expected_quantity' => 'required|numeric|min:0',
             'outputs.*.is_primary' => 'nullable|boolean',
@@ -106,7 +117,7 @@ class FormulaController extends CrudController
 
             // Formato viejo (un solo producto objetivo). Se acepta mientras la
             // app se actualiza: FormulaService lo guarda como salida principal.
-            'product_id' => 'nullable|exists:products,id',
+            'product_id' => ['nullable', $this->companyProductRule()],
             'expected_output_quantity' => 'nullable|numeric|min:0',
         ], [
             'outputs.required_without' => 'Agrega al menos un producto resultante.',
@@ -128,20 +139,20 @@ class FormulaController extends CrudController
             'notes' => 'nullable|string',
 
             'items' => 'sometimes|array|min:1',
-            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.product_id' => ['required', $this->companyProductRule()],
             'items.*.unit_id' => 'required|exists:units,id',
             'items.*.expected_quantity' => 'required|numeric|min:0',
             'items.*.notes' => 'nullable|string',
 
             'outputs' => 'sometimes|array|min:1',
-            'outputs.*.product_id' => 'required|exists:products,id',
+            'outputs.*.product_id' => ['required', $this->companyProductRule()],
             'outputs.*.unit_id' => 'required|exists:units,id',
             'outputs.*.expected_quantity' => 'required|numeric|min:0',
             'outputs.*.is_primary' => 'nullable|boolean',
             'outputs.*.notes' => 'nullable|string',
 
             // Formato viejo, ver validateStoreData.
-            'product_id' => 'nullable|exists:products,id',
+            'product_id' => ['nullable', $this->companyProductRule()],
             'expected_output_quantity' => 'nullable|numeric|min:0',
         ], [
             'outputs.min' => 'Agrega al menos un producto resultante.',
@@ -160,7 +171,7 @@ class FormulaController extends CrudController
             $formula = $this->formulaService->create($data);
         } else {
             $id = request()->route('id') ?? request()->route('formula');
-            $formula = Formula::findOrFail((int) $id);
+            $formula = $this->scopedQuery()->findOrFail((int) $id);
             $formula = $this->formulaService->update($formula, $data);
         }
 
@@ -177,7 +188,12 @@ class FormulaController extends CrudController
         if (!CurrentWorker::hasPermission('formulas_create')) {
             return $this->forbiddenResponse('clonar fórmulas');
         }
-        $formula = Formula::with(['items', 'outputs'])->findOrFail($id);
+        // La fórmula de origen tiene que ser de la empresa (antes se clonaba
+        // la de cualquier empresa por id y la copia quedaba en esa empresa).
+        $formula = $this->scopedQuery()->with(['items', 'outputs'])->find($id);
+        if (!$formula) {
+            return response()->json(['message' => 'Recurso no encontrado'], 404);
+        }
         $newName = $request->input('name');
         $clone = $this->formulaService->clone($formula, $newName);
         return response()->json([

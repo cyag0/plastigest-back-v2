@@ -78,20 +78,23 @@ class FormulaService
     }
 
     /**
-     * Clona una fórmula incrementando la versión.
+     * Clona una fórmula incrementando la versión. La copia queda en la
+     * empresa actual.
      */
     public function clone(Formula $formula, ?string $newName = null): Formula
     {
         return DB::transaction(function () use ($formula, $newName) {
+            $companyId = CurrentCompany::id() ?? $formula->company_id;
+
             $maxVersion = Formula::query()
-                ->where('company_id', $formula->company_id)
+                ->where('company_id', $companyId)
                 ->where('name', 'like', $formula->name . '%')
                 ->max('version');
 
             $nextVersion = ($maxVersion ?? 0) + 1;
 
             $clone = Formula::create([
-                'company_id' => $formula->company_id,
+                'company_id' => $companyId,
                 'name' => $newName ?? $formula->name . ' (v' . $nextVersion . ')',
                 'description' => $formula->description,
                 'version' => $nextVersion,

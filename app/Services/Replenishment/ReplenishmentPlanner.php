@@ -2,6 +2,8 @@
 
 namespace App\Services\Replenishment;
 
+use App\Models\InventoryTransfer;
+use App\Models\Operations\ProductionOrder;
 use App\Reports\ProductCosts;
 use App\Reports\QuantityConverter;
 use Carbon\CarbonImmutable;
@@ -96,7 +98,7 @@ final class ReplenishmentPlanner
         $this->loadCatalog();
 
         $history = $this->loadHistory();
-        $firstDays = $this->loadFirstDays();
+        $firstDays = $this->loadFirstDays($history);
         [$incoming, $committed] = $this->loadOpenOrders();
         $season = $this->loadSeasonFactors();
         $routes = $this->loadRoutes();
@@ -107,6 +109,37 @@ final class ReplenishmentPlanner
     }
 
     // ─── Datos ──────────────────────────────────────────────────────────────
+
+    /**
+     * Demanda de un renglón del libro mayor (alias sle, con la orden de
+     * producción que lo originó como po): ventas y consumos de producción y
+     * empaque, menos sus reversas.
+     *
+     * - Lo de una producción cancelada no cuenta (ni el consumo ni su
+     *   reversa): la producción no ocurrió. Antes el consumo quedaba como
+     *   demanda y la reversa no se restaba.
+     * - Las reversas que no son de una producción cancelada (una venta
+     *   cancelada, un empaque revertido) se restan el día en que ocurren.
+     */
+    private const DEMAND_SQL = "CASE
+        WHEN po.status = 'cancelled' AND sle.reason IN ('production_consumption', 'packaging_consumption') THEN 0
+        WHEN sle.direction = 'out' AND sle.reason IN ('sale', 'production_consumption', 'packaging_consumption') THEN sle.quantity
+        WHEN sle.direction = 'in' AND sle.reason IN ('sale_return', 'production_consumption', 'packaging_consumption') THEN -sle.quantity
+        ELSE 0 END";
+
+    /**
+     * Libro mayor de la empresa (alias sle) con la orden de producción de
+     * cada renglón (alias po, si la hay), para DEMAND_SQL.
+     */
+    private function ledgerWithProductionOrders()
+    {
+        return DB::table('stock_ledger_entries as sle')
+            ->leftJoin('production_orders as po', function ($join) {
+                $join->on('po.id', '=', 'sle.reference_id')
+                    ->where('sle.reference_type', '=', ProductionOrder::class);
+            })
+            ->where('sle.company_id', $this->companyId);
+    }
 
     private function loadCatalog(): void
     {
@@ -142,19 +175,14 @@ final class ReplenishmentPlanner
      */
     private function loadHistory(): array
     {
-        $rows = DB::table('stock_ledger_entries')
-            ->where('company_id', $this->companyId)
-            ->where('created_at', '>=', $this->today->subDays(DemandForecaster::LOOKBACK_DAYS))
-            ->where('created_at', '<', $this->today->addDay())
-            ->groupBy('location_id', 'product_id', DB::raw('DATE(created_at)'))
+        $rows = $this->ledgerWithProductionOrders()
+            ->where('sle.created_at', '>=', $this->today->subDays(DemandForecaster::LOOKBACK_DAYS))
+            ->where('sle.created_at', '<', $this->today->addDay())
+            ->groupBy('sle.location_id', 'sle.product_id', DB::raw('DATE(sle.created_at)'))
             ->selectRaw(
-                "location_id, product_id, DATE(created_at) as day,
-                 SUM(CASE
-                     WHEN direction = 'out' AND reason IN ('sale', 'production_consumption', 'packaging_consumption') THEN quantity
-                     WHEN direction = 'in' AND reason = 'sale_return' THEN -quantity
-                     ELSE 0 END) as demand,
-                 SUM(CASE WHEN direction = 'in' THEN quantity ELSE -quantity END) as net,
-                 MIN(new_stock) as min_stock"
+                'sle.location_id, sle.product_id, DATE(sle.created_at) as day, SUM(' . self::DEMAND_SQL . ") as demand,
+                 SUM(CASE WHEN sle.direction = 'in' THEN sle.quantity ELSE -sle.quantity END) as net,
+                 MIN(sle.new_stock) as min_stock"
             )
             ->get();
 
@@ -180,19 +208,62 @@ final class ReplenishmentPlanner
      * Desde cuándo hay movimientos de cada producto en cada sucursal: antes de
      * eso no es que no se vendiera, es que no había datos.
      *
+     * Solo importa si empezó dentro del historial (DemandForecaster usa el
+     * primer día únicamente cuando es posterior al inicio del historial), así
+     * que ya no se recorre todo el libro mayor de la empresa en cada consulta:
+     * el primer día dentro del historial sale de lo ya cargado, y solo para
+     * esos productos se pregunta si había movimientos antes (la primera
+     * coincidencia basta, por el índice producto + sucursal).
+     *
+     * @param array<int, array<int, array>> $history de loadHistory()
      * @return array<int, array<int, CarbonImmutable>>
      */
-    private function loadFirstDays(): array
+    private function loadFirstDays(array $history): array
     {
-        $firstDays = [];
-        $rows = DB::table('stock_ledger_entries')
-            ->where('company_id', $this->companyId)
-            ->groupBy('location_id', 'product_id')
-            ->selectRaw('location_id, product_id, MIN(created_at) as first_at')
-            ->get();
+        $windowStart = $this->today->subDays(DemandForecaster::LOOKBACK_DAYS);
 
-        foreach ($rows as $row) {
-            $firstDays[(int) $row->location_id][(int) $row->product_id] = CarbonImmutable::parse($row->first_at)->startOfDay();
+        $candidates = [];
+        foreach ($history as $location => $products) {
+            foreach ($products as $product => $data) {
+                $days = array_keys($data['net'] ?? []);
+                if ($days === []) {
+                    continue;
+                }
+                $first = CarbonImmutable::parse(min($days))->startOfDay();
+                if ($first->greaterThan($windowStart)) {
+                    $candidates[] = [(int) $location, (int) $product, $first];
+                }
+            }
+        }
+
+        $older = [];
+        foreach (array_chunk($candidates, 500) as $chunk) {
+            $pairs = implode(' UNION ALL ', array_fill(0, count($chunk), 'SELECT ? AS location_id, ? AS product_id'));
+            $bindings = [];
+            foreach ($chunk as [$location, $product]) {
+                $bindings[] = $location;
+                $bindings[] = $product;
+            }
+            $bindings[] = $windowStart->toDateTimeString();
+
+            $rows = DB::select(
+                "SELECT c.location_id, c.product_id FROM ({$pairs}) c
+                 WHERE EXISTS (
+                     SELECT 1 FROM stock_ledger_entries s
+                     WHERE s.product_id = c.product_id AND s.location_id = c.location_id AND s.created_at < ?
+                 )",
+                $bindings
+            );
+            foreach ($rows as $row) {
+                $older[(int) $row->location_id][(int) $row->product_id] = true;
+            }
+        }
+
+        $firstDays = [];
+        foreach ($candidates as [$location, $product, $first]) {
+            if (empty($older[$location][$product])) {
+                $firstDays[$location][$product] = $first;
+            }
         }
 
         return $firstDays;
@@ -274,18 +345,11 @@ final class ReplenishmentPlanner
         $targetFrom = $lastYear->addDay()->subDays(self::SEASON_WINDOW_DAYS);
         $targetTo = $lastYear->addDays($this->coverageDays + self::SEASON_WINDOW_DAYS);
 
-        $rows = DB::table('stock_ledger_entries')
-            ->where('company_id', $this->companyId)
-            ->where('created_at', '>=', $baseFrom)
-            ->where('created_at', '<', $targetTo->addDay())
-            ->groupBy('product_id', DB::raw('DATE(created_at)'))
-            ->selectRaw(
-                "product_id, DATE(created_at) as day,
-                 SUM(CASE
-                     WHEN direction = 'out' AND reason IN ('sale', 'production_consumption', 'packaging_consumption') THEN quantity
-                     WHEN direction = 'in' AND reason = 'sale_return' THEN -quantity
-                     ELSE 0 END) as demand"
-            )
+        $rows = $this->ledgerWithProductionOrders()
+            ->where('sle.created_at', '>=', $baseFrom)
+            ->where('sle.created_at', '<', $targetTo->addDay())
+            ->groupBy('sle.product_id', DB::raw('DATE(sle.created_at)'))
+            ->selectRaw('sle.product_id, DATE(sle.created_at) as day, SUM(' . self::DEMAND_SQL . ') as demand')
             ->get();
 
         $base = [];
@@ -337,13 +401,16 @@ final class ReplenishmentPlanner
     {
         $since = $this->today->subDays(self::ROUTES_LOOKBACK_DAYS);
 
-        $received = DB::table('stock_ledger_entries')
-            ->where('company_id', $this->companyId)
-            ->where('reason', 'transfer_in')
-            ->whereNotNull('counterpart_location_id')
-            ->where('created_at', '>=', $since)
-            ->groupBy('location_id', 'product_id', 'counterpart_location_id')
-            ->selectRaw('location_id, product_id, counterpart_location_id, COUNT(*) as times')
+        // Lo que regresa al origen al cancelar o rechazar una transferencia
+        // también es una entrada "desde" el destino, pero no quiere decir que
+        // el destino surta al origen: no cuenta.
+        $received = $this->ledgerWithTransfers()
+            ->where('sle.reason', 'transfer_in')
+            ->whereNotNull('sle.counterpart_location_id')
+            ->where('sle.created_at', '>=', $since)
+            ->where(fn($query) => $query->whereNull('t.id')->orWhereColumn('t.from_location_id', '!=', 'sle.location_id'))
+            ->groupBy('sle.location_id', 'sle.product_id', 'sle.counterpart_location_id')
+            ->selectRaw('sle.location_id, sle.product_id, sle.counterpart_location_id, COUNT(*) as times')
             ->get();
 
         $sources = [];
@@ -355,12 +422,16 @@ final class ReplenishmentPlanner
             $sourcesAny[$to][$from] = ($sourcesAny[$to][$from] ?? 0) + (int) $row->times;
         }
 
-        $origins = DB::table('stock_ledger_entries')
-            ->where('company_id', $this->companyId)
-            ->whereIn('reason', ['purchase', 'production_output', 'packaging_output', 'transfer_out'])
-            ->where('created_at', '>=', $since)
-            ->groupBy('product_id', 'location_id', 'reason')
-            ->selectRaw('product_id, location_id, reason, COUNT(*) as times')
+        // Un envío que terminó cancelado o rechazado (y regresó) no hace a
+        // nadie centro de distribución.
+        $origins = $this->ledgerWithTransfers()
+            ->whereIn('sle.reason', ['purchase', 'production_output', 'packaging_output', 'transfer_out'])
+            ->where('sle.created_at', '>=', $since)
+            ->where(fn($query) => $query->where('sle.reason', '!=', 'transfer_out')
+                ->orWhereNull('t.id')
+                ->orWhereNotIn('t.status', ['cancelled', 'rejected']))
+            ->groupBy('sle.product_id', 'sle.location_id', 'sle.reason')
+            ->selectRaw('sle.product_id, sle.location_id, sle.reason, COUNT(*) as times')
             ->get();
 
         $purchaseCounts = [];
@@ -405,6 +476,20 @@ final class ReplenishmentPlanner
             'production_hub' => array_filter(array_map(fn($counts) => $argmax(array_intersect_key($counts, $this->locations)), $productionCounts)),
             'main_hub' => $mainHub,
         ];
+    }
+
+    /**
+     * Libro mayor de la empresa (alias sle) con la transferencia de cada
+     * renglón (alias t, si la hay).
+     */
+    private function ledgerWithTransfers()
+    {
+        return DB::table('stock_ledger_entries as sle')
+            ->leftJoin('inventory_transfers as t', function ($join) {
+                $join->on('t.id', '=', 'sle.reference_id')
+                    ->where('sle.reference_type', '=', InventoryTransfer::class);
+            })
+            ->where('sle.company_id', $this->companyId);
     }
 
     // ─── Necesidad por sucursal ─────────────────────────────────────────────

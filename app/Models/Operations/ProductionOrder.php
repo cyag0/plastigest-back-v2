@@ -3,18 +3,18 @@
 namespace App\Models\Operations;
 
 use App\Enums\ProductionOrderStatus;
+use App\Exceptions\BusinessRuleException;
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 use App\Models\InventoryAdjustmentDetail;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\DocumentSequence;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 /**
  * @mixin IdeHelperProductionOrder
@@ -71,28 +71,27 @@ class ProductionOrder extends Model
     }
 
     /**
-     * Genera el siguiente folio PROD-YYYY-NNNN con lock pesimista.
+     * Siguiente folio PROD-YYYY-NNNN de la empresa.
+     *
+     * Cada empresa lleva su propio consecutivo por año (DocumentSequence,
+     * como compras y transferencias), así que dos empresas pueden tener el
+     * mismo folio: el índice único es (company_id, folio). Antes el índice era
+     * solo el folio y la primera orden de una segunda empresa chocaba con la
+     * PROD-YYYY-0001 de la primera; además el bloqueo sobre "el último folio"
+     * no protegía la primera orden del año, en la que no había fila que
+     * bloquear.
      */
     public static function nextFolio(?int $companyId): string
     {
         $year = date('Y');
         $prefix = "PROD-{$year}-";
 
-        return DB::transaction(function () use ($companyId, $prefix) {
-            $lastFolio = static::query()
-                ->where('company_id', $companyId)
-                ->where('folio', 'like', $prefix . '%')
-                ->orderByDesc('id')
-                ->lockForUpdate()
-                ->value('folio');
+        $number = DocumentSequence::next(
+            "production:{$companyId}:{$year}",
+            fn() => DocumentSequence::lastUsed(static::query()->where('company_id', $companyId), 'folio', $prefix),
+        );
 
-            $nextNumber = 1;
-            if ($lastFolio && preg_match('/(\d+)$/', $lastFolio, $m)) {
-                $nextNumber = ((int) $m[1]) + 1;
-            }
-
-            return $prefix . str_pad((string) $nextNumber, 4, '0', STR_PAD_LEFT);
-        });
+        return $prefix . str_pad((string) $number, 4, '0', STR_PAD_LEFT);
     }
 
     public function company(): BelongsTo
@@ -204,7 +203,9 @@ class ProductionOrder extends Model
     }
 
     /**
-     * Valida que se pueda transicionar al estado dado.
+     * Valida que se pueda transicionar al estado dado. Si no, una regla de
+     * negocio (422) con el motivo en palabras de la app: antes decía
+     * "No se puede cambiar de estado completed a completed".
      */
     public function assertCanTransitionTo(ProductionOrderStatus $next): void
     {
@@ -212,9 +213,14 @@ class ProductionOrder extends Model
             $this->status = ProductionOrderStatus::from((string) $this->status);
         }
         if (!$this->status->canTransitionTo($next)) {
-            throw new RuntimeException(
-                "No se puede cambiar de estado {$this->status->value} a {$next->value}"
-            );
+            $current = $this->status->label();
+
+            throw new BusinessRuleException(match ($next) {
+                ProductionOrderStatus::COMPLETED => "Solo se puede completar una producción en borrador (esta está «{$current}»).",
+                ProductionOrderStatus::CANCELLED => 'La producción ya está cancelada.',
+                ProductionOrderStatus::PACKED => "Solo se puede cerrar el empaque de una producción terminada o en empaque (esta está «{$current}»).",
+                default => "No se puede pasar la producción de «{$current}» a «{$next->label()}».",
+            }, 'invalid_status');
         }
     }
 }

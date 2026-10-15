@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\ProductPackage;
+use App\Services\StockDefinitionGuard;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\DB;
@@ -170,6 +172,19 @@ class ProductPackageController extends Controller
             'is_default' => 'boolean',
             'sort_order' => 'integer',
         ]);
+
+        // El contenido (cuántas unidades base trae) no cambia si el producto ya
+        // tiene existencia, movimientos o documentos abiertos: las compras,
+        // transferencias y ventas en esta presentación se convertirían con el
+        // contenido nuevo (422 package_in_use). Nombre, precios y código sí.
+        if (array_key_exists('quantity_per_package', $validated)
+            && round((float) $validated['quantity_per_package'], 2) !== round((float) $package->quantity_per_package, 2)) {
+            try {
+                app(StockDefinitionGuard::class)->assertPackageCanChange($package);
+            } catch (BusinessRuleException $e) {
+                return $e->render();
+            }
+        }
 
         DB::beginTransaction();
         try {

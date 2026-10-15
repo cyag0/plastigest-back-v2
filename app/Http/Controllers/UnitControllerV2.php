@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\UnitResource;
 use App\Models\Unit;
+use App\Services\StockDefinitionGuard;
 use App\Support\CurrentCompany;
 use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
@@ -154,6 +155,33 @@ class UnitControllerV2 extends CrudController
             DB::rollBack();
             throw $e;
         }
+    }
+
+    /**
+     * Edición con la unidad ya validada por denyIfNotEditable(). El factor y
+     * el tipo no cambian si la unidad está en uso (ver StockDefinitionGuard):
+     * antes se podía cambiar el factor de una unidad con stock y documentos
+     * y cada conversión posterior salía mal. Nombre y abreviatura sí.
+     */
+    public function edit(array $data, int $id): Model
+    {
+        $unit = $this->findModel($id);
+        if (!$unit) {
+            abort(404, 'Recurso no encontrado');
+        }
+
+        $factorChanges = array_key_exists('factor_to_base', $data) && $data['factor_to_base'] !== null
+            && round((float) $data['factor_to_base'], 6) !== round((float) $unit->factor_to_base, 6);
+        $typeChanges = array_key_exists('unit_type', $data)
+            && (string) $data['unit_type'] !== (string) $unit->unit_type;
+
+        if ($factorChanges || $typeChanges) {
+            app(StockDefinitionGuard::class)->assertUnitCanChange($unit);
+        }
+
+        $unit->update($data);
+
+        return $unit;
     }
 
     public function update(Request $request, $id)
