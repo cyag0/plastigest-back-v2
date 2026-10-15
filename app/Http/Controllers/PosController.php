@@ -55,11 +55,13 @@ class PosController extends Controller
                 ->where('pl.active', true))
             ->with(['unit:id,name,abbreviation,unit_type', 'activePackages'])
             ->orderBy('products.name')
-            ->get(['products.id', 'products.name', 'products.code', 'products.sale_price', 'products.unit_id', 'products.for_sale', 'pl.current_stock']);
+            ->get(['products.id', 'products.name', 'products.code', 'products.sale_price', 'products.unit_id', 'products.for_sale', 'pl.current_stock', 'pl.reserved_stock']);
 
         $items = [];
         foreach ($products as $product) {
-            $stock = (float) $product->current_stock;
+            // Disponible para vender: lo apartado para pedidos en preparación
+            // no se vende (Sale::validateAndUpdateStock lo rechaza).
+            $stock = max(0.0, (float) $product->current_stock - (float) $product->reserved_stock);
             $unit = $product->unit ? ['id' => $product->unit->id, 'abbreviation' => $product->unit->abbreviation, 'type' => $product->unit->unit_type] : null;
 
             if ($product->for_sale) {
