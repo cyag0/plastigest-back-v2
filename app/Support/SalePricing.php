@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\Product;
 use App\Models\ProductPackage;
+use App\Services\MovementService;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
@@ -12,7 +13,9 @@ use Illuminate\Validation\ValidationException;
  * pantalla de ventas anterior y los pedidos (kiosco).
  *
  * - Precio de catálogo: el del producto o, para un paquete, su precio de
- *   venta o, si no tiene, el unitario × su contenido.
+ *   venta o, si no tiene, el unitario × su contenido. En otra unidad del
+ *   mismo tipo (gramos de un producto por kilo), el del producto convertido
+ *   con el factor de esa unidad.
  * - Sin el permiso sales_discount se cobra el precio de catálogo y no hay
  *   descuentos: el precio nunca se toma de la app para quien no puede
  *   cambiarlo. Antes los pedidos aceptaban cualquier precio.
@@ -136,10 +139,39 @@ final class SalePricing
             }
 
             $catalog = self::catalogPrice($product, $package);
+            // Precio de catálogo exacto en centavos para la unidad del renglón
+            // (puede tener fracción de centavo si la unidad es otra).
+            $catalogCents = (float) Money::toCents($catalog);
+
+            // Renglón en otra unidad del mismo tipo (gramos de un producto que
+            // se vende por kilo): la app manda el precio base × el factor de la
+            // unidad, y antes se comparaba contra el precio base y se rechazaba
+            // un precio correcto. El precio de catálogo se convierte con el
+            // mismo factor que usa el inventario (MovementService). Los
+            // paquetes tienen su propio precio.
+            $unitId = !$package && !empty($detail['unit_id']) ? (int) $detail['unit_id'] : null;
+            if ($unitId && $unitId !== (int) $product->unit_id) {
+                try {
+                    $factor = app(MovementService::class)->quantityInProductUnit((int) $product->id, $unitId, 1.0);
+                } catch (\Throwable) {
+                    throw ValidationException::withMessages([
+                        "details.{$i}.unit_id" => ["La unidad no corresponde a \"{$product->name}\"."],
+                    ]);
+                }
+
+                $catalogCents = (float) sprintf('%.15g', $catalog * $factor * 100);
+                $catalog = Money::round($catalog * $factor);
+            }
+
             $price = isset($detail['unit_price']) && $detail['unit_price'] !== '' ? Money::round($detail['unit_price']) : $catalog;
             $discount = Money::round($detail['discount'] ?? 0);
 
-            if (!$canDiscount && (Money::toCents($price) !== Money::toCents($catalog) || Money::toCents($discount) > 0)) {
+            // En centavos enteros (C2): el precio es el de catálogo si queda a
+            // menos de un centavo del exacto, o sea redondeado al centavo hacia
+            // arriba o hacia abajo (en la unidad base, exactamente el mismo).
+            $isCatalogPrice = abs(Money::toCents($price) - $catalogCents) < 1;
+
+            if (!$canDiscount && (!$isCatalogPrice || Money::toCents($discount) > 0)) {
                 throw ValidationException::withMessages([
                     "details.{$i}.unit_price" => ['No tienes permiso para cambiar el precio o aplicar descuentos.'],
                 ]);
