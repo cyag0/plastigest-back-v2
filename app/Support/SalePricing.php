@@ -4,7 +4,7 @@ namespace App\Support;
 
 use App\Models\Product;
 use App\Models\ProductPackage;
-use App\Services\MovementService;
+use App\Models\Unit;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
@@ -13,9 +13,13 @@ use Illuminate\Validation\ValidationException;
  * pantalla de ventas anterior y los pedidos (kiosco).
  *
  * - Precio de catálogo: el del producto o, para un paquete, su precio de
- *   venta o, si no tiene, el unitario × su contenido. En otra unidad del
- *   mismo tipo (gramos de un producto por kilo), el del producto convertido
- *   con el factor de esa unidad.
+ *   venta o, si no tiene, el unitario × su contenido.
+ * - Un renglón en otra unidad del mismo tipo (gramos de un producto que se
+ *   vende por kilo, docenas de uno por pieza) se guarda en la unidad del
+ *   producto: la cantidad convertida (a milésimas) y el precio por unidad del
+ *   producto. Así el precio se compara con el de catálogo sin redondear un
+ *   precio por gramo ($25/kg no se vuelve $0.03/g) y el total, el stock y el
+ *   ticket dicen lo mismo.
  * - Sin el permiso sales_discount se cobra el precio de catálogo y no hay
  *   descuentos: el precio nunca se toma de la app para quien no puede
  *   cambiarlo. Antes los pedidos aceptaban cualquier precio.
@@ -91,10 +95,14 @@ final class SalePricing
 
     /**
      * Valida los renglones de una venta o pedido y les pone su precio
-     * definitivo. Cada renglón trae product_id y, opcionales, package_id,
-     * unit_id, unit_price y discount; regresa los mismos renglones con
-     * unit_price y discount definitivos (unit_id: el del renglón o la unidad
-     * base del producto).
+     * definitivo. Cada renglón trae product_id, la cantidad (quantity, o
+     * requested_quantity en los pedidos) y, opcionales, package_id, unit_id,
+     * unit_price y discount; regresa los mismos renglones con unit_price y
+     * discount definitivos. Un renglón sin paquete en otra unidad sale en la
+     * unidad del producto: cantidad × factor de su unidad ÷ factor de la del
+     * producto (a milésimas) y precio ÷ ese mismo cociente (unit_id: el del
+     * renglón si es paquete o ya es la unidad del producto; si no, la del
+     * producto).
      *
      * @param array<int, array<string, mixed>> $details
      * @return array<int, array<string, mixed>>
@@ -113,6 +121,14 @@ final class SalePricing
         /** @var Collection<int, ProductPackage> $packages */
         $packages = ProductPackage::query()
             ->whereIn('id', array_filter(array_column($details, 'package_id')))
+            ->get()
+            ->keyBy('id');
+        /** @var Collection<int, Unit> $units */
+        $units = Unit::query()
+            ->whereIn('id', array_merge(
+                $products->pluck('unit_id')->filter()->all(),
+                array_filter(array_column($details, 'unit_id')),
+            ))
             ->get()
             ->keyBy('id');
 
@@ -138,38 +154,48 @@ final class SalePricing
                 ]);
             }
 
-            $catalog = self::catalogPrice($product, $package);
-            // Precio de catálogo exacto en centavos para la unidad del renglón
-            // (puede tener fracción de centavo si la unidad es otra).
-            $catalogCents = (float) Money::toCents($catalog);
-
-            // Renglón en otra unidad del mismo tipo (gramos de un producto que
-            // se vende por kilo): la app manda el precio base × el factor de la
-            // unidad, y antes se comparaba contra el precio base y se rechazaba
-            // un precio correcto. El precio de catálogo se convierte con el
-            // mismo factor que usa el inventario (MovementService). Los
-            // paquetes tienen su propio precio.
+            // Renglón en otra unidad del mismo tipo: se pasa a la unidad del
+            // producto (500 g de un producto por kilo son 0.5 kg; 2 docenas de
+            // uno por pieza, 24 piezas) y el precio, a precio por unidad del
+            // producto. Antes se comparaba un precio por gramo redondeado al
+            // centavo ($25/kg → $0.03/g) y 500 g se cobraban $15.00 en lugar
+            // de $12.50. Los paquetes tienen su propio precio y contenido.
+            $quantityKey = array_key_exists('quantity', $detail) ? 'quantity' : 'requested_quantity';
+            $ratio = null;
             $unitId = !$package && !empty($detail['unit_id']) ? (int) $detail['unit_id'] : null;
             if ($unitId && $unitId !== (int) $product->unit_id) {
-                try {
-                    $factor = app(MovementService::class)->quantityInProductUnit((int) $product->id, $unitId, 1.0);
-                } catch (\Throwable) {
+                $productUnit = $units->get((int) $product->unit_id);
+                $ratio = self::unitRatio($units->get($unitId), $productUnit);
+                if ($ratio === null) {
                     throw ValidationException::withMessages([
                         "details.{$i}.unit_id" => ["La unidad no corresponde a \"{$product->name}\"."],
                     ]);
                 }
 
-                $catalogCents = (float) sprintf('%.15g', $catalog * $factor * 100);
-                $catalog = Money::round($catalog * $factor);
+                $quantity = Money::roundQuantity((float) ($detail[$quantityKey] ?? 0) * $ratio);
+                if ($quantity <= 0) {
+                    throw ValidationException::withMessages([
+                        "details.{$i}.{$quantityKey}" => ["La cantidad de \"{$product->name}\" es menor que 0.001 {$productUnit->abbreviation}, lo mínimo que se registra."],
+                    ]);
+                }
+
+                $detail[$quantityKey] = $quantity;
+                $detail['unit_id'] = (int) $product->unit_id;
             }
 
-            $price = isset($detail['unit_price']) && $detail['unit_price'] !== '' ? Money::round($detail['unit_price']) : $catalog;
+            $catalog = self::catalogPrice($product, $package);
+            $sent = isset($detail['unit_price']) && $detail['unit_price'] !== '' ? $detail['unit_price'] : null;
+            // Precio por unidad del producto, en centavos enteros (C2). El de
+            // otra unidad se convierte antes de redondear: $0.025 el gramo son
+            // $25.00 el kilo; $0.03 el gramo, $30.00.
+            $price = match (true) {
+                $sent === null => $catalog,
+                $ratio !== null => Money::round((float) $sent / $ratio),
+                default => Money::round($sent),
+            };
             $discount = Money::round($detail['discount'] ?? 0);
 
-            // En centavos enteros (C2): el precio es el de catálogo si queda a
-            // menos de un centavo del exacto, o sea redondeado al centavo hacia
-            // arriba o hacia abajo (en la unidad base, exactamente el mismo).
-            $isCatalogPrice = abs(Money::toCents($price) - $catalogCents) < 1;
+            $isCatalogPrice = Money::toCents($price) === Money::toCents($catalog);
 
             if (!$canDiscount && (!$isCatalogPrice || Money::toCents($discount) > 0)) {
                 throw ValidationException::withMessages([
@@ -182,8 +208,7 @@ final class SalePricing
             // otro (recorta el descuento), y quedaba un saldo pendiente que no
             // existía.
             if (Money::toCents($discount) > 0) {
-                $quantity = $detail['quantity'] ?? $detail['requested_quantity'] ?? 0;
-                if (Money::toCents($discount) > Money::line($quantity, $price)['subtotal']) {
+                if (Money::toCents($discount) > Money::line($detail[$quantityKey] ?? 0, $price)['subtotal']) {
                     throw ValidationException::withMessages([
                         "details.{$i}.discount" => ['El descuento no puede ser mayor que el importe del renglón.'],
                     ]);
@@ -200,5 +225,23 @@ final class SalePricing
         }
 
         return $details;
+    }
+
+    /**
+     * Unidades del producto en una unidad del renglón, con los factores del
+     * inventario (MovementService): gramo de un producto por kilo, 0.001;
+     * docena de uno por pieza, 12; pieza de uno por docena, 1/12. null si la
+     * unidad es de otro tipo o su factor no sirve.
+     */
+    private static function unitRatio(?Unit $unit, ?Unit $productUnit): ?float
+    {
+        if (!$unit || !$productUnit || (string) $unit->unit_type !== (string) $productUnit->unit_type) {
+            return null;
+        }
+
+        $from = (float) ($unit->factor_to_base ?? 1);
+        $to = (float) ($productUnit->factor_to_base ?? 1);
+
+        return $from > 0 && $to > 0 ? $from / $to : null;
     }
 }

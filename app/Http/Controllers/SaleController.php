@@ -169,7 +169,10 @@ class SaleController extends CrudController
             'details.*.product_id' => ['required', Rule::exists('products', 'id')->where('company_id', CurrentCompany::id())],
             'details.*.package_id' => 'nullable|exists:product_packages,id',
             'details.*.unit_id' => 'required|exists:units,id',
-            'details.*.quantity' => 'required|numeric|min:0.01',
+            // Milésimas, como el punto de venta y los pedidos: la app manda el
+            // renglón en la unidad del producto (5 g de un producto por kilo
+            // son 0.005 kg).
+            'details.*.quantity' => 'required|numeric|min:0.001',
             'details.*.unit_price' => 'required|numeric|min:0',
         ]);
     }
