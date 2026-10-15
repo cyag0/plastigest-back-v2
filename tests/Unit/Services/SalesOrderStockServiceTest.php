@@ -286,8 +286,9 @@ class SalesOrderStockServiceTest extends TestCase
         ]);
 
         $service = app()->make('App\\Services\\SalesOrderStockService');
+        // Con tarjeta: cobrar en efectivo exige un turno de caja abierto.
         $sale = $service->checkoutOrder($order->fresh('details'), [
-            'payment_method' => 'cash',
+            'payment_method' => 'card',
             'paid_amount' => 20,
         ]);
 

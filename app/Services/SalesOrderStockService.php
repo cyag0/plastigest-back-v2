@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Enums\SaleStatus;
 use App\Enums\SalesOrderStatus;
-use App\Models\CashRegisterSession;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleDetail;
@@ -273,17 +272,7 @@ class SalesOrderStockService
                 ]);
             }
 
-            // El folio se pide antes de tocar stock: su contador queda bloqueado
-            // hasta el commit y una venta del POS lo toma en ese mismo orden
-            // (contador → stock). Al revés podían bloquearse mutuamente.
-            $saleNumber = Sale::generateSaleNumber((int) $order->company_id);
-
-            // 1. Release any pending reservation so the sale's decrement
-            //    operates on the same baseline as the previously available stock.
-            $this->releaseOrder($order);
-
-            // 2. Build a fresh Sale linked to the order.
-            //    Importes en centavos enteros (App\Support\Money): el total es
+            // 1. Importes en centavos enteros (App\Support\Money): el total es
             //    la suma exacta de los renglones, como en el punto de venta.
             $subtotalCents = (int) $order->details->sum(fn($detail) => Money::toCents($detail->line_subtotal));
             $totalCents = $order->total_amount !== null ? Money::toCents($order->total_amount) : $subtotalCents;
@@ -312,8 +301,22 @@ class SalesOrderStockService
                 ? 'paid'
                 : ($appliedCents > 0 ? 'partial' : 'pending');
 
-            $sessionId = CashMovementService::openSessionIdFor(Auth::id(), (int) $order->location_id);
-            $session = $sessionId ? CashRegisterSession::find($sessionId) : null;
+            // 2. Turno de quien cobra en la sucursal del pedido, bloqueado (un
+            //    cierre simultáneo espera o el cobro ve el turno cerrado). El
+            //    efectivo exige turno (C14): sin él no lo esperaría ninguna caja.
+            $session = app(CashRegisterSessionService::class)->lockOpenForUser(Auth::id(), (int) $order->location_id);
+            if ($paymentMethod === 'cash' && $appliedCents > 0 && !$session) {
+                throw CashRegisterSessionService::cashNeedsOpenShift();
+            }
+
+            // El folio se pide antes de tocar stock: su contador queda bloqueado
+            // hasta el commit y una venta del POS lo toma en ese mismo orden
+            // (turno → contador → stock). Al revés podían bloquearse mutuamente.
+            $saleNumber = Sale::generateSaleNumber((int) $order->company_id);
+
+            // 3. Release any pending reservation so the sale's decrement
+            //    operates on the same baseline as the previously available stock.
+            $this->releaseOrder($order);
 
             $sale = Sale::create([
                 'sale_number' => $saleNumber,
@@ -370,11 +373,11 @@ class SalesOrderStockService
                 ]);
             }
 
-            // 3. Decrement real stock via MovementService.
+            // 4. Decrement real stock via MovementService.
             $sale->load('details');
             $sale->validateAndUpdateStock();
 
-            // 4. Register the payment in cash, like any other sale. Antes el
+            // 5. Register the payment in cash, like any other sale. Antes el
             //    cobro de un pedido no generaba movimiento de caja: el efectivo
             //    no aparecía en el corte ni en el efectivo esperado del turno.
             if ($appliedAmount > 0) {
@@ -391,7 +394,7 @@ class SalesOrderStockService
                 CashMovementService::fromSale($sale, $appliedAmount, $paymentMethod, null, $session?->id);
             }
 
-            // 5. Link the sale and mark the order as delivered.
+            // 6. Link the sale and mark the order as delivered.
             $order->forceFill([
                 'sale_id' => $sale->id,
                 'status' => SalesOrderStatus::DELIVERED,

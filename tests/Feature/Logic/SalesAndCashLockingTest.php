@@ -53,8 +53,13 @@ class SalesAndCashLockingTest extends TestCase
         return app(CashRegisterSessionService::class)->open($register, 0, $this->user);
     }
 
+    /** Turno del usuario en la sucursal del contexto (cobrar en efectivo lo exige). */
+    private ?CashRegisterSession $shift = null;
+
     private function sell(Product $product, float $qty, float $price): int
     {
+        $this->shift ??= $this->openShiftAt($this->location);
+
         return $this->withHeaders($this->tenantHeaders())
             ->postJson('/api/auth/admin/sales', [
                 'payment_method' => 'cash',
@@ -127,18 +132,24 @@ class SalesAndCashLockingTest extends TestCase
     public function test_sale_refund_never_lands_in_a_shift_of_another_branch(): void
     {
         $galon = $this->createProduct([], 10);
-        $saleId = $this->sell($galon, 1, 65); // venta sin turno en la sucursal del contexto
+        $saleId = $this->sell($galon, 1, 65); // venta en efectivo en el turno de la sucursal del contexto
 
+        // El turno de la venta se cierra y quien cancela solo tiene turno en otra sucursal.
+        app(CashRegisterSessionService::class)->close($this->shift, 65, null, $this->user);
         $otherBranch = Location::factory()->create(['company_id' => $this->company->id]);
         $foreignShift = $this->openShiftAt($otherBranch);
 
+        // La devolución en efectivo exige un turno abierto en la sucursal de la
+        // venta: ni el de otra sucursal ni fuera de turno.
         $this->withHeaders($this->tenantHeaders())
             ->postJson("/api/auth/admin/sales/{$saleId}/cancel")
-            ->assertOk();
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'no_open_session');
 
-        $refund = CashMovement::where('source_type', 'sale_cancellation')->where('source_id', $saleId)->firstOrFail();
-        $this->assertNull($refund->cash_register_session_id, 'no entra al corte de la caja de otra sucursal');
+        $this->assertSame(0, CashMovement::where('source_type', 'sale_cancellation')->where('source_id', $saleId)->count());
         $this->assertSame(0, CashMovement::where('cash_register_session_id', $foreignShift->id)->count());
+        $this->assertSame(SaleStatus::CLOSED, Sale::findOrFail($saleId)->status);
+        $this->assertEquals(9, $this->stockOf($galon), 'la venta no se cancela a medias');
     }
 
     public function test_expense_uses_only_a_shift_of_its_own_branch(): void
@@ -243,7 +254,17 @@ class SalesAndCashLockingTest extends TestCase
         $foreignShift = $this->openShiftAt(Location::factory()->create(['company_id' => $this->company->id]));
         $order = $this->order($frijol, 1, 50, 'pending', 'counter');
 
-        $sale = app(SalesOrderStockService::class)->checkoutOrder($order->fresh('details'), ['payment_method' => 'cash']);
+        // En efectivo exige turno en la sucursal del pedido: el de otra no cuenta.
+        try {
+            app(SalesOrderStockService::class)->checkoutOrder($order->fresh('details'), ['payment_method' => 'cash']);
+            $this->fail('Cobrar en efectivo sin turno en la sucursal del pedido debe rechazarse.');
+        } catch (\App\Exceptions\BusinessRuleException $e) {
+            $this->assertSame('no_open_session', $e->errorCode());
+        }
+        $this->assertSame(0, Sale::count());
+
+        // Con tarjeta se cobra fuera de turno, nunca en el turno de otra sucursal.
+        $sale = app(SalesOrderStockService::class)->checkoutOrder($order->fresh('details'), ['payment_method' => 'card']);
 
         $movement = CashMovement::where('source_type', 'sale')->where('source_id', $sale->id)->firstOrFail();
         $this->assertEquals(50, (float) $movement->amount);

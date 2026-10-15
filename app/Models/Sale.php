@@ -285,13 +285,18 @@ class Sale extends Model
                 return false;
             }
 
+            // Turno que recibe la devolución, bloqueado antes de tocar el stock
+            // (mismo orden que una venta: turno → stock). Si la venta cobró
+            // efectivo y no hay turno abierto en su sucursal, no se cancela.
+            $refundSessionId = CashMovementService::refundSessionFor($this);
+
             // Solo revertir stock si la venta estaba CLOSED (la única forma de existir)
             if ($this->status === SaleStatus::CLOSED) {
                 $this->revertStock();
             }
             // Devolver en caja lo cobrado. Va dentro de la transacción: si no
             // se puede registrar, la venta no se cancela a medias.
-            CashMovementService::reverseSale($this);
+            CashMovementService::reverseSale($this, $refundSessionId);
             $this->status = $newStatus;
             $this->save();
 

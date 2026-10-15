@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\CashMovement;
 use App\Models\CashRegisterSession;
 use App\Models\Expense;
@@ -85,14 +86,89 @@ class CashMovementService
     }
 
     /**
+     * Ingreso de un abono (pago posterior de una venta a crédito o parcial).
+     *
+     * Va fechado el día en que entra el dinero y en el turno de quien lo
+     * cobra (el que le pasa quien llama, ya bloqueado); sin turno queda fuera
+     * de turno, y solo se permite así cuando no es efectivo. Antes el abono se
+     * fechaba con el día de la venta: lo cobrado hoy aparecía en el día de la
+     * venta y no en el de hoy.
+     */
+    public static function fromSalePayment(Sale $sale, float $amount, string $paymentMethod, ?string $notes, ?int $sessionId): void
+    {
+        if ($amount <= 0) {
+            return;
+        }
+
+        CashMovement::create([
+            'company_id'     => $sale->company_id,
+            'location_id'    => $sale->location_id,
+            'cash_register_session_id' => self::openSessionAtLocation($sessionId, $sale->location_id),
+            'user_id'        => Auth::id() ?? $sale->user_id,
+            'type'           => 'income',
+            'amount'         => $amount,
+            'concept'        => 'Abono de venta ' . self::documentLabel($sale->sale_number, $sale->id),
+            'payment_method' => self::mapPaymentMethod($paymentMethod),
+            // Mismo origen que el cobro inicial: al cancelar la venta,
+            // reverseSale() devuelve también los abonos.
+            'source_type'    => 'sale',
+            'source_id'      => $sale->id,
+            'source_url'     => '/(tabs)/home/sales/' . $sale->id,
+            'notes'          => $notes,
+            'movement_date'  => now()->toDateString(),
+        ]);
+    }
+
+    /**
+     * Turno que recibe la devolución de una venta que se cancela, con su fila
+     * bloqueada: el turno abierto de quien cancela en la sucursal de la venta
+     * o, si no tiene, el turno de la venta si sigue abierto.
+     *
+     * Si la venta cobró efectivo, la devolución exige uno de esos turnos
+     * (no_open_session): antes, si ninguno estaba abierto, el efectivo salía
+     * de la caja sin quedar en ningún turno y el cajero aparecía con faltante.
+     * Tarjeta y transferencia no salen de la caja y pueden quedar fuera de
+     * turno.
+     *
+     * Se llama antes de devolver el stock (orden de bloqueos: turno → stock,
+     * como en una venta).
+     *
+     * @throws BusinessRuleException
+     */
+    public static function refundSessionFor(Sale $sale): ?int
+    {
+        $sessions = app(CashRegisterSessionService::class);
+        $locationId = (int) $sale->location_id;
+
+        $session = $sessions->lockOpenForUser(Auth::id(), $locationId);
+
+        if (!$session && $sale->cash_register_session_id) {
+            $candidate = CashRegisterSession::query()->lockForUpdate()->find($sale->cash_register_session_id);
+            $session = $candidate && $candidate->isOpen() && (int) $candidate->location_id === $locationId ? $candidate : null;
+        }
+
+        if (!$session && self::collectedCash($sale) > 0) {
+            throw new BusinessRuleException(
+                'Para devolver el efectivo de esta venta abre un turno de caja en esta sucursal.',
+                'no_open_session',
+            );
+        }
+
+        return $session?->id;
+    }
+
+    /**
      * Revierte en caja lo cobrado de una venta que se cancela.
      *
      * Se registra un egreso por cada método de pago con el que entró dinero,
      * fechado el día de la cancelación: así el corte de ese día refleja la
      * devolución y los cortes ya cerrados no cambian. Antes la venta se
      * cancelaba y su ingreso seguía contando en caja.
+     *
+     * @param int|null $sessionId El turno que resolvió refundSessionFor(). Sin
+     *   turno no se devuelve efectivo (no_open_session).
      */
-    public static function reverseSale(Sale $sale): void
+    public static function reverseSale(Sale $sale, ?int $sessionId = null): void
     {
         $collected = CashMovement::query()
             ->where('source_type', 'sale')
@@ -102,13 +178,20 @@ class CashMovementService
             ->groupBy('payment_method')
             ->get();
 
-        $sessionId = self::sessionForSale($sale);
+        $sessionId = self::openSessionAtLocation($sessionId, $sale->location_id);
 
         $concept = 'Cancelación de venta ' . self::documentLabel($sale->sale_number, $sale->id);
 
         foreach ($collected as $row) {
             if ((float) $row->total <= 0) {
                 continue;
+            }
+
+            if ($row->payment_method === 'cash' && !$sessionId) {
+                throw new BusinessRuleException(
+                    'Para devolver el efectivo de esta venta abre un turno de caja en esta sucursal.',
+                    'no_open_session',
+                );
             }
 
             CashMovement::create([
@@ -127,6 +210,17 @@ class CashMovementService
                 'movement_date'  => now()->toDateString(),
             ]);
         }
+    }
+
+    /** Efectivo que entró a caja por una venta (cobro inicial y abonos). */
+    private static function collectedCash(Sale $sale): float
+    {
+        return (float) CashMovement::query()
+            ->where('source_type', 'sale')
+            ->where('source_id', $sale->id)
+            ->where('type', 'income')
+            ->where('payment_method', 'cash')
+            ->sum('amount');
     }
 
     /**

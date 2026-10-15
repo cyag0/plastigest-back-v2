@@ -10,7 +10,9 @@ use App\Models\ProductPackage;
 use Illuminate\Validation\ValidationException;
 use App\Models\Expense;
 use App\Enums\SaleStatus;
+use App\Exceptions\BusinessRuleException;
 use App\Services\CashMovementService;
+use App\Services\CashRegisterSessionService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
@@ -288,6 +290,9 @@ class SaleController extends CrudController
             ], 400);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
+        } catch (BusinessRuleException $e) {
+            // Devolver efectivo sin turno abierto en la sucursal: 422 {message, code}.
+            return $e->render();
         } catch (\Exception $e) {
             Log::error('Error al cancelar venta', ['exception' => get_class($e), 'message' => $e->getMessage()]);
             // Mensaje de negocio seguro; los detalles internos no se exponen.
@@ -539,6 +544,9 @@ class SaleController extends CrudController
             // Totales por método de pago a partir de sale_payments: así cuentan
             // las ventas con pago mixto (su payment_method es 'mixed' y antes no
             // entraba en ningún método) y refleja el dinero realmente cobrado.
+            // Por el día en que entró el dinero (created_at del pago): los
+            // abonos de hoy a ventas de otros días cuentan hoy, no en el día de
+            // la venta.
             $paymentMethods = [
                 'cash' => 0,
                 'card' => 0,
@@ -546,11 +554,13 @@ class SaleController extends CrudController
                 'credit' => 0,
             ];
 
+            $dayStart = \Illuminate\Support\Carbon::parse($date)->startOfDay();
             $paymentTotals = DB::table('sale_payments')
                 ->join('sales', 'sale_payments.sale_id', '=', 'sales.id')
                 ->where('sales.company_id', $companyId)
                 ->when($locationId, fn($q) => $q->where('sales.location_id', $locationId))
-                ->whereDate('sales.sale_date', $date)
+                ->where('sale_payments.created_at', '>=', $dayStart)
+                ->where('sale_payments.created_at', '<', $dayStart->copy()->addDay())
                 ->whereIn('sales.status', ['closed', 'processed'])
                 ->groupBy('sale_payments.method')
                 ->selectRaw('sale_payments.method, SUM(sale_payments.amount) as total')
@@ -884,12 +894,7 @@ class SaleController extends CrudController
                 return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
             }
 
-            // Turno de caja abierto del cajero en la sucursal actual: el pago
-            // entra a ESE turno, no al turno (posiblemente ya cerrado) en el que
-            // se creó la venta.
-            $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
-
-            $result = DB::transaction(function () use ($scopedId, $validated, $session) {
+            $result = DB::transaction(function () use ($scopedId, $validated) {
                 // Bloqueo de fila: evita que dos pagos simultáneos sobrepasen el total.
                 $sale = Sale::whereKey($scopedId)->lockForUpdate()->firstOrFail();
 
@@ -915,6 +920,16 @@ class SaleController extends CrudController
                     ];
                 }
 
+                // Turno de caja de quien cobra en la sucursal de la venta, con su
+                // fila bloqueada (venta → turno): el abono entra a ESE turno, no
+                // al turno (quizá ya cerrado) en el que se creó la venta. El
+                // efectivo exige turno abierto (C14).
+                $session = app(CashRegisterSessionService::class)->lockOpenForUser(Auth::id(), (int) $sale->location_id);
+                $isCash = $validated['payment_method'] === 'cash';
+                if ($isCash && !$session) {
+                    throw CashRegisterSessionService::cashNeedsOpenShift();
+                }
+
                 $paymentHistory = $sale->payment_history ?? [];
                 $paymentHistory[] = [
                     'amount' => $newAmount,
@@ -930,7 +945,18 @@ class SaleController extends CrudController
                     : ($afterCents > 0 ? 'partial' : 'pending');
                 $sale->save();
 
-                CashMovementService::fromSale(
+                // El abono también queda en sale_payments, donde los reportes y
+                // el corte leen lo cobrado por método (antes solo estaba el
+                // cobro inicial). Su created_at es el momento del abono.
+                $sale->payments()->create([
+                    'method' => $validated['payment_method'],
+                    'amount' => $newAmount,
+                    'tendered' => $isCash ? $newAmount : null,
+                    'change' => $isCash ? 0 : null,
+                ]);
+
+                // Fechado hoy, en el turno de quien cobra.
+                CashMovementService::fromSalePayment(
                     $sale,
                     $newAmount,
                     $validated['payment_method'],
@@ -956,6 +982,9 @@ class SaleController extends CrudController
                 'message' => 'Pago registrado correctamente',
                 'data' => new $this->resource($sale),
             ]);
+        } catch (BusinessRuleException $e) {
+            // Sin turno para cobrar en efectivo, turno recién cerrado…: 422 {message, code}.
+            return $e->render();
         } catch (\Exception $e) {
             Log::error('Error al registrar pago', ['exception' => get_class($e), 'message' => $e->getMessage()]);
 

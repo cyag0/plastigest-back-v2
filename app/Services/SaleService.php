@@ -32,6 +32,14 @@ class SaleService
     public function create(array $data, ?CashRegisterSession $session = null): Sale
     {
         return DB::transaction(function () use ($data, $session) {
+            // El turno se relee bloqueado: si se cerró mientras tanto la venta
+            // se rechaza en lugar de caer en un corte ya cerrado (y un cierre
+            // simultáneo espera a que esta venta termine). Va antes del folio y
+            // del stock: mismo orden de bloqueos en todos los cobros.
+            if ($session) {
+                $session = app(CashRegisterSessionService::class)->lockOpen($session->id, (int) $data['location_id']);
+            }
+
             // Importes en centavos enteros (App\Support\Money), igual que la app
             // y que PosController: cada renglón se redondea mitad hacia arriba y
             // los totales son la suma exacta de los renglones.
@@ -61,6 +69,16 @@ class SaleService
             $payments = $this->normalizePayments($data, $total);
             $paidCents = array_sum(array_map(fn($p) => Money::toCents($p['amount']), $payments));
             $paid = Money::fromCents($paidCents);
+
+            // Efectivo sin turno (pantalla de ventas anterior): no lo esperaría
+            // ninguna caja y podía perderse sin faltante en ningún corte.
+            $cashCents = array_sum(array_map(
+                fn($p) => $p['method'] === 'cash' ? Money::toCents($p['amount']) : 0,
+                $payments
+            ));
+            if ($cashCents > 0 && !$session) {
+                throw CashRegisterSessionService::cashNeedsOpenShift();
+            }
 
             $paymentMethod = count($payments) > 1
                 ? 'mixed'
