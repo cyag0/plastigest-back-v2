@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\SaleStatus;
 use App\Models\Sale;
 use App\Models\PurchaseV2;
 use App\Models\Expense;
@@ -33,15 +34,22 @@ class ReportController extends Controller
         $period = $request->get('period', 'month');
         $dateRange = $this->getDateRange($period);
 
+        // Ventas vigentes: una venta cancelada no es dinero vendido. Antes el
+        // dashboard (KPIs, tendencia, sucursales, top productos y métodos de
+        // pago) sumaba también las canceladas.
         $salesQuery = Sale::query()
             ->where('company_id', $companyId)
+            ->where('status', '!=', SaleStatus::CANCELLED->value)
             ->whereBetween('sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('location_id', $locationId);
             });
 
+        // Compras recibidas: un borrador, un pedido sin recibir o una compra
+        // cancelada no son gasto. Antes contaban todas y la utilidad salía mal.
         $purchasesQuery = PurchaseV2::query()
             ->where('company_id', $companyId)
+            ->where('status', PurchaseV2::STATUS_RECEIVED)
             ->whereBetween('purchase_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('location_id', $locationId);
@@ -116,6 +124,7 @@ class ReportController extends Controller
         $salesTrend = Sale::query()
             ->selectRaw($this->getSalesV2Grouping($period) . ' as period, SUM(total) as total')
             ->where('company_id', $companyId)
+            ->where('status', '!=', SaleStatus::CANCELLED->value)
             ->whereBetween('sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('location_id', $locationId);
@@ -134,6 +143,8 @@ class ReportController extends Controller
         $salesByLocation = DB::table('sales')
             ->join('locations', 'sales.location_id', '=', 'locations.id')
             ->where('sales.company_id', $companyId)
+            ->where('sales.status', '!=', SaleStatus::CANCELLED->value)
+            ->whereNull('sales.deleted_at')
             ->whereBetween('sales.sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('sales.location_id', $locationId);
@@ -154,6 +165,8 @@ class ReportController extends Controller
             ->join('sales', 'sales_details.sale_id', '=', 'sales.id')
             ->join('products', 'sales_details.product_id', '=', 'products.id')
             ->where('sales.company_id', $companyId)
+            ->where('sales.status', '!=', SaleStatus::CANCELLED->value)
+            ->whereNull('sales.deleted_at')
             ->whereBetween('sales.sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('sales.location_id', $locationId);
@@ -203,6 +216,7 @@ class ReportController extends Controller
         $paymentMethods = Sale::query()
             ->select('payment_method', DB::raw('SUM(total) as value'))
             ->where('company_id', $companyId)
+            ->where('status', '!=', SaleStatus::CANCELLED->value)
             ->whereBetween('sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('location_id', $locationId);
@@ -219,9 +233,12 @@ class ReportController extends Controller
             })
             ->values();
 
+        // La actividad reciente muestra montos como ingreso o egreso: se toman
+        // los mismos criterios que los KPIs (sin canceladas, compras recibidas).
         $recentSales = Sale::query()
             ->with('location:id,name')
             ->where('company_id', $companyId)
+            ->where('status', '!=', SaleStatus::CANCELLED->value)
             ->whereBetween('sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('location_id', $locationId);
@@ -245,6 +262,7 @@ class ReportController extends Controller
         $recentPurchases = PurchaseV2::query()
             ->with('location:id,name')
             ->where('company_id', $companyId)
+            ->where('status', PurchaseV2::STATUS_RECEIVED)
             ->whereBetween('purchase_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
                 $query->where('location_id', $locationId);
@@ -522,8 +540,11 @@ class ReportController extends Controller
         $totalProductsInLocation = (clone $stockHealthQuery)->count();
 
         if ($totalProductsInLocation > 0) {
+            // Sin existencia es "agotado" aunque el mínimo sea 0: si no, un
+            // producto contaba como óptimo y agotado a la vez.
             $optimal = (clone $stockHealthQuery)
                 ->whereRaw('product_location.current_stock >= product_location.minimum_stock')
+                ->where('product_location.current_stock', '>', 0)
                 ->count();
 
             $low = (clone $stockHealthQuery)

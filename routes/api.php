@@ -36,6 +36,7 @@ use App\Http\Controllers\ProductPackageController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\SalesReportController;
+use App\Http\Controllers\BusinessReportController;
 use App\Http\Controllers\SalesOrderController;
 use App\Http\Controllers\CashMovementController;
 use App\Http\Controllers\CashClosingController;
@@ -122,6 +123,10 @@ Route::get('print/inventory-transfers/{transfer}/pdf', [PrintController::class, 
     ->name('print.transfer')->middleware('signed');
 Route::get('print/production-orders/{order}/sheet', [PrintController::class, 'productionSheet'])
     ->name('print.production-sheet')->middleware('signed');
+
+// Reportes del dueño en PDF o Excel (URL firmada; ver BusinessReportController).
+Route::get('business-reports/{report}/download', [BusinessReportController::class, 'download'])
+    ->name('business-reports.download')->middleware('signed');
 
 Route::get('product-packages/{package}/labels/pdf', [ProductPackageController::class, 'printLabels'])
     ->name('product-packages.labels.pdf')
@@ -299,6 +304,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('inventory-transfers/{id}/pdf-url', [PrintController::class, 'transferPdfUrl'])->whereNumber('id');
             Route::get('production-orders/{id}/sheet-url', [PrintController::class, 'productionSheetUrl'])->whereNumber('id');
 
+            // Reportes del dueño: qué hay y la URL firmada de cada uno.
+            Route::get('business-reports/options', [BusinessReportController::class, 'options']);
+            Route::get('business-reports/{report}/url', [BusinessReportController::class, 'url']);
             Route::apiResource('customers', CustomerController::class);
 
             // Units routes
