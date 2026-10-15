@@ -390,33 +390,23 @@ class CurrentWorker
     }
 
     /**
-     * Verificar si el usuario actual tiene todos los permisos especificados
+     * Verificar si el usuario actual tiene todos los permisos especificados.
+     * Con los mismos roles que hasPermission(): antes solo se miraba el rol de
+     * la sucursal y se ignoraban los roles directos y los de quien entra a
+     * todas las sucursales.
      */
     public static function hasAllPermissions(array $permissionNames): bool
     {
-        $role = self::role();
-        if (!$role) {
-            return false;
-        }
-
-        $granted = self::roles([(int) $role->id])[(int) $role->id]['permissions'] ?? [];
-
-        return array_diff(array_unique($permissionNames), $granted) === [];
+        return array_diff(array_unique($permissionNames), self::permissions()) === [];
     }
 
     /**
      * Verificar si el usuario actual tiene alguno de los permisos especificados
+     * (mismos roles que hasPermission()).
      */
     public static function hasAnyPermission(array $permissionNames): bool
     {
-        $role = self::role();
-        if (!$role) {
-            return false;
-        }
-
-        $granted = self::roles([(int) $role->id])[(int) $role->id]['permissions'] ?? [];
-
-        return array_intersect($permissionNames, $granted) !== [];
+        return array_intersect($permissionNames, self::permissions()) !== [];
     }
 
     /**

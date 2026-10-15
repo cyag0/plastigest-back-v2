@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\ReminderResource;
 use App\Models\Reminder;
+use App\Models\User;
 use App\Services\FirebaseService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -11,6 +12,7 @@ use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ReminderController extends CrudController
@@ -108,7 +110,7 @@ class ReminderController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         return $request->validate([
-            'user_id' => 'nullable|exists:users,id',
+            'user_id' => ['nullable', 'integer', $this->assigneeRule()],
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'type' => 'required|in:payment,renewal,expiration,other',
@@ -129,7 +131,7 @@ class ReminderController extends CrudController
     protected function validateUpdateData(Request $request, Model $model): array
     {
         return $request->validate([
-            'user_id' => 'nullable|exists:users,id',
+            'user_id' => ['nullable', 'integer', $this->assigneeRule((int) $model->user_id)],
             'title' => 'sometimes|string|max:255',
             'description' => 'nullable|string',
             'type' => 'sometimes|in:payment,renewal,expiration,other',
@@ -327,37 +329,87 @@ class ReminderController extends CrudController
     }
 
     /**
-     * Obtener usuarios de la empresa para asignar recordatorios
+     * A quién se le puede asignar un recordatorio (GET reminders/users):
+     * {success, data: [{id, name}]}.
+     *
+     * Lo usa el formulario de recordatorios, así que basta con poder crear,
+     * editar o ver recordatorios (no hace falta users_list). Antes devolvía a
+     * todos los usuarios de la empresa, inactivos incluidos, con su correo.
      */
     public function getUsers()
     {
-        if (!CurrentWorker::hasPermission('reminders_read')) {
+        if (!CurrentWorker::hasAnyPermission(['reminders_create', 'reminders_update', 'reminders_read'])) {
             return $this->forbiddenResponse('ver usuarios de recordatorios');
         }
 
-        try {
-            $company = CurrentCompany::get();
-            if (!$company) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No se encontró la empresa actual'
-                ], 400);
-            }
-
-            $users = $company->users()
-                ->select('users.id', 'users.name', 'users.email')
-                ->orderBy('users.name')
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'data' => $users,
-            ]);
-        } catch (\Exception $e) {
+        if (!CurrentCompany::id()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener usuarios.', 'error' => $this->errorDetail($e)
-            ], 500);
+                'message' => 'No se encontró la empresa actual'
+            ], 400);
         }
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->assignableUsers()
+                ->map(fn(User $user) => ['id' => (int) $user->id, 'name' => $user->name])
+                ->values(),
+        ]);
+    }
+
+    /**
+     * Usuarios activos de la empresa que pueden entrar a la sucursal actual
+     * (asignados a ella o con acceso a todas): el recordatorio es de la
+     * sucursal y solo lo ve a quien se le asigna. Sin sucursal, todos los de
+     * la empresa.
+     *
+     * @return \Illuminate\Support\Collection<int, User>
+     */
+    private function assignableUsers()
+    {
+        $companyId = CurrentCompany::id();
+        if (!$companyId) {
+            return collect();
+        }
+
+        $users = User::query()
+            ->where('is_active', true)
+            ->whereIn('id', DB::table('user_company')->where('company_id', $companyId)->select('user_id'))
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        $locationId = CurrentLocation::id();
+        if (!$locationId) {
+            return $users;
+        }
+
+        $assigned = DB::table('user_location_roles')
+            ->where('location_id', $locationId)
+            ->pluck('user_id')
+            ->map(fn($id) => (int) $id)
+            ->all();
+
+        return $users->filter(
+            fn(User $user) => in_array((int) $user->id, $assigned, true)
+                || CurrentWorker::canAccessLocation($locationId, $user)
+        )->values();
+    }
+
+    /**
+     * user_id debe ser alguien de assignableUsers(). Antes bastaba con que
+     * el usuario existiera, de cualquier empresa. Al editar se acepta el que
+     * ya lo tenía asignado.
+     */
+    private function assigneeRule(?int $currentAssignee = null): \Closure
+    {
+        return function (string $attribute, mixed $value, \Closure $fail) use ($currentAssignee) {
+            if ($currentAssignee !== null && (int) $value === $currentAssignee) {
+                return;
+            }
+
+            if (!$this->assignableUsers()->contains(fn(User $user) => (int) $user->id === (int) $value)) {
+                $fail('Ese usuario no puede recibir recordatorios de esta sucursal.');
+            }
+        };
     }
 }
