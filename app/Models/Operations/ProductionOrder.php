@@ -3,6 +3,7 @@
 namespace App\Models\Operations;
 
 use App\Enums\ProductionOrderStatus;
+use App\Exceptions\BusinessRuleException;
 use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 use App\Models\InventoryAdjustmentDetail;
@@ -14,7 +15,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 /**
  * @mixin IdeHelperProductionOrder
@@ -204,7 +204,9 @@ class ProductionOrder extends Model
     }
 
     /**
-     * Valida que se pueda transicionar al estado dado.
+     * Valida que se pueda transicionar al estado dado. Si no, una regla de
+     * negocio (422) con el motivo en palabras de la app: antes decía
+     * "No se puede cambiar de estado completed a completed".
      */
     public function assertCanTransitionTo(ProductionOrderStatus $next): void
     {
@@ -212,9 +214,14 @@ class ProductionOrder extends Model
             $this->status = ProductionOrderStatus::from((string) $this->status);
         }
         if (!$this->status->canTransitionTo($next)) {
-            throw new RuntimeException(
-                "No se puede cambiar de estado {$this->status->value} a {$next->value}"
-            );
+            $current = $this->status->label();
+
+            throw new BusinessRuleException(match ($next) {
+                ProductionOrderStatus::COMPLETED => "Solo se puede completar una producción en borrador (esta está «{$current}»).",
+                ProductionOrderStatus::CANCELLED => 'La producción ya está cancelada.',
+                ProductionOrderStatus::PACKED => "Solo se puede cerrar el empaque de una producción terminada o en empaque (esta está «{$current}»).",
+                default => "No se puede pasar la producción de «{$current}» a «{$next->label()}».",
+            }, 'invalid_status');
         }
     }
 }

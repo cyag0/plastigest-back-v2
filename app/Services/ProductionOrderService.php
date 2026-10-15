@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\AdjustmentReasonCode;
 use App\Enums\ProductionOrderStatus;
 use App\Enums\StockLedgerReason;
+use App\Exceptions\BusinessRuleException;
 use App\Models\InventoryAdjustmentDetail;
 use App\Models\Operations\Formula;
 use App\Models\Operations\ProductionOrder;
@@ -19,7 +20,6 @@ use App\Support\CurrentLocation;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 /**
  * Servicio central para gestión de Órdenes de Producción.
@@ -92,7 +92,7 @@ class ProductionOrderService
             $order = $this->lockOrder($order);
 
             if ($order->status !== ProductionOrderStatus::DRAFT) {
-                throw new RuntimeException('Solo se pueden editar órdenes en borrador.');
+                throw new BusinessRuleException('Solo se pueden editar órdenes en borrador.', 'invalid_status');
             }
 
             $order->fill([

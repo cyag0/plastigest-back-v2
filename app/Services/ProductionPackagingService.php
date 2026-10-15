@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\ProductionOrderStatus;
 use App\Enums\StockLedgerReason;
+use App\Exceptions\BusinessRuleException;
 use App\Models\Operations\ProductionOrder;
 use App\Models\Operations\ProductionOrderPackaging;
 use App\Models\Operations\ProductionOrderPackagingMaterial;
@@ -12,7 +13,6 @@ use App\Support\StockContext;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 /**
  * Paso de empaque de una orden de producción.
@@ -92,7 +92,7 @@ class ProductionPackagingService
         ));
 
         if (!$rows) {
-            throw new RuntimeException('No hay nada que empacar: indica al menos un producto y su cantidad.');
+            throw new BusinessRuleException('No hay nada que empacar: indica al menos un producto y su cantidad.', 'nothing_to_pack');
         }
 
         return DB::transaction(function () use ($order, $rows) {
@@ -132,10 +132,10 @@ class ProductionPackagingService
                 // Un empaque sin granel (receta en cero o sin producto de origen)
                 // daba de alta producto terminado sin consumir nada de la orden.
                 if (!$sourceProductId) {
-                    throw new RuntimeException("{$product->name} no tiene granel de origen: configura su receta de empaque.");
+                    throw new BusinessRuleException("{$product->name} no tiene granel de origen: configura su receta de empaque.", 'packaging_recipe_missing');
                 }
                 if ($sourcePerUnit <= 0) {
-                    throw new RuntimeException("La receta de empaque de {$product->name} no consume granel: indica cuánto lleva cada unidad.");
+                    throw new BusinessRuleException("La receta de empaque de {$product->name} no consume granel: indica cuánto lleva cada unidad.", 'packaging_recipe_missing');
                 }
 
                 $sourceProductId = (int) $sourceProductId;
@@ -144,7 +144,7 @@ class ProductionPackagingService
                     $remaining = $this->remainingSourceBaseQuantity($order, $sourceProductId);
                     if ($remaining === null) {
                         $sourceName = Product::whereKey($sourceProductId)->value('name') ?? "producto {$sourceProductId}";
-                        throw new RuntimeException("{$sourceName} no es una salida de esta producción: no se puede empacar aquí.");
+                        throw new BusinessRuleException("{$sourceName} no es una salida de esta producción: no se puede empacar aquí.", 'packaging_source_invalid');
                     }
                     $remainingBySource[$sourceProductId] = $remaining;
                 }
@@ -155,12 +155,12 @@ class ProductionPackagingService
                 // Sólo se empaca lo que produjo esta orden. Antes bastaba con que
                 // la sucursal tuviera granel de producciones anteriores.
                 if ($sourceTotalBase > $remainingBySource[$sourceProductId] + 0.0001) {
-                    throw new RuntimeException(sprintf(
+                    throw new BusinessRuleException(sprintf(
                         'No alcanza el granel de esta producción para empacar %s: quedan %s y se necesitan %s.',
                         $product->name,
                         $this->formatQuantity($remainingBySource[$sourceProductId]),
                         $this->formatQuantity($sourceTotalBase)
-                    ));
+                    ), 'insufficient_bulk');
                 }
                 $remainingBySource[$sourceProductId] -= $sourceTotalBase;
 
@@ -243,7 +243,7 @@ class ProductionPackagingService
             $status = $this->status($order);
 
             if (!$status->allowsPackaging()) {
-                throw new RuntimeException("No se puede revertir un empaque de una orden en estado {$status->label()}.");
+                throw new BusinessRuleException("No se puede revertir un empaque de una orden en estado {$status->label()}.", 'invalid_status');
             }
 
             // Se relee el empaque bloqueado: si otra petición ya lo revirtió, ya
@@ -255,11 +255,11 @@ class ProductionPackagingService
                 ->find($packaging->getKey());
 
             if (!$packaging) {
-                throw new RuntimeException('Ese empaque ya fue revertido.');
+                throw new BusinessRuleException('Ese empaque ya fue revertido.', 'already_reverted');
             }
 
             if ((int) $packaging->production_order_id !== (int) $order->id) {
-                throw new RuntimeException('El empaque no pertenece a esta orden de producción.');
+                throw new BusinessRuleException('El empaque no pertenece a esta orden de producción.', 'packaging_not_in_order');
             }
 
             $this->reverseStock($order, $packaging);
@@ -560,10 +560,11 @@ class ProductionPackagingService
         $status = $this->status($order);
 
         if (!$status->allowsPackaging()) {
-            throw new RuntimeException(
+            throw new BusinessRuleException(
                 $status === ProductionOrderStatus::DRAFT
                     ? 'La producción debe completarse antes de poder empacar.'
-                    : "No se puede empacar una orden en estado {$status->label()}."
+                    : "No se puede empacar una orden en estado {$status->label()}.",
+                'invalid_status'
             );
         }
     }
