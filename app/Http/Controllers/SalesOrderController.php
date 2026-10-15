@@ -17,10 +17,12 @@ use App\Support\CurrentWorker;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\Money;
+use App\Support\SalePricing;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class SalesOrderController extends CrudController
 {
@@ -84,10 +86,24 @@ class SalesOrderController extends CrudController
 
     protected function validateStoreData(Request $request): array
     {
-        return $request->validate([
+        return $request->validate($this->orderRules());
+    }
+
+    /**
+     * Reglas del alta de un pedido (también las usa el cobro rápido del
+     * kiosco). Cliente y productos de la empresa del contexto: antes se
+     * aceptaba cualquier id existente.
+     *
+     * @return array<string, mixed>
+     */
+    private function orderRules(): array
+    {
+        $companyId = CurrentCompany::id();
+
+        return [
             'channel' => 'required|in:kiosk,phone,admin',
             'service_mode' => 'required|in:counter,delivery',
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => ['nullable', Rule::exists('customers', 'id')->where('company_id', $companyId)],
             'customer_name_snapshot' => 'nullable|string|max:255',
             'customer_phone_snapshot' => 'nullable|string|max:25',
             'customer_email_snapshot' => 'nullable|email|max:255',
@@ -95,12 +111,12 @@ class SalesOrderController extends CrudController
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'details' => 'required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
+            'details.*.product_id' => ['required', Rule::exists('products', 'id')->where('company_id', $companyId)],
             'details.*.package_id' => 'nullable|exists:product_packages,id',
             'details.*.unit_id' => 'required|exists:units,id',
             'details.*.requested_quantity' => 'required|numeric|min:0.001',
             'details.*.unit_price' => 'required|numeric|min:0',
-        ]);
+        ];
     }
 
     protected function validateUpdateData(Request $request, Model $model): array
@@ -111,10 +127,12 @@ class SalesOrderController extends CrudController
             ]);
         }
 
+        $companyId = CurrentCompany::id();
+
         return $request->validate([
             'channel' => 'sometimes|required|in:kiosk,phone,admin',
             'service_mode' => 'sometimes|required|in:counter,delivery',
-            'customer_id' => 'nullable|exists:customers,id',
+            'customer_id' => ['nullable', Rule::exists('customers', 'id')->where('company_id', $companyId)],
             'customer_name_snapshot' => 'nullable|string|max:255',
             'customer_phone_snapshot' => 'nullable|string|max:25',
             'customer_email_snapshot' => 'nullable|email|max:255',
@@ -122,7 +140,7 @@ class SalesOrderController extends CrudController
             'notes' => 'nullable|string',
             'internal_notes' => 'nullable|string',
             'details' => 'sometimes|required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
+            'details.*.product_id' => ['required', Rule::exists('products', 'id')->where('company_id', $companyId)],
             'details.*.package_id' => 'nullable|exists:product_packages,id',
             'details.*.unit_id' => 'required|exists:units,id',
             'details.*.requested_quantity' => 'required|numeric|min:0.001',
@@ -153,25 +171,48 @@ class SalesOrderController extends CrudController
                 throw new \RuntimeException('Contexto de empresa, sucursal o usuario no disponible');
             }
 
+            // Los renglones solo se reemplazan si vienen: editar las notas de un
+            // pedido (sin details) borraba todos sus renglones y dejaba el total
+            // en 0.
+            $hasDetails = array_key_exists('details', $data);
             $payload = $data;
             $details = $payload['details'] ?? [];
             unset($payload['details']);
 
-            $payload['company_id'] = $company->id;
-            $payload['location_id'] = $location->id;
-            $payload['created_by'] = $method === 'create' ? $user->id : ($payload['created_by'] ?? null);
-            $payload['updated_by'] = $user->id;
-            $payload['channel'] = SalesOrderChannel::from($payload['channel']);
-            $payload['service_mode'] = SalesOrderServiceMode::from($payload['service_mode']);
-
-            app()->make('App\\Services\\SalesOrderStockService')->validateDraftDetails($location->id, $details);
-
             if ($method === 'create') {
+                $payload['company_id'] = $company->id;
+                $payload['location_id'] = $location->id;
+                $payload['created_by'] = $user->id;
                 $payload['status'] = SalesOrderStatus::PENDING;
+            } else {
+                // Al editar no se tocan empresa, sucursal ni quién lo creó (antes
+                // se pasaba el pedido a la sucursal de quien editaba y se borraba
+                // su creador).
+                unset($payload['company_id'], $payload['location_id'], $payload['created_by']);
+            }
+            $payload['updated_by'] = $user->id;
+            if (isset($payload['channel'])) {
+                $payload['channel'] = SalesOrderChannel::from($payload['channel']);
+            }
+            if (isset($payload['service_mode'])) {
+                $payload['service_mode'] = SalesOrderServiceMode::from($payload['service_mode']);
+            }
+
+            if ($hasDetails) {
+                // Precio de catálogo salvo permiso sales_discount, como en el
+                // punto de venta (SalePricing): antes el pedido (y el kiosco)
+                // cobraba el precio que mandara la app.
+                $details = SalePricing::priceLines($details, CurrentWorker::hasPermission('sales_discount'), $company->id);
+
+                app()->make('App\\Services\\SalesOrderStockService')->validateDraftDetails($location->id, $details);
             }
 
             /** @var SalesOrder $order */
             $order = $callback($payload);
+
+            if (!$hasDetails) {
+                return $order->fresh($this->getShowRelations());
+            }
 
             if ($method === 'update') {
                 $order->details()->delete();
@@ -241,7 +282,13 @@ class SalesOrderController extends CrudController
     public function getInitialData(Request $request)
     {
         $location = CurrentLocation::get();
+        $companyId = CurrentCompany::id();
 
+        // Productos a la venta y también los que no se venden sueltos pero
+        // tienen paquetes con precio: de esos solo se vende el paquete
+        // (for_sale = false le dice a la app que no ofrezca la pieza). Antes
+        // esos paquetes no aparecían en el kiosco. Solo de la empresa del
+        // contexto (antes no se filtraba por empresa).
         $products = Product::with([
             'category',
             'unit',
@@ -249,15 +296,20 @@ class SalesOrderController extends CrudController
             'activePackages',
             'locations',
         ])
-            ->where('for_sale', true)
+            ->where('company_id', $companyId)
+            ->where(fn($query) => $query->where('for_sale', true)->orWhereHas('activePackages'))
             ->when($location, function ($query) use ($location) {
                 $query->whereHas('locations', function ($locationQuery) use ($location) {
                     $locationQuery->where('locations.id', $location->id);
                 });
             })
-            ->get();
+            ->get()
+            ->filter(fn(Product $product) => SalePricing::onlySellablePackages($product))
+            ->values();
 
-        $customers = Customer::where('is_active', true)
+        // Clientes de la empresa del contexto (antes salían los de todas).
+        $customers = Customer::where('company_id', $companyId)
+            ->where('is_active', true)
             ->orderBy('name')
             ->get();
 

@@ -6,8 +6,6 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\SaleResource;
 use App\Models\Sale;
 use App\Models\Product;
-use App\Models\ProductPackage;
-use Illuminate\Validation\ValidationException;
 use App\Models\Expense;
 use App\Enums\SaleStatus;
 use App\Exceptions\BusinessRuleException;
@@ -17,6 +15,8 @@ use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use App\Support\Money;
+use App\Support\SalePricing;
+use Illuminate\Validation\Rule;
 use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Request;
@@ -149,9 +149,9 @@ class SaleController extends CrudController
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
 
-            // Detalles de la venta
+            // Detalles de la venta (productos de la empresa del contexto)
             'details' => 'required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
+            'details.*.product_id' => ['required', Rule::exists('products', 'id')->where('company_id', CurrentCompany::id())],
             'details.*.package_id' => 'nullable|exists:product_packages,id',
             'details.*.unit_id' => 'required|exists:units,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
@@ -216,50 +216,15 @@ class SaleController extends CrudController
     }
 
     /**
-     * Precio de catálogo obligatorio salvo permiso sales_discount. Espeja la
-     * lógica del punto de venta (PosController::priceDetails) para que la
-     * pantalla de ventas anterior tampoco pueda cobrar a un precio arbitrario.
+     * Precio de catálogo obligatorio salvo permiso sales_discount, con las
+     * mismas reglas que el punto de venta y los pedidos (SalePricing): la
+     * pantalla anterior tampoco puede cobrar a un precio arbitrario, vender un
+     * paquete con otro producto ni la pieza suelta de un producto que solo se
+     * vende en paquete.
      */
     private function enforceCatalogPricing(array $details): array
     {
-        if (CurrentWorker::hasPermission('sales_discount')) {
-            return $details; // puede fijar precio y aplicar descuentos
-        }
-
-        $companyId = CurrentCompany::id();
-        $products = Product::whereIn('id', array_column($details, 'product_id'))
-            ->where('company_id', $companyId)
-            ->get()->keyBy('id');
-        $packages = ProductPackage::whereIn('id', array_filter(array_column($details, 'package_id')))
-            ->get()->keyBy('id');
-
-        foreach ($details as $i => $d) {
-            $product = $products[$d['product_id']] ?? null;
-            if (!$product) {
-                throw ValidationException::withMessages(["details.{$i}.product_id" => ['Producto inválido.']]);
-            }
-
-            $package = !empty($d['package_id']) ? ($packages[$d['package_id']] ?? null) : null;
-            $catalog = $package
-                ? ((float) $package->sale_price > 0
-                    ? (float) $package->sale_price
-                    : round((float) $product->sale_price * (float) $package->quantity_per_package, 2))
-                : (float) $product->sale_price;
-
-            $sent = round((float) ($d['unit_price'] ?? $catalog), 2);
-            $discount = round((float) ($d['discount'] ?? 0), 2);
-
-            if (abs($sent - $catalog) > 0.009 || $discount > 0) {
-                throw ValidationException::withMessages([
-                    "details.{$i}.unit_price" => ['No tienes permiso para cambiar el precio o aplicar descuentos.'],
-                ]);
-            }
-
-            $details[$i]['unit_price'] = $catalog;
-            $details[$i]['discount'] = 0;
-        }
-
-        return $details;
+        return SalePricing::priceLines($details, CurrentWorker::hasPermission('sales_discount'));
     }
 
     /**
@@ -799,9 +764,12 @@ class SaleController extends CrudController
                 ], 422);
             }
 
-            // Cargar productos activos para venta con sus paquetes
+            // Productos a la venta con sus paquetes, y también los productos que
+            // no se venden sueltos pero tienen paquetes con precio (de ellos solo
+            // se vende el paquete: for_sale le dice a la app que no ofrezca la
+            // pieza). Antes esos paquetes no aparecían en ninguna pantalla.
             $products = Product::where('company_id', $companyId)
-                ->where('for_sale', true)
+                ->where(fn($q) => $q->where('for_sale', true)->orWhereHas('activePackages'))
                 ->whereHas('locations', function ($query) use ($locationId) {
                     $query->where('location_id', $locationId)
                         ->where('active', true);
@@ -815,11 +783,16 @@ class SaleController extends CrudController
                         $query->where('location_id', $locationId);
                     }
                 ])
-                ->get();
+                ->get()
+                ->filter(fn($product) => SalePricing::onlySellablePackages($product))
+                ->values();
 
             // Formatear las imágenes de los productos manualmente
             $productsWithImages = $products->map(function ($product) {
                 $productArray = $product->toArray();
+
+                // Precio de catálogo de cada paquete (el que valida el servidor).
+                $productArray['active_packages'] = SalePricing::packagesWithPrice($product, $productArray['active_packages'] ?? []);
 
                 // Formatear imagen principal si existe
                 if ($product->relationLoaded('mainImage') && $product->mainImage) {
