@@ -10,6 +10,7 @@ use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\SalePayment;
 use App\Models\SalesOrder;
+use App\Support\Money;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -282,17 +283,23 @@ class SalesOrderStockService
             $this->releaseOrder($order);
 
             // 2. Build a fresh Sale linked to the order.
-            $subtotal = round((float) $order->details->sum('line_subtotal'), 2);
-            $total = round((float) ($order->total_amount ?? $subtotal), 2);
+            //    Importes en centavos enteros (App\Support\Money): el total es
+            //    la suma exacta de los renglones, como en el punto de venta.
+            $subtotalCents = (int) $order->details->sum(fn($detail) => Money::toCents($detail->line_subtotal));
+            $totalCents = $order->total_amount !== null ? Money::toCents($order->total_amount) : $subtotalCents;
+            $subtotal = Money::fromCents($subtotalCents);
+            $total = Money::fromCents($totalCents);
             $paymentMethod = $payment['payment_method'] ?? 'cash';
-            $paidAmount = isset($payment['paid_amount']) ? round((float) $payment['paid_amount'], 2) : $total;
+            $paidCents = isset($payment['paid_amount']) ? Money::toCents($payment['paid_amount']) : $totalCents;
+            $paidAmount = Money::fromCents($paidCents);
 
             // Lo que excede el total es cambio, no dinero que se queda: en
             // efectivo se guarda como recibido/cambio, igual que en el POS.
-            $appliedAmount = min($paidAmount, $total);
-            $paymentStatus = $appliedAmount >= $total
+            $appliedCents = min($paidCents, $totalCents);
+            $appliedAmount = Money::fromCents($appliedCents);
+            $paymentStatus = $appliedCents >= $totalCents
                 ? 'paid'
-                : ($appliedAmount > 0 ? 'partial' : 'pending');
+                : ($appliedCents > 0 ? 'partial' : 'pending');
 
             $sessionId = CashMovementService::openSessionIdFor(Auth::id(), (int) $order->location_id);
             $session = $sessionId ? CashRegisterSession::find($sessionId) : null;
@@ -365,8 +372,8 @@ class SalesOrderStockService
                     $sale->payments()->create([
                         'method' => $paymentMethod,
                         'amount' => $appliedAmount,
-                        'tendered' => $isCash ? max($paidAmount, $appliedAmount) : null,
-                        'change' => $isCash ? round(max($paidAmount - $appliedAmount, 0), 2) : null,
+                        'tendered' => $isCash ? Money::fromCents(max($paidCents, $appliedCents)) : null,
+                        'change' => $isCash ? Money::fromCents(max($paidCents - $appliedCents, 0)) : null,
                     ]);
                 }
 

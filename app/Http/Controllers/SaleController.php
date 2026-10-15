@@ -15,6 +15,7 @@ use App\Services\CashMovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
+use App\Support\Money;
 use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Request;
@@ -1005,19 +1006,21 @@ class SaleController extends CrudController
                     return ['error' => 'No se puede registrar un pago en una venta cancelada', 'status' => 400];
                 }
 
-                $totalPaid = (float) ($sale->paid_amount ?? 0);
-                $newAmount = round((float) $validated['amount'], 2);
-                $total = (float) $sale->total;
-                $totalAfterPayment = round($totalPaid + $newAmount, 2);
+                // En centavos enteros: pagar el saldo exacto en parcialidades
+                // (50.10 + 50.20 vs 100.30) no se rechaza por el error de punto
+                // flotante.
+                $paidCents = Money::toCents($sale->paid_amount ?? 0);
+                $newCents = Money::toCents($validated['amount']);
+                $totalCents = Money::toCents($sale->total);
+                $afterCents = $paidCents + $newCents;
+                $newAmount = Money::fromCents($newCents);
+                $totalAfterPayment = Money::fromCents($afterCents);
 
-                // Comparación con tolerancia de centavo: pagar el saldo exacto en
-                // parcialidades (50.10 + 50.20 vs 100.30) ya no se rechaza por el
-                // error de punto flotante.
-                if ($totalAfterPayment > $total + 0.009) {
+                if ($afterCents > $totalCents) {
                     return [
                         'error' => 'El monto ingresado excede el saldo pendiente',
                         'status' => 400,
-                        'pending_amount' => round($total - $totalPaid, 2),
+                        'pending_amount' => Money::fromCents($totalCents - $paidCents),
                     ];
                 }
 
@@ -1031,9 +1034,9 @@ class SaleController extends CrudController
 
                 $sale->paid_amount = $totalAfterPayment;
                 $sale->payment_history = $paymentHistory;
-                $sale->payment_status = $totalAfterPayment >= $total - 0.009
+                $sale->payment_status = $afterCents >= $totalCents
                     ? 'paid'
-                    : ($totalAfterPayment > 0 ? 'partial' : 'pending');
+                    : ($afterCents > 0 ? 'partial' : 'pending');
                 $sale->save();
 
                 CashMovementService::fromSale(

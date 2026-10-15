@@ -7,6 +7,7 @@ use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\SalePayment;
+use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -30,21 +31,35 @@ class SaleService
     public function create(array $data, ?CashRegisterSession $session = null): Sale
     {
         return DB::transaction(function () use ($data, $session) {
+            // Importes en centavos enteros (App\Support\Money), igual que la app
+            // y que PosController: cada renglón se redondea mitad hacia arriba y
+            // los totales son la suma exacta de los renglones.
             $lines = array_map(function ($d) {
-                $quantity = (float) $d['quantity'];
-                $unitPrice = (float) $d['unit_price'];
-                $subtotal = round($quantity * $unitPrice, 2);
-                $discount = min(round((float) ($d['discount'] ?? 0), 2), $subtotal);
+                $amounts = Money::line($d['quantity'], $d['unit_price']);
+                $subtotalCents = $amounts['subtotal'];
+                $discountCents = min(Money::toCents($d['discount'] ?? 0), $subtotalCents);
 
-                return $d + ['subtotal' => $subtotal, 'discount' => $discount, 'total' => round($subtotal - $discount, 2)];
+                return array_merge($d, [
+                    'quantity' => Money::roundQuantity($d['quantity']),
+                    'unit_price' => Money::round($d['unit_price']),
+                    'subtotal_cents' => $subtotalCents,
+                    'discount_cents' => $discountCents,
+                    'subtotal' => Money::fromCents($subtotalCents),
+                    'discount' => Money::fromCents($discountCents),
+                    'total' => Money::fromCents($subtotalCents - $discountCents),
+                ]);
             }, $data['details']);
 
-            $subtotal = round(array_sum(array_column($lines, 'subtotal')), 2);
-            $discount = round(array_sum(array_column($lines, 'discount')), 2);
-            $total = round($subtotal - $discount, 2);
+            $subtotalCents = array_sum(array_column($lines, 'subtotal_cents'));
+            $discountCents = array_sum(array_column($lines, 'discount_cents'));
+            $totalCents = $subtotalCents - $discountCents;
+            $subtotal = Money::fromCents($subtotalCents);
+            $discount = Money::fromCents($discountCents);
+            $total = Money::fromCents($totalCents);
 
             $payments = $this->normalizePayments($data, $total);
-            $paid = round(array_sum(array_column($payments, 'amount')), 2);
+            $paidCents = array_sum(array_map(fn($p) => Money::toCents($p['amount']), $payments));
+            $paid = Money::fromCents($paidCents);
 
             $paymentMethod = count($payments) > 1
                 ? 'mixed'
@@ -64,7 +79,7 @@ class SaleService
                 'total' => $total,
                 'payment_method' => $paymentMethod,
                 'paid_amount' => $paid,
-                'payment_status' => $paid >= $total ? 'paid' : ($paid > 0 ? 'partial' : 'pending'),
+                'payment_status' => $paidCents >= $totalCents ? 'paid' : ($paidCents > 0 ? 'partial' : 'pending'),
                 'payment_history' => $paid > 0 ? [[
                     'amount' => $paid,
                     'payment_method' => $paymentMethod,
@@ -121,14 +136,16 @@ class SaleService
     {
         if (!empty($data['payments'])) {
             return array_map(function ($p) {
-                $amount = round((float) $p['amount'], 2);
-                $tendered = isset($p['tendered']) ? round((float) $p['tendered'], 2) : null;
+                $amount = Money::round($p['amount']);
+                $tendered = isset($p['tendered']) ? Money::round($p['tendered']) : null;
 
                 return [
                     'method' => $p['method'],
                     'amount' => $amount,
                     'tendered' => $p['method'] === 'cash' ? ($tendered ?? $amount) : null,
-                    'change' => $p['method'] === 'cash' ? round(max(($tendered ?? $amount) - $amount, 0), 2) : null,
+                    'change' => $p['method'] === 'cash'
+                        ? Money::fromCents(max(Money::toCents($tendered ?? $amount) - Money::toCents($amount), 0))
+                        : null,
                 ];
             }, $data['payments']);
         }
@@ -138,7 +155,7 @@ class SaleService
         // Crédito sin anticipo: si no se indica monto, no se registra pago (antes
         // tomaba el total por defecto y marcaba la venta como pagada).
         $default = $method === 'credit' ? 0.0 : $total;
-        $paid = round((float) ($data['paid_amount'] ?? $default), 2);
+        $paid = Money::round($data['paid_amount'] ?? $default);
 
         // Nunca registrar como ingreso más que el total de la venta: pagar de
         // más (500 en una venta de 380) no debe asentar 500 en caja; el cambio

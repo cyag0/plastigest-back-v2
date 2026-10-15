@@ -15,6 +15,7 @@ use App\Models\SalesOrderDetail;
 use App\Support\CurrentWorker;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -175,27 +176,32 @@ class SalesOrderController extends CrudController
                 $order->details()->delete();
             }
 
-            $subtotal = 0;
+            // En centavos enteros, como el punto de venta y la app: el renglón
+            // se redondea y el total es la suma exacta de los renglones (antes
+            // se sumaban flotantes sin redondear y el total podía no cuadrar
+            // con sus renglones por un centavo).
+            $subtotalCents = 0;
             foreach ($details as $detail) {
-                $lineSubtotal = (float) $detail['requested_quantity'] * (float) $detail['unit_price'];
-                $subtotal += $lineSubtotal;
+                $lineCents = Money::line($detail['requested_quantity'], $detail['unit_price'])['subtotal'];
+                $subtotalCents += $lineCents;
 
                 SalesOrderDetail::create([
                     'sales_order_id' => $order->id,
                     'product_id' => $detail['product_id'],
                     'package_id' => $detail['package_id'] ?? null,
                     'unit_id' => $detail['unit_id'],
-                    'requested_quantity' => $detail['requested_quantity'],
+                    'requested_quantity' => Money::roundQuantity($detail['requested_quantity']),
                     'prepared_quantity' => 0,
                     'delivered_quantity' => 0,
                     'reserved_quantity_base' => 0,
                     'delivered_quantity_base' => 0,
-                    'unit_price' => $detail['unit_price'],
-                    'line_subtotal' => $lineSubtotal,
-                    'line_total' => $lineSubtotal,
+                    'unit_price' => Money::round($detail['unit_price']),
+                    'line_subtotal' => Money::fromCents($lineCents),
+                    'line_total' => Money::fromCents($lineCents),
                 ]);
             }
 
+            $subtotal = Money::fromCents($subtotalCents);
             $order->forceFill([
                 'subtotal' => $subtotal,
                 'total_amount' => $subtotal,

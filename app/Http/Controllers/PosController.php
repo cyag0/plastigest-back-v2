@@ -9,6 +9,7 @@ use App\Services\SaleService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
+use App\Support\Money;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -124,12 +125,20 @@ class PosController extends Controller
         ]);
 
         $details = $this->priceDetails($validated['details']);
-        $total = round(array_sum(array_map(
-            fn($d) => round($d['quantity'] * $d['unit_price'], 2) - $d['discount'],
-            $details
-        )), 2);
 
-        $paid = round(array_sum(array_column($validated['payments'], 'amount')), 2);
+        // En centavos enteros, igual que la app (utils/money.ts): cada renglón
+        // se redondea mitad hacia arriba y luego se suman. Con flotantes un
+        // producto pesado (2.489 kg × $25) salía distinto aquí y en la app, y
+        // la venta se rechazaba por un centavo.
+        $total = Money::fromCents(array_sum(array_map(
+            fn($d) => Money::line($d['quantity'], $d['unit_price'], $d['discount'])['total'],
+            $details
+        )));
+
+        $paid = Money::fromCents(array_sum(array_map(
+            fn($p) => Money::toCents($p['amount']),
+            $validated['payments']
+        )));
         if (abs($paid - $total) > 0.009) {
             throw ValidationException::withMessages([
                 'payments' => [sprintf('Los pagos suman $%s y el total es $%s.', number_format($paid, 2), number_format($total, 2))],
@@ -197,8 +206,8 @@ class PosController extends Controller
                 ? $this->packagePrice($package, (float) $product->sale_price)
                 : (float) $product->sale_price;
 
-            $price = isset($d['unit_price']) ? round((float) $d['unit_price'], 2) : $catalogPrice;
-            $discount = round((float) ($d['discount'] ?? 0), 2);
+            $price = isset($d['unit_price']) ? Money::round($d['unit_price']) : $catalogPrice;
+            $discount = Money::round($d['discount'] ?? 0);
 
             if (!$canDiscount && (abs($price - $catalogPrice) > 0.009 || $discount > 0)) {
                 throw ValidationException::withMessages([
@@ -212,7 +221,7 @@ class PosController extends Controller
                 // Los paquetes se venden en la unidad del producto; MovementService
                 // multiplica por quantity_per_package al descontar stock.
                 'unit_id' => $product->unit_id,
-                'quantity' => (float) $d['quantity'],
+                'quantity' => Money::roundQuantity($d['quantity']),
                 'unit_price' => $price,
                 'discount' => $discount,
             ];
