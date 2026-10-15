@@ -161,6 +161,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('permissions/by-resource', [PermissionsController::class, 'getPermissionsByResource']);
             Route::apiResource('permissions', PermissionsController::class);
             Route::apiResource('roles', RolesController::class);
+            // Quitar al usuario de la sucursal actual (Administración › Esta sucursal).
+            Route::delete('users/{user}/current-location', [UserController::class, 'removeFromCurrentLocation']);
             Route::apiResource('users', UserController::class);
             Route::apiResource('companies', CompanyController::class);
             Route::apiResource('locations', LocationController::class);

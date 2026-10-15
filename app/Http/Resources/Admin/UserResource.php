@@ -4,6 +4,7 @@ namespace App\Http\Resources\Admin;
 
 use App\Http\Resources\Resources;
 use App\Models\User;
+use App\Support\CurrentLocation;
 use App\Utils\AppUploadUtil;
 use App\Constants\Files;
 use Illuminate\Database\Eloquent\Model;
@@ -70,8 +71,15 @@ class UserResource extends Resources
                 'location_id'   => $location->id,
                 'location_name' => $location->name,
                 'role_id'       => $location->pivot->role_id,
+                'role_name'     => $location->role_name,
                 'company_id'    => $location->company_id,
             ])->values()->toArray();
+
+            // Su acceso a la sucursal actual (Administración › Esta sucursal).
+            $currentLocationId = CurrentLocation::id();
+            $item['location_role'] = $currentLocationId
+                ? collect($item['location_roles'])->firstWhere('location_id', $currentLocationId)
+                : null;
         }
 
         return $item;
