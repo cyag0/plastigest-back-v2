@@ -58,7 +58,8 @@ class CashRegisterSessionController extends Controller
             $query->where('opened_at', '<', Carbon::parse($request->date_to)->startOfDay()->addDay());
         }
 
-        $page = $query->paginate((int) $request->input('per_page', 20));
+        // Con tope: sin él per_page=1000000 traía todos los turnos.
+        $page = $query->paginate(min(max((int) $request->input('per_page', 20), 1), 100));
 
         return response()->json([
             'data' => CashRegisterSessionResource::collection($page->items()),

@@ -76,8 +76,8 @@ class ExpenseController extends Controller
         $query->orderBy('expense_date', 'desc')
             ->orderBy('created_at', 'desc');
 
-        // Paginación
-        $perPage = $request->get('per_page', 15);
+        // Paginación, con tope: sin él per_page=1000000 traía todo el historial.
+        $perPage = min(max((int) $request->input('per_page', 15), 1), 100);
         $expenses = $query->paginate($perPage);
 
         return ExpenseResource::collection($expenses);

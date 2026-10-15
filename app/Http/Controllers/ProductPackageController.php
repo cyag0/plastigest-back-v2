@@ -71,7 +71,7 @@ class ProductPackageController extends Controller
         // Se envuelve en un JsonResource para devolver el sobre data/links/meta
         // que espera el frontend (AppList lee response.data.data y response.data.meta).
         if ($request->boolean('paginated')) {
-            $perPage = (int) $request->input('per_page', 20);
+            $perPage = min(max((int) $request->input('per_page', 20), 1), 100);
             return JsonResource::collection($query->paginate($perPage));
         }
 

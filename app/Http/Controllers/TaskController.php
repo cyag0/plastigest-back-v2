@@ -132,7 +132,8 @@ class TaskController extends Controller
         $sortOrder = $request->get('sort_order', 'asc');
         $query->orderBy($sortBy, $sortOrder);
 
-        $perPage = $request->get('per_page', 15);
+        // Con tope: sin él per_page=1000000 traía todas las tareas.
+        $perPage = min(max((int) $request->input('per_page', 15), 1), 100);
         return $query->paginate($perPage);
     }
 
