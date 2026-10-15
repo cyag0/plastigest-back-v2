@@ -3,10 +3,13 @@
 namespace App\Providers;
 
 use App\Support\SystemAlerts;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Console\Events\ScheduledTaskFailed;
+use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -51,6 +54,14 @@ class OperationsServiceProvider extends ServiceProvider
         Event::listen(
             ScheduledTaskFailed::class,
             fn(ScheduledTaskFailed $event) => $this->app->make(SystemAlerts::class)->scheduledTaskFailed($event)
+        );
+
+        // Reportes de errores de la app (POST auth/admin/client-errors): un
+        // error en un render puede repetirse en bucle; 20 por minuto por
+        // usuario bastan para diagnosticar sin llenar el log.
+        RateLimiter::for(
+            'client-errors',
+            fn(Request $request) => Limit::perMinute(20)->by('client-errors:' . ($request->user()?->id ?: $request->ip()))
         );
     }
 }
