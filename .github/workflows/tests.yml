@@ -62,3 +62,64 @@ jobs:
 
       - name: Pruebas
         run: php artisan test
+
+  nixpacks:
+    # La imagen de producción tal como la arma Coolify (Nixpacks 1.41.0 +
+    # nixpacks.toml). Si no se puede construir (versión de PHP, extensiones,
+    # composer install --no-dev) o la app no arranca sin las dependencias de
+    # desarrollo, falla aquí y no en el deploy.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      NIXPACKS_VERSION: 1.41.0
+      NIXPACKS_SHA256: 0f55de7874507b9cf7502113120bd96f2ab6979f78d10eaf2eb2ade9207b3af6
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Nixpacks (la versión de Coolify)
+        run: |
+          curl -fsSL -o nixpacks.tar.gz "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${NIXPACKS_SHA256}  nixpacks.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/bin"
+          tar -xzf nixpacks.tar.gz -C "$HOME/bin" nixpacks
+          rm nixpacks.tar.gz
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Plan sin build de Node
+        run: |
+          nixpacks plan . --format json > "$RUNNER_TEMP/plan.json"
+          jq '.phases | map_values(.cmds)' "$RUNNER_TEMP/plan.json"
+          # La API no tiene frontend: ninguna fase debe correr npm.
+          jq -e '[.phases[] | (.cmds // [])[]] | all(test("\\bnpm\\b") | not)' "$RUNNER_TEMP/plan.json"
+
+      - name: Construir la imagen
+        run: nixpacks build . --name gcstock-api:ci
+
+      - name: La imagen arranca y responde
+        run: |
+          docker run -d --name api -p 8080:80 \
+            -e APP_ENV=production -e APP_DEBUG=false \
+            -e APP_KEY="base64:$(openssl rand -base64 32)" \
+            -e LOG_CHANNEL=stack -e LOG_STACK=stderr \
+            -e DB_CONNECTION=mysql -e DB_HOST=127.0.0.1 -e DB_PORT=3306 \
+            gcstock-api:ci
+          docker exec api php -v
+          # Las extensiones que piden composer.json y la app.
+          for ext in pdo_mysql zip xmlreader gd intl bcmath pcntl sodium mbstring; do
+            docker exec api php -m | grep -qix "$ext" || { echo "Falta la extensión $ext"; exit 1; }
+          done
+          # Sin require-dev (Telescope, IDE Helper, Sail): artisan arranca y
+          # los cachés del post-deploy (DEPLOY-COOLIFY.md) se pueden generar.
+          docker exec api php artisan about --only=environment
+          docker exec api sh -c 'php artisan config:cache && php artisan route:cache && php artisan view:cache'
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8080/up > /dev/null && break
+            sleep 2
+          done
+          curl -fsS -o /dev/null -w "GET /up -> %{http_code}\n" http://localhost:8080/up
+
+      - name: Logs del contenedor
+        if: always()
+        run: docker logs api 2>&1 | tail -n 100 || true
