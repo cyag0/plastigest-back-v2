@@ -450,10 +450,16 @@ class InventoryCountController extends CrudController
      */
     public function generatePdfUrl($id)
     {
+        // Mismo permiso que las pantallas que muestran el conteo (lista o
+        // detalle). Antes bastaba con ser de la empresa.
+        if (!CurrentWorker::hasPermission('inventory_read') && !CurrentWorker::hasPermission('inventory_list')) {
+            return $this->forbiddenResponse('ver este conteo');
+        }
+
         try {
-            // Verificar que el inventario existe y pertenece a la compañía actual (evita IDOR cross-tenant)
-            $inventoryCount = InventoryCount::where('company_id', CurrentCompany::id())
-                ->findOrFail($id);
+            // De la empresa actual y, para quien no ve todas las sucursales,
+            // de su sucursal (antes cualquier conteo de la empresa).
+            $inventoryCount = $this->scopedQuery()->findOrFail($id);
 
             // Generar URL firmada que expira en 1 hora, codificando el company_id para validación en el render
             $signedUrl = URL::temporarySignedRoute(
