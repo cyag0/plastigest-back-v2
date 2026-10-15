@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\CashRegisterSession;
 use App\Models\Product;
 use App\Models\Sale;
@@ -157,6 +158,12 @@ class SaleService
         $default = $method === 'credit' ? 0.0 : $total;
         $paid = Money::round($data['paid_amount'] ?? $default);
 
+        // "Crédito" no es una forma de pago: un anticipo con ese método entraba
+        // a caja como "otro" sin saber si fue efectivo, tarjeta o transferencia.
+        if ($method === 'credit' && $paid > 0) {
+            throw self::creditWithPayment();
+        }
+
         // Nunca registrar como ingreso más que el total de la venta: pagar de
         // más (500 en una venta de 380) no debe asentar 500 en caja; el cambio
         // no es ingreso.
@@ -167,5 +174,19 @@ class SaleService
         }
 
         return [['method' => $method, 'amount' => $paid]];
+    }
+
+    /**
+     * Venta o pedido a crédito con un monto pagado. El anticipo se registra con
+     * su forma de pago real (efectivo, tarjeta o transferencia) y un monto
+     * menor al total: la venta queda parcial y el resto pendiente.
+     */
+    public static function creditWithPayment(): BusinessRuleException
+    {
+        return new BusinessRuleException(
+            'Una venta a crédito no registra pago. Si el cliente deja un anticipo, elige con qué pagó '
+            . '(efectivo, tarjeta o transferencia) y captura el monto: el resto queda pendiente.',
+            'credit_with_payment',
+        );
     }
 }

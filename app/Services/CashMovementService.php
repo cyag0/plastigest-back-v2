@@ -9,7 +9,6 @@ use App\Models\PurchaseV2;
 use App\Models\Sale;
 use App\Support\CurrentLocation;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
 
 class CashMovementService
 {
@@ -39,6 +38,12 @@ class CashMovementService
     /**
      * Crea un movimiento de caja de tipo ingreso a partir de una venta.
      *
+     * Sin try/catch, igual que reverseSale(): se llama dentro de la
+     * transacción de la venta, del cobro del pedido o del abono, y si el
+     * movimiento no se puede registrar la operación completa se revierte.
+     * Antes el error solo se registraba en el log: la venta, su stock y sus
+     * pagos quedaban sin el ingreso y el turno esperaba menos efectivo.
+     *
      * @param Sale   $sale          Venta de la cual proviene el ingreso
      * @param float  $amount        Monto del pago
      * @param string $paymentMethod Método de pago usado
@@ -50,41 +55,33 @@ class CashMovementService
             return;
         }
 
-        try {
-            $concept = 'Venta ' . self::documentLabel($sale->sale_number, $sale->id);
+        $concept = 'Venta ' . self::documentLabel($sale->sale_number, $sale->id);
 
-            // El turno indicado solo vale si está abierto y es de la sucursal de
-            // la venta. Sin turno indicado (p. ej. un abono posterior) entra al
-            // turno abierto de quien cobra en esa sucursal; nunca al de otra
-            // sucursal ni a un turno ya cerrado.
-            $sessionId = $sessionId !== null
-                ? self::openSessionAtLocation($sessionId, $sale->location_id)
-                : self::sessionForSale($sale);
+        // El turno indicado solo vale si está abierto y es de la sucursal de
+        // la venta. Sin turno indicado (p. ej. un abono posterior) entra al
+        // turno abierto de quien cobra en esa sucursal; nunca al de otra
+        // sucursal ni a un turno ya cerrado.
+        $sessionId = $sessionId !== null
+            ? self::openSessionAtLocation($sessionId, $sale->location_id)
+            : self::sessionForSale($sale);
 
-            CashMovement::create([
-                'company_id'     => $sale->company_id,
-                'location_id'    => $sale->location_id,
-                'cash_register_session_id' => $sessionId,
-                'user_id'        => Auth::id() ?? $sale->user_id,
-                'type'           => 'income',
-                'amount'         => $amount,
-                'concept'        => $concept,
-                'payment_method' => self::mapPaymentMethod($paymentMethod),
-                'source_type'    => 'sale',
-                'source_id'      => $sale->id,
-                'source_url'     => '/(tabs)/home/sales/' . $sale->id,
-                'notes'          => $notes,
-                'movement_date'  => $sale->sale_date
-                    ? (is_string($sale->sale_date) ? $sale->sale_date : $sale->sale_date->toDateString())
-                    : now()->toDateString(),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('CashMovementService: error al crear movimiento de venta', [
-                'sale_id' => $sale->id,
-                'amount'  => $amount,
-                'error'   => $e->getMessage(),
-            ]);
-        }
+        CashMovement::create([
+            'company_id'     => $sale->company_id,
+            'location_id'    => $sale->location_id,
+            'cash_register_session_id' => $sessionId,
+            'user_id'        => Auth::id() ?? $sale->user_id,
+            'type'           => 'income',
+            'amount'         => $amount,
+            'concept'        => $concept,
+            'payment_method' => self::mapPaymentMethod($paymentMethod),
+            'source_type'    => 'sale',
+            'source_id'      => $sale->id,
+            'source_url'     => '/(tabs)/home/sales/' . $sale->id,
+            'notes'          => $notes,
+            'movement_date'  => $sale->sale_date
+                ? (is_string($sale->sale_date) ? $sale->sale_date : $sale->sale_date->toDateString())
+                : now()->toDateString(),
+        ]);
     }
 
     /**
@@ -135,11 +132,17 @@ class CashMovementService
     /**
      * Crea un movimiento de caja de tipo egreso a partir de una compra V2 recibida.
      *
+     * Sin try/catch, como fromSale(): si el egreso no se puede registrar, la
+     * recepción se revierte en lugar de quedar sin su salida de caja.
+     *
      * @param PurchaseV2 $purchase Compra recibida
+     * @param float|null $amount   Lo que salió de la caja; por defecto el total de
+     *                             la compra (con recepción parcial, quien llama
+     *                             manda lo recibido × costo).
      */
-    public static function fromPurchaseV2(PurchaseV2 $purchase): void
+    public static function fromPurchaseV2(PurchaseV2 $purchase, ?float $amount = null): void
     {
-        $total = (float) ($purchase->total ?? 0);
+        $total = $amount ?? (float) ($purchase->total ?? 0);
 
         // Si la compra no se pagó con dinero de la caja (la pagó el dueño o se
         // hizo desde el banco) no debe salir del corte.
@@ -147,36 +150,28 @@ class CashMovementService
             return;
         }
 
-        try {
-            $concept = 'Compra ' . self::documentLabel($purchase->purchase_number, $purchase->id);
+        $concept = 'Compra ' . self::documentLabel($purchase->purchase_number, $purchase->id);
 
-            CashMovement::create([
-                'company_id'     => $purchase->company_id,
-                'location_id'    => $purchase->location_id,
-                // El dinero sale de la caja de quien recibe, si tiene turno
-                // abierto en esa sucursal. Antes la compra no quedaba en ningún
-                // turno y el efectivo esperado del cajero no la descontaba.
-                'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $purchase->location_id),
-                'user_id'        => Auth::id() ?? $purchase->user_id,
-                'type'           => 'expense',
-                'amount'         => $total,
-                'concept'        => $concept,
-                'payment_method' => self::mapPaymentMethod($purchase->payment_method ?? null),
-                'source_type'    => 'purchase_v2',
-                'source_id'      => $purchase->id,
-                'source_url'     => '/(tabs)/home/purchases/' . $purchase->id,
-                'notes'          => null,
-                'movement_date'  => $purchase->purchase_date
-                    ? (is_string($purchase->purchase_date) ? $purchase->purchase_date : $purchase->purchase_date->toDateString())
-                    : now()->toDateString(),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('CashMovementService: error al crear movimiento de compra V2', [
-                'purchase_id' => $purchase->id,
-                'total'       => $total,
-                'error'       => $e->getMessage(),
-            ]);
-        }
+        CashMovement::create([
+            'company_id'     => $purchase->company_id,
+            'location_id'    => $purchase->location_id,
+            // El dinero sale de la caja de quien recibe, si tiene turno
+            // abierto en esa sucursal. Antes la compra no quedaba en ningún
+            // turno y el efectivo esperado del cajero no la descontaba.
+            'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $purchase->location_id),
+            'user_id'        => Auth::id() ?? $purchase->user_id,
+            'type'           => 'expense',
+            'amount'         => $total,
+            'concept'        => $concept,
+            'payment_method' => self::mapPaymentMethod($purchase->payment_method ?? null),
+            'source_type'    => 'purchase_v2',
+            'source_id'      => $purchase->id,
+            'source_url'     => '/(tabs)/home/purchases/' . $purchase->id,
+            'notes'          => null,
+            'movement_date'  => $purchase->purchase_date
+                ? (is_string($purchase->purchase_date) ? $purchase->purchase_date : $purchase->purchase_date->toDateString())
+                : now()->toDateString(),
+        ]);
     }
 
     /**

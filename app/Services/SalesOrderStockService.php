@@ -290,8 +290,19 @@ class SalesOrderStockService
             $subtotal = Money::fromCents($subtotalCents);
             $total = Money::fromCents($totalCents);
             $paymentMethod = $payment['payment_method'] ?? 'cash';
+
+            // Crédito, igual que en SaleService: sin monto no se cobra nada
+            // (antes tomaba el total, marcaba la venta como pagada y metía un
+            // ingreso "otro" a caja: la cuenta por cobrar desaparecía). Un
+            // anticipo va con su forma de pago real, nunca como "crédito".
+            if ($paymentMethod === 'credit') {
+                if (isset($payment['paid_amount']) && Money::toCents($payment['paid_amount']) > 0) {
+                    throw SaleService::creditWithPayment();
+                }
+                $payment['paid_amount'] = 0;
+            }
+
             $paidCents = isset($payment['paid_amount']) ? Money::toCents($payment['paid_amount']) : $totalCents;
-            $paidAmount = Money::fromCents($paidCents);
 
             // Lo que excede el total es cambio, no dinero que se queda: en
             // efectivo se guarda como recibido/cambio, igual que en el POS.

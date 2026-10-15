@@ -864,13 +864,20 @@ class SaleController extends CrudController
             return $this->forbiddenResponse('registrar pagos de ventas');
         }
 
-        try {
-            $validated = $request->validate([
-                'amount' => 'required|numeric|min:0.01',
-                'payment_method' => 'required|in:cash,card,transfer,credit',
-                'notes' => 'nullable|string',
-            ]);
+        // Fuera del try: un error de validación es un 422, no "Error al
+        // registrar pago" (500). "Crédito" no es una forma de pago: un abono
+        // "a crédito" marcaba como cobrado un dinero que no entró y lo
+        // asentaba en caja como "otro". Un abono es efectivo, tarjeta o
+        // transferencia.
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'payment_method' => 'required|in:cash,card,transfer',
+            'notes' => 'nullable|string|max:500',
+        ], [
+            'payment_method.in' => 'Un abono se registra en efectivo, tarjeta o transferencia.',
+        ]);
 
+        try {
             // La venta debe ser de la empresa/sucursal del contexto.
             $scopedId = $this->scopedQuery()->whereKey($id)->value('id');
             if (!$scopedId) {

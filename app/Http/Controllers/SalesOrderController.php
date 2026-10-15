@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\SalesOrderChannel;
 use App\Enums\SalesOrderServiceMode;
 use App\Enums\SalesOrderStatus;
+use App\Exceptions\BusinessRuleException;
 use App\Http\Resources\Admin\CustomerResource;
 use App\Http\Resources\ProductResource;
 use App\Http\Resources\SalesOrderResource;
@@ -341,18 +342,27 @@ class SalesOrderController extends CrudController
                 ],
             ]);
         } catch (\Illuminate\Validation\ValidationException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No se pudo cobrar el pedido',
-                'errors' => $exception->errors(),
-            ], 422);
+            return $this->validationFailure($exception, 'No se pudo cobrar el pedido');
         } catch (\Throwable $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al cobrar el pedido',
-                'error' => $exception->getMessage(),
-            ], 422);
+            // Reglas de negocio (stock insuficiente, turno, crédito con pago):
+            // su propio 422 {message, code}. Antes cualquier excepción salía con
+            // su texto, SQL incluido; un error interno ahora se registra y se
+            // responde un mensaje genérico.
+            return $this->errorResponse($exception, 'Error al cobrar el pedido', $this->isInternalError($exception) ? 500 : 422);
         }
+    }
+
+    /**
+     * 422 de una validación de negocio con el primer motivo en `message` (la
+     * app muestra message) y el detalle por campo en `errors`.
+     */
+    private function validationFailure(\Illuminate\Validation\ValidationException $exception, string $fallback)
+    {
+        return response()->json([
+            'success' => false,
+            'message' => collect($exception->errors())->flatten()->first() ?? $fallback,
+            'errors' => $exception->errors(),
+        ], 422);
     }
 
     private function transition(int $id, SalesOrderStatus $targetStatus, string $message)
@@ -377,7 +387,7 @@ class SalesOrderController extends CrudController
                 // Entregar exige que el pedido ya tenga una venta asociada
                 // (se cobró con checkout); si no, no debe pasar a entregado.
                 if ($targetStatus === SalesOrderStatus::DELIVERED && !$order->sale_id) {
-                    throw new \RuntimeException('El pedido debe cobrarse antes de marcarse como entregado.');
+                    throw new BusinessRuleException('El pedido debe cobrarse antes de marcarse como entregado.', 'order_not_paid');
                 }
 
                 if ($targetStatus === SalesOrderStatus::PREPARING) {
@@ -398,17 +408,14 @@ class SalesOrderController extends CrudController
                 'message' => $message,
                 'data' => new $this->resource($order, ['editing' => true]),
             ]);
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            // Stock insuficiente al apartar, pedido ya apartado…: el motivo va
+            // en `message`, que es lo que muestra la app (antes iba escondido).
+            return $this->validationFailure($exception, 'Error al cambiar el estado del pedido');
         } catch (\Throwable $exception) {
-            \Illuminate\Support\Facades\Log::error('Error al cambiar el estado del pedido', [
-                'exception' => get_class($exception),
-                'message' => $exception->getMessage(),
-            ]);
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al cambiar el estado del pedido',
-                // Solo se expone el mensaje si es de negocio (no interno).
-                'error' => $this->isInternalError($exception) ? null : $exception->getMessage(),
-            ], 422);
+            // Reglas de negocio con su 422 {message, code}; un error interno se
+            // registra y responde un mensaje genérico, sin su texto.
+            return $this->errorResponse($exception, 'Error al cambiar el estado del pedido', $this->isInternalError($exception) ? 500 : 422);
         }
     }
 }
