@@ -5,16 +5,16 @@ namespace App\Http\Controllers;
 use App\Models\SalesReport;
 use App\Http\Resources\SalesReportResource;
 use App\Support\CurrentCompany;
-use App\Support\CurrentLocation;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Barryvdh\DomPDF\Facade\Pdf;
+use App\Enums\SaleStatus;
 use App\Models\Sale;
-use App\Models\SaleItem;
 use App\Models\Expense;
+use Illuminate\Support\Carbon;
 
 class SalesReportController extends CrudController
 {
@@ -154,10 +154,16 @@ class SalesReportController extends CrudController
      */
     public function generatePdfUrl($id)
     {
+        // Mismo permiso que ver el reporte (antes bastaba con estar autenticado).
+        if (!$this->canRead()) {
+            return $this->forbiddenResponse('ver este reporte');
+        }
+
         try {
-            // Verificar que el reporte existe y pertenece a la compañía actual (evita IDOR cross-tenant)
-            $salesReport = SalesReport::where('company_id', CurrentCompany::id())
-                ->findOrFail($id);
+            // De la empresa actual y, salvo acceso a todas las sucursales, de la
+            // sucursal actual (como el detalle): evita IDOR entre empresas y
+            // sucursales.
+            $salesReport = $this->scopedQuery()->findOrFail($id);
 
             // Generar URL firmada que expira en 1 hora, codificando el company_id para validación en el render
             $signedUrl = URL::temporarySignedRoute(
@@ -203,17 +209,22 @@ class SalesReportController extends CrudController
                 'company'
             ])->findOrFail($id);
 
-            // Obtener la ubicación actual para filtrar ventas
-            $currentLocation = CurrentLocation::get();
-            $locationId = $currentLocation ? $currentLocation->id : $salesReport->location_id;
+            // Ventas vigentes del día del reporte en SU sucursal. Antes se
+            // filtraba por sales.location_origin_id, que no existe: el PDF
+            // siempre fallaba con "Error al generar el PDF". La sucursal es la
+            // del reporte (la ruta firmada no trae sucursal actual) y el día es
+            // sale_date, la fecha de la venta (columna DATE con índice).
+            $locationId = $salesReport->location_id;
+            $reportDate = Carbon::parse($salesReport->report_date)->toDateString();
 
-            // Obtener todas las ventas del día en la ubicación
             $sales = Sale::with([
                 'details.product.unit',
                 'user'
             ])
-                ->where('location_origin_id', $locationId)
-                ->whereDate('created_at', $salesReport->report_date)
+                ->where('company_id', $salesReport->company_id)
+                ->where('location_id', $locationId)
+                ->where('sale_date', $reportDate)
+                ->where('status', '!=', SaleStatus::CANCELLED->value)
                 ->orderBy('created_at', 'asc')
                 ->get();
 
@@ -231,15 +242,17 @@ class SalesReportController extends CrudController
                         ];
                     }
                     $productsSold[$productKey]['quantity'] += $detail->quantity;
-                    $productsSold[$productKey]['total'] += $detail->total_cost ?? 0;
+                    // Importe vendido del renglón (total_cost no existe en SaleDetail).
+                    $productsSold[$productKey]['total'] += (float) $detail->total;
                     $productsSold[$productKey]['transactions']++;
                 }
             }
 
             // Obtener gastos del día
             $expenses = Expense::with(['user'])
+                ->where('company_id', $salesReport->company_id)
                 ->where('location_id', $locationId)
-                ->whereDate('expense_date', $salesReport->report_date)
+                ->where('expense_date', $reportDate)
                 ->orderBy('created_at', 'asc')
                 ->get();
 

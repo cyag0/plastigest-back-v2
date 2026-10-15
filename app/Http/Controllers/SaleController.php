@@ -328,15 +328,20 @@ class SaleController extends CrudController
             return $this->forbiddenResponse('ver estadísticas de ventas');
         }
 
+        // Sucursal: la actual por defecto; otra (o todas, "all") solo para
+        // quien tiene acceso a todas las sucursales. Antes cualquiera veía las
+        // estadísticas de otra sucursal con ?location_id=. Fuera del try: el
+        // 403/404 no debe volverse un 500.
+        $locationId = CurrentWorker::locationScope($request->input('location_id', CurrentLocation::id()));
+
         try {
             $companyId = CurrentCompany::id();
-            $locationId = $request->input('location_id') ?? current_location_id();
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
 
-            // Query base, aislada por empresa (y sucursal del contexto).
+            // Query base, aislada por empresa y sucursal.
             $query = Sale::where('company_id', $companyId)
-                ->where('location_id', $locationId);
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId));
 
             if ($startDate) {
                 $query->where('sale_date', '>=', $startDate);
@@ -414,7 +419,7 @@ class SaleController extends CrudController
                 ->join('sales', 'sales_details.sale_id', '=', 'sales.id')
                 ->join('products', 'sales_details.product_id', '=', 'products.id')
                 ->where('sales.company_id', $companyId)
-                ->where('sales.location_id', $locationId)
+                ->when($locationId, fn($q) => $q->where('sales.location_id', $locationId))
                 // Los productos más vendidos no deben contar ventas canceladas.
                 ->where('sales.status', '!=', SaleStatus::CANCELLED->value)
                 ->when($startDate, function ($q) use ($startDate) {
@@ -519,17 +524,21 @@ class SaleController extends CrudController
             return $this->forbiddenResponse('ver el corte de caja');
         }
 
-        try {
-            $validated = $request->validate([
-                'date' => 'required|date',
-                'location_id' => 'nullable|exists:locations,id',
-                // company_id se ignora: el corte siempre es de la empresa del
-                // contexto (X-Company-ID validado). Se mantiene por compatibilidad.
-                'company_id' => 'nullable|exists:companies,id',
-            ]);
+        // Fuera del try: una fecha inválida es un 422, no un 500.
+        $validated = $request->validate([
+            'date' => 'required|date',
+            // company_id se ignora: el corte siempre es de la empresa del
+            // contexto (X-Company-ID validado). Se mantiene por compatibilidad.
+            'company_id' => 'nullable|exists:companies,id',
+        ]);
 
+        // Sucursal: la actual por defecto; otra (o todas, "all") solo para
+        // quien tiene acceso a todas las sucursales. Antes cualquiera pedía el
+        // corte de otra sucursal con ?location_id=.
+        $locationId = CurrentWorker::locationScope($request->input('location_id', CurrentLocation::id()));
+
+        try {
             $date = $validated['date'];
-            $locationId = $validated['location_id'] ?? CurrentLocation::get()?->id;
 
             // Empresa SIEMPRE del contexto: no se toma del parámetro para que
             // nadie pueda pedir el corte de otra empresa con company_id.

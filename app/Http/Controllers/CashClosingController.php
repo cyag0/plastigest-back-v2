@@ -270,9 +270,9 @@ class CashClosingController extends CrudController
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $company = CurrentCompany::get();
-
-        $closing = CashClosing::where('company_id', $company?->id)->findOrFail($id);
+        // De la empresa actual y, salvo acceso a todas las sucursales, de la
+        // sucursal actual (como el listado y el detalle).
+        $closing = $this->scopedQuery()->findOrFail($id);
 
         $signedUrl = URL::temporarySignedRoute(
             'cash-closings.pdf',
