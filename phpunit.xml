@@ -29,5 +29,7 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- Sin credenciales de Firebase: las pruebas nunca hablan con FCM, aunque la máquina tenga storage/app/firebase/service-account.json. -->
+        <env name="FIREBASE_CREDENTIALS" value=""/>
     </php>
 </phpunit>
