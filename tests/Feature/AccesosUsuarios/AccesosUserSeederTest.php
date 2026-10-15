@@ -67,6 +67,15 @@ class AccesosUserSeederTest extends TestCase
         $this->assertStringNotContainsString("return 'password'", $source);
     }
 
+    public function test_no_seeder_has_a_written_password(): void
+    {
+        foreach (glob(database_path('seeders/*.php')) as $file) {
+            $source = file_get_contents($file);
+            $this->assertDoesNotMatchRegularExpression('/(Hash::make|bcrypt)\(\s*[\'"]/', $source, basename($file));
+            $this->assertDoesNotMatchRegularExpression('/PASSWORD\s*=\s*[\'"][^\'"]+[\'"]/', $source, basename($file));
+        }
+    }
+
     public function test_outside_local_the_super_admin_needs_admin_password(): void
     {
         $this->seed([PermissionSeeder::class, CompaniesSeeder::class]);
