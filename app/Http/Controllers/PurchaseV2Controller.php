@@ -19,6 +19,7 @@ use App\Constants\Files;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -1073,7 +1074,7 @@ class PurchaseV2Controller extends Controller
         }
 
         $companyId = CurrentCompany::get()->id;
-        $locationId = $request->input('location_id') ?? CurrentLocation::get()?->id;
+        $locationId = $this->requestedLocation($request);
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
 
@@ -1164,23 +1165,62 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $location = CurrentLocation::get();
+        $locationId = $this->requestedLocation($request);
 
-        $query = PurchaseV2::with(['supplier', 'user', 'details'])
-            ->where('company_id', CurrentCompany::get()->id);
+        // Solo lo que la lista muestra: proveedor, quién la hizo (sin su
+        // correo) y cuántos productos lleva, no todos los renglones.
+        $query = PurchaseV2::with(['supplier:id,name', 'user:id,name'])
+            ->withCount(['details as products_count'])
+            ->where('company_id', CurrentCompany::id())
+            ->when($locationId, fn($q) => $q->where('location_id', $locationId));
 
-        if ($request->has('status')) {
-            $query->where('status', $request->status);
+        if ($request->filled('status')) {
+            $query->where('status', $request->input('status'));
         }
 
-        if ($request->has('location_id') || $location) {
-            $locationId = $request->has('location_id') ? $request->location_id : $location->id;
-            $query->where('location_id', $locationId);
+        if ($request->filled('supplier_id')) {
+            $query->where('supplier_id', (int) $request->input('supplier_id'));
         }
 
-        $purchases = $query->orderBy('created_at', 'desc')->paginate(20);
+        // Mismos filtros de fecha que el resto de las listas (CrudController).
+        $dateFrom = $request->input('date_from') ?? $request->input('start_date');
+        $dateTo = $request->input('date_to') ?? $request->input('end_date');
+        $query->when($dateFrom, fn($q) => $q->whereDate('purchase_date', '>=', $dateFrom))
+            ->when($dateTo, fn($q) => $q->whereDate('purchase_date', '<=', $dateTo));
 
-        return response()->json($purchases);
+        // El buscador de la lista: folio, número de documento del proveedor,
+        // nombre del proveedor o notas.
+        if ($request->filled('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('purchase_number', 'like', "%{$search}%")
+                    ->orWhere('document_number', 'like', "%{$search}%")
+                    ->orWhere('notes', 'like', "%{$search}%")
+                    ->orWhereHas('supplier', fn($s) => $s->where('name', 'like', "%{$search}%"));
+            });
+        }
+
+        // Siempre paginada, con el sobre data/links/meta de las demás listas
+        // (CrudController): la app la muestra con AppList y su paginador.
+        // Antes devolvía el paginador crudo de 20 sin `meta` y la app no
+        // podía pasar de la primera página.
+        $perPage = min(100, max(1, (int) $request->input('per_page', 20)));
+        $purchases = $query->orderByDesc('created_at')->orderByDesc('id')->paginate($perPage);
+
+        return JsonResource::collection($purchases);
+    }
+
+    /**
+     * Sucursal de una lista o estadística de compras: la del filtro
+     * location_id para quien ve todas las sucursales ('all' = todas) y, si no
+     * lo manda, la actual. Un usuario de una sola sucursal siempre ve la suya,
+     * diga lo que diga el filtro.
+     */
+    private function requestedLocation(Request $request): ?int
+    {
+        return CurrentWorker::locationScope(
+            $request->filled('location_id') ? $request->input('location_id') : CurrentLocation::id()
+        );
     }
 
     /**

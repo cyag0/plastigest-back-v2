@@ -2,11 +2,11 @@
 
 namespace Tests\Feature\ComprasProduccion;
 
-use App\Models\Admin\Company;
 use App\Models\Admin\Location;
 use App\Models\Product;
 use App\Models\PurchaseDetailV2;
 use App\Models\PurchaseV2;
+use App\Models\Supplier;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -253,5 +253,100 @@ class ComprasProduccionPurchasesTest extends TestCase
         $this->actingInBranch($this->user)
             ->postJson('/api/auth/admin/purchases-v2/upsert-draft', ['items' => [$line($this->coco)]])
             ->assertOk();
+    }
+
+    // ─── Lista y estadísticas ───────────────────────────────────────────────
+
+    public function test_the_list_is_paginated_like_the_other_lists_and_searchable(): void
+    {
+        $supplier = Supplier::create(['company_id' => $this->company->id, 'name' => 'Cocos del Pacífico']);
+
+        for ($i = 0; $i < 24; $i++) {
+            $this->purchase($this->location, PurchaseV2::STATUS_RECEIVED);
+        }
+        $fromSupplier = $this->purchase($this->location, PurchaseV2::STATUS_ORDERED, [[10, 15], [5, 8]]);
+        $fromSupplier->update(['supplier_id' => $supplier->id, 'document_number' => 'FAC-778']);
+        $this->purchase($this->pitillal, PurchaseV2::STATUS_RECEIVED);
+        $this->foreignPurchase(PurchaseV2::STATUS_RECEIVED);
+
+        // Lo que pide AppList: paginated, per_page y page.
+        $this->actingInBranch($this->user)
+            ->getJson('/api/auth/admin/purchases-v2?paginated=1&per_page=20&page=2')
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => [['id', 'purchase_number', 'status', 'payment_method', 'purchase_date', 'products_count']],
+                'links' => ['first', 'last', 'prev', 'next'],
+                'meta' => ['current_page', 'from', 'last_page', 'per_page', 'to', 'total'],
+            ])
+            ->assertJsonPath('meta.total', 25)
+            ->assertJsonPath('meta.last_page', 2)
+            ->assertJsonPath('meta.current_page', 2)
+            ->assertJsonCount(5, 'data');
+
+        // La más reciente primero, con su proveedor y cuántos productos lleva.
+        $first = $this->actingInBranch($this->user)
+            ->getJson('/api/auth/admin/purchases-v2?paginated=1&per_page=20')
+            ->assertOk()
+            ->json('data.0');
+        $this->assertSame($fromSupplier->id, $first['id']);
+        $this->assertSame('Cocos del Pacífico', $first['supplier']['name']);
+        $this->assertSame(2, $first['products_count']);
+        $this->assertArrayNotHasKey('email', $first['user'] ?? [], 'no expone el correo de quien la hizo');
+
+        foreach (['Pacífico', 'FAC-778', $fromSupplier->purchase_number] as $search) {
+            $this->actingInBranch($this->user)
+                ->getJson('/api/auth/admin/purchases-v2?paginated=1&search=' . urlencode($search))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 1)
+                ->assertJsonPath('data.0.id', $fromSupplier->id);
+        }
+
+        $this->actingInBranch($this->user)
+            ->getJson('/api/auth/admin/purchases-v2?status=ordered')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1);
+    }
+
+    public function test_a_branch_user_only_lists_and_counts_their_own_branch(): void
+    {
+        $this->purchase($this->location, PurchaseV2::STATUS_RECEIVED);
+        $this->purchase($this->pitillal, PurchaseV2::STATUS_RECEIVED);
+        $this->purchase($this->pitillal, PurchaseV2::STATUS_RECEIVED);
+        $buyer = $this->buyer();
+        $pitillal = $this->pitillal->id;
+
+        // El filtro de sucursal no le abre las compras de otra.
+        foreach (["?location_id={$pitillal}", '?location_id=all', ''] as $query) {
+            $this->actingInBranch($buyer)
+                ->getJson("/api/auth/admin/purchases-v2{$query}")
+                ->assertOk()
+                ->assertJsonPath('meta.total', 1);
+
+            $this->actingInBranch($buyer)
+                ->getJson("/api/auth/admin/purchases-v2/stats{$query}")
+                ->assertOk()
+                ->assertJsonPath('data.total_purchases', 1)
+                ->assertJsonPath('data.total_amount', 150);
+        }
+
+        // Quien ve todas las sucursales sí elige: la actual por defecto, otra,
+        // o todas.
+        $expected = ['' => 1, "?location_id={$pitillal}" => 2, '?location_id=all' => 3];
+        foreach ($expected as $query => $total) {
+            $this->actingInBranch($this->user)
+                ->getJson("/api/auth/admin/purchases-v2{$query}")
+                ->assertOk()
+                ->assertJsonPath('meta.total', $total);
+            $this->actingInBranch($this->user)
+                ->getJson("/api/auth/admin/purchases-v2/stats{$query}")
+                ->assertOk()
+                ->assertJsonPath('data.total_purchases', $total);
+        }
+
+        // Una sucursal de otra empresa no existe para él.
+        [, $foreignBranch] = $this->createCompanyWithBranch();
+        $this->actingInBranch($this->user)
+            ->getJson("/api/auth/admin/purchases-v2?location_id={$foreignBranch->id}")
+            ->assertNotFound();
     }
 }
