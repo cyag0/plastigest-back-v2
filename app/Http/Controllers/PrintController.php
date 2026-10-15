@@ -82,9 +82,16 @@ class PrintController extends Controller
         }
 
         // Las mismas reglas que para ver el turno: el propio, o quien
-        // consulta turnos.
-        if ($session->user_id !== Auth::id() && !CurrentWorker::hasPermission('cash_register_sessions_read')) {
-            return $this->forbidden();
+        // consulta turnos. El de otra persona, además, solo de la sucursal
+        // actual salvo con acceso a todas: antes un supervisor imprimía el
+        // corte de cualquier sucursal mandando su id.
+        if ($session->user_id !== Auth::id()) {
+            if (!CurrentWorker::hasPermission('cash_register_sessions_read')) {
+                return $this->forbidden();
+            }
+            if (!CurrentWorker::canAccessAllLocations() && $session->location_id !== CurrentLocation::id()) {
+                return $this->notFound('Turno no encontrado.');
+            }
         }
 
         return $this->signed('print.shift-ticket', ['session' => $session->id], $request);
@@ -116,7 +123,11 @@ class PrintController extends Controller
         }
 
         $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->find($id);
-        if (!$transfer) {
+        // Como al ver la transferencia: sin acceso a todas las sucursales,
+        // solo las que salen de o llegan a una de las suyas.
+        if (!$transfer || !(CurrentWorker::canAccessAllLocations()
+            || CurrentWorker::canAccessLocation((int) $transfer->from_location_id)
+            || CurrentWorker::canAccessLocation((int) $transfer->to_location_id))) {
             return $this->notFound('Transferencia no encontrada.');
         }
 

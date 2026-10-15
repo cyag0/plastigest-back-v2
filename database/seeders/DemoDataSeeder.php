@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
@@ -38,8 +39,15 @@ use RuntimeException;
  */
 class DemoDataSeeder extends Seeder
 {
-    private const PASSWORD = 'Demo2026$';
     private const EMAIL_DOMAIN = 'cocos-francisco.com';
+
+    /**
+     * Contraseña de los usuarios demo: DEMO_PASSWORD o, si no está definida,
+     * una al azar que se muestra al terminar. Antes iba escrita aquí y el
+     * repositorio es público: si una base con datos demo llegara a usarse en
+     * serio, cualquiera entraría como encargado de sucursal.
+     */
+    private string $password;
 
     private Company $company;
     private Location $matriz;
@@ -72,6 +80,7 @@ class DemoDataSeeder extends Seeder
             return;
         }
 
+        $this->password = (string) env('DEMO_PASSWORD', '') ?: Str::password(16, symbols: false);
         $this->isolate();
         $this->kernel = app(Kernel::class);
 
@@ -126,7 +135,7 @@ class DemoDataSeeder extends Seeder
         foreach ($this->stats as $what => $count) {
             $this->command->line(sprintf('  %-22s %d', $what, $count));
         }
-        $this->command->info('Usuarios demo: cajero.<sucursal>@' . self::EMAIL_DOMAIN . ' / encargado.<sucursal>@' . self::EMAIL_DOMAIN . '  contraseña ' . self::PASSWORD);
+        $this->command->info('Usuarios demo: cajero.<sucursal>@' . self::EMAIL_DOMAIN . ' / encargado.<sucursal>@' . self::EMAIL_DOMAIN . '  contraseña ' . $this->password);
     }
 
     // ─── Preparación ─────────────────────────────────────────────────────────
@@ -176,7 +185,7 @@ class DemoDataSeeder extends Seeder
             'products_list', 'products_read', 'inventory_list', 'inventory_read', 'cash_registers_list', 'dashboard_view'];
         $managerPerms = $all->keys()->reject(fn($p) => in_array($p, [
             'system_admin', 'companies_create', 'companies_delete', 'companies_manage', 'roles_create', 'roles_delete', 'roles_update',
-            'locations_create', 'locations_delete', 'users_delete', 'settings_manage',
+            'locations_create', 'locations_delete', 'locations_all', 'users_delete', 'settings_manage',
         ]))->all();
 
         $cashierRole = $this->role('Cajero', $cashierPerms, $all);
@@ -216,7 +225,7 @@ class DemoDataSeeder extends Seeder
         $user = User::create([
             'name' => $name,
             'email' => "{$local}@" . self::EMAIL_DOMAIN,
-            'password' => Hash::make(self::PASSWORD),
+            'password' => Hash::make($this->password),
         ]);
         DB::table('user_location_roles')->insert(['user_id' => $user->id, 'location_id' => $location->id, 'role_id' => $roleId]);
         DB::table('user_company')->insert(['user_id' => $user->id, 'company_id' => $this->company->id]);

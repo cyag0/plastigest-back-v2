@@ -74,7 +74,8 @@ Route::prefix('auth')->group(function () {
 
         return response()->file($fullPath);
     })->where('path', '.*');
-    // Rate limit: 5 intentos de login por minuto por IP, 3 registros por minuto por IP.
+    // Rate limit: cada ruta tiene su propio límite por correo y por IP (ver
+    // AppServiceProvider::configureAuthRateLimiters).
     // Laravel inyecta automaticamente los headers X-RateLimit-Limit / -Remaining
     // en TODAS las respuestas (exitosas o no) y devuelve 429 con Retry-After
     // cuando se excede. Ver bootstrap/app.php para personalizar la respuesta 429.
@@ -82,15 +83,15 @@ Route::prefix('auth')->group(function () {
     // administrador desde /auth/admin/users. Dejar /auth/register abierto
     // permitía que cualquiera creara un usuario con token válido.
     Route::post('login', [AuthController::class, 'login'])
-        ->middleware('throttle:5,1');
+        ->middleware('throttle:auth-login');
 
     // Recuperación de contraseña vía código OTP enviado por correo
     Route::post('forgot-password', [PasswordResetController::class, 'forgotPassword'])
-        ->middleware('throttle:3,1');
+        ->middleware('throttle:auth-forgot-password');
     Route::post('verify-reset-code', [PasswordResetController::class, 'verifyResetCode'])
-        ->middleware('throttle:5,1');
+        ->middleware('throttle:auth-verify-reset-code');
     Route::post('reset-password', [PasswordResetController::class, 'resetPassword'])
-        ->middleware('throttle:5,1');
+        ->middleware('throttle:auth-reset-password');
 });
 
 // Ruta pública para descargar PDFs con URL firmada

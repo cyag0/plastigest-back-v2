@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -55,11 +56,36 @@ abstract class CrudController extends Controller
     /**
      * Columna de sucursal del recurso. Cuando está definida, los usuarios que
      * NO pueden ver todas las sucursales (no son administradores) solo ven los
-     * registros de su sucursal actual. Los administradores (locations_list) ven
-     * todas las sucursales de la empresa. null = el recurso no se filtra por
+     * registros de su sucursal actual. Los administradores (system_admin o
+     * locations_all, ver CurrentWorker::canAccessAllLocations()) ven todas las
+     * sucursales de la empresa. null = el recurso no se filtra por
      * sucursal (catálogos de empresa como productos, clientes, etc.).
      */
     protected ?string $locationColumn = null;
+
+    /**
+     * Tope de per_page en las listas paginadas. Sin tope, per_page=100000
+     * traía la tabla completa en una sola respuesta.
+     */
+    protected int $maxPerPage = 100;
+
+    /**
+     * Tope de renglones de las listas sin paginar: all=true (selects) y las
+     * peticiones sin paginated ni per_page, que varias pantallas usan para
+     * traer la lista completa (productos de un conteo, sucursales, roles…).
+     * Antes no había tope y una tabla que crece se devolvía completa.
+     */
+    protected int $maxUnpaginated = 1000;
+
+    /**
+     * Columnas por las que se puede ordenar (sort_by), además de id, name,
+     * created_at, updated_at y $dateColumn cuando la tabla las tiene. Antes
+     * sort_by iba directo a orderBy: una columna inexistente respondía 500 y
+     * se podía ordenar por cualquier columna (sin índice o privada).
+     *
+     * @var string[]
+     */
+    protected array $sortable = [];
 
     /**
      * Cache de existencia de columnas por tabla, para no consultar el esquema
@@ -97,8 +123,14 @@ abstract class CrudController extends Controller
     protected function resolveStoreCompany(Request $request): ?\Illuminate\Http\JsonResponse
     {
         $column = $this->companyColumn;
-        if (!$column || !$this->modelHasColumn($column) || !($current = CurrentCompany::id())) {
+        if (!$column || !$this->modelHasColumn($column)) {
             return null;
+        }
+
+        // Sin empresa en el contexto no se crea nada: el company_id quedaba
+        // como lo mandara el cliente. SetCurrentCompany ya lo corta antes.
+        if (!($current = CurrentCompany::id())) {
+            return $this->companyRequiredResponse();
         }
 
         $requested = $request->input($column);
@@ -123,14 +155,24 @@ abstract class CrudController extends Controller
      */
     protected function applyTenantScope($query)
     {
-        if ($this->companyColumn && ($companyId = CurrentCompany::id()) && $this->modelHasColumn($this->companyColumn)) {
-            // Los registros sin empresa son catálogos globales compartidos
-            // (unidades, tipos de inventario): visibles para todas las empresas.
-            // Los registros con empresa solo los ve esa empresa.
-            $query->where(function ($q) use ($companyId) {
-                $q->where($this->companyColumn, $companyId)
-                    ->orWhereNull($this->companyColumn);
-            });
+        if ($this->companyColumn && $this->modelHasColumn($this->companyColumn)) {
+            $companyId = CurrentCompany::id();
+
+            if (!$companyId) {
+                // Sin empresa en el contexto no se devuelve nada. Antes la
+                // consulta salía sin filtro de empresa: todos los registros de
+                // todas las empresas. SetCurrentCompany ya corta esas
+                // peticiones; esto es la segunda barrera.
+                $query->whereRaw('1 = 0');
+            } else {
+                // Los registros sin empresa son catálogos globales compartidos
+                // (unidades, tipos de inventario): visibles para todas las
+                // empresas. Los registros con empresa solo los ve esa empresa.
+                $query->where(function ($q) use ($companyId) {
+                    $q->where($this->companyColumn, $companyId)
+                        ->orWhereNull($this->companyColumn);
+                });
+            }
         }
 
         if (
@@ -233,6 +275,18 @@ abstract class CrudController extends Controller
     }
 
     /**
+     * Falta la empresa del contexto (X-Company-ID). Mismo `code` que
+     * SetCurrentCompany: la app muestra el selector de empresa.
+     */
+    protected function companyRequiredResponse()
+    {
+        return response()->json([
+            'message' => 'Selecciona una empresa para continuar.',
+            'code' => 'company_required',
+        ], 403);
+    }
+
+    /**
      * Mostrar lista de recursos con filtros, orden y paginación
      */
     public function index(Request $request)
@@ -323,15 +377,33 @@ abstract class CrudController extends Controller
      */
     protected function applyOrdering($query, array $params)
     {
+        // Solo columnas permitidas; cualquier otra ordena por id.
         $sortBy = $params['sort_by'] ?? 'id';
+        if (!is_string($sortBy) || !in_array($sortBy, $this->sortableColumns(), true)) {
+            $sortBy = 'id';
+        }
+
         $sortDirection = $params['sort_direction'] ?? 'desc';
 
         // Validar dirección del ordenamiento
-        if (!in_array(strtolower($sortDirection), ['asc', 'desc'])) {
+        if (!is_string($sortDirection) || !in_array(strtolower($sortDirection), ['asc', 'desc'])) {
             $sortDirection = 'desc';
         }
 
-        $query->orderBy($sortBy, $sortDirection);
+        // Con la tabla: una consulta con joins no se vuelve ambigua.
+        $query->orderBy($query->getModel()->getTable() . '.' . $sortBy, $sortDirection);
+    }
+
+    /**
+     * Columnas válidas para sort_by (ver $sortable).
+     *
+     * @return string[]
+     */
+    protected function sortableColumns(): array
+    {
+        $columns = array_unique(['id', 'name', 'created_at', 'updated_at', $this->dateColumn, ...$this->sortable]);
+
+        return array_values(array_filter($columns, fn($column) => $this->modelHasColumn($column)));
     }
 
     /**
@@ -339,19 +411,26 @@ abstract class CrudController extends Controller
      */
     protected function getResults($query, array $params)
     {
-        // Si se especifica explícitamente que se quiere paginación
-        if (isset($params['paginated']) && $params['paginated'] == true) {
-            $perPage = $params['per_page'] ?? 15;
-            return $query->paginate($perPage);
+        $paginated = filter_var($params['paginated'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $perPage = is_numeric($params['per_page'] ?? null) ? (int) $params['per_page'] : 0;
+
+        // paginated=true (15 por página si no manda per_page) o per_page sin
+        // paginated (compatibilidad); siempre con tope.
+        if ($paginated || $perPage > 0) {
+            return $query->paginate(min($perPage > 0 ? $perPage : 15, $this->maxPerPage));
         }
 
-        // Si se especifica per_page sin paginated=true, también paginar (compatibilidad)
-        if (isset($params['per_page']) && $params['per_page'] > 0) {
-            return $query->paginate($params['per_page']);
+        // Sin paginar (all=true o sin per_page): la lista completa, con tope.
+        $results = $query->limit($this->maxUnpaginated)->get();
+
+        if ($results->count() >= $this->maxUnpaginated) {
+            Log::warning('Lista sin paginar recortada al tope', [
+                'controller' => static::class,
+                'max' => $this->maxUnpaginated,
+            ]);
         }
 
-        // Por defecto, retornar todos los resultados sin paginación
-        return $query->get();
+        return $results;
     }
 
     /**

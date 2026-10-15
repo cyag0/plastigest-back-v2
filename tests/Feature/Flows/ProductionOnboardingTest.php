@@ -26,9 +26,20 @@ class ProductionOnboardingTest extends TestCase
     private Company $company;
     private Location $matriz;
 
+    /** ADMIN_PASSWORD con la que UserSeeder crea al Super Admin. */
+    private const ADMIN_PASSWORD = 'Clave-del-dueno-2026';
+
     protected function setUp(): void
     {
         parent::setUp();
+
+        // Como en producción: la contraseña del Super Admin viene del entorno.
+        putenv('ADMIN_PASSWORD=' . self::ADMIN_PASSWORD);
+        $_ENV['ADMIN_PASSWORD'] = $_SERVER['ADMIN_PASSWORD'] = self::ADMIN_PASSWORD;
+        $this->beforeApplicationDestroyed(function () {
+            putenv('ADMIN_PASSWORD');
+            unset($_ENV['ADMIN_PASSWORD'], $_SERVER['ADMIN_PASSWORD']);
+        });
 
         $this->seed([ResourceSeeder::class, PermissionSeeder::class, UnitsSeeder::class, CompaniesSeeder::class, UserSeeder::class]);
 
@@ -36,7 +47,7 @@ class ProductionOnboardingTest extends TestCase
         $this->matriz = Location::where('company_id', $this->company->id)->orderBy('id')->firstOrFail();
     }
 
-    private function login(string $email, string $password = 'password'): string
+    private function login(string $email, string $password = self::ADMIN_PASSWORD): string
     {
         return $this->attemptLogin($email, $password)->assertOk()->json('access_token');
     }
@@ -95,7 +106,9 @@ class ProductionOnboardingTest extends TestCase
         ])->assertCreated()->json('data.id');
         $this->assertSame(count($cashierPerms), DB::table('rol_permission')->where('role_id', $cashierRole)->count());
 
-        $managerPerms = ['users_list', 'users_read', 'users_create', 'users_update', 'roles_list', 'locations_list',
+        // locations_all: es encargado de todas las sucursales (da de alta
+        // cajeros con sus sucursales, location_roles).
+        $managerPerms = ['users_list', 'users_read', 'users_create', 'users_update', 'roles_list', 'locations_list', 'locations_all',
             'products_list', 'products_read', 'products_create', 'products_update', 'inventory_list', 'inventory_manage',
             'cash_registers_list', 'cash_registers_create', 'sales_list', 'sales_read', 'dashboard_view',
             // Para dar de alta cajeros tiene que tener, al menos, los permisos del cajero.

@@ -5,6 +5,7 @@ namespace App\Http\Resources\Admin;
 use App\Http\Resources\Resources;
 use App\Models\User;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use App\Utils\AppUploadUtil;
 use App\Constants\Files;
 use Illuminate\Database\Eloquent\Model;
@@ -32,6 +33,12 @@ class UserResource extends Resources
                 : [],
             'avatar_name' => $resource->avatar,
             'is_active' => $resource->is_active ?? true,
+            // A un administrador del sistema solo lo modifica otro (ver
+            // UserController::guardTarget). En la lista viene calculado en la
+            // consulta; en el detalle se consulta aquí.
+            'is_system_admin' => array_key_exists('is_system_admin', $resource->getAttributes())
+                ? (bool) $resource->getAttributes()['is_system_admin']
+                : CurrentWorker::isSystemAdmin($resource),
         ];
 
         // Campos adicionales según el contexto

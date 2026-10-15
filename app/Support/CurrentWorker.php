@@ -10,6 +10,73 @@ use Illuminate\Support\Facades\DB;
 class CurrentWorker
 {
     /**
+     * Permiso que da acceso a todas las sucursales de la empresa (además de
+     * system_admin). Antes era locations_list ("Listar ubicaciones"), así que
+     * cualquier rol con ese permiso era, sin decirlo, administrador de todas
+     * las sucursales.
+     */
+    public const ALL_LOCATIONS_PERMISSION = 'locations_all';
+
+    /**
+     * Lo que ya se consultó durante la petición en curso: roles por sucursal,
+     * roles directos y permisos de cada rol. Una pantalla revisaba permisos
+     * decenas de veces y cada revisión eran 3 consultas.
+     *
+     * null = no hay petición en curso (consola, colas, pruebas fuera de una
+     * petición): no se guarda nada y cada llamada consulta la base. Lo abre y
+     * lo cierra SetCurrentCompany alrededor de cada petición de la API, así que
+     * nada pasa de una petición a otra (ni de una prueba a otra).
+     *
+     * @var array<string, mixed>|null
+     */
+    private static ?array $cache = null;
+
+    /**
+     * Empieza la caché de la petición (la llama SetCurrentCompany).
+     */
+    public static function beginRequest(): void
+    {
+        self::$cache = [];
+    }
+
+    /**
+     * Termina la caché de la petición: lo siguiente vuelve a consultar.
+     */
+    public static function endRequest(): void
+    {
+        self::$cache = null;
+    }
+
+    /**
+     * Olvida lo consultado en esta petición. Para después de cambiar roles o
+     * permisos dentro de la misma petición.
+     */
+    public static function flush(): void
+    {
+        if (self::$cache !== null) {
+            self::$cache = [];
+        }
+    }
+
+    /**
+     * @template T
+     * @param callable(): T $resolve
+     * @return T
+     */
+    private static function remember(string $key, callable $resolve): mixed
+    {
+        if (self::$cache === null) {
+            return $resolve();
+        }
+
+        if (!array_key_exists($key, self::$cache)) {
+            self::$cache[$key] = $resolve();
+        }
+
+        return self::$cache[$key];
+    }
+
+    /**
      * Obtener el rol del usuario en la sucursal actual (tabla user_location_roles)
      */
     public static function role(): ?Role
@@ -24,16 +91,12 @@ class CurrentWorker
             return null;
         }
 
-        $entry = DB::table('user_location_roles')
-            ->where('user_id', $user->id)
-            ->where('location_id', $locationId)
-            ->first();
-
-        if (!$entry || !$entry->role_id) {
+        $roleId = self::locationRoleIds($user)[$locationId] ?? null;
+        if (!$roleId) {
             return null;
         }
 
-        return Role::find($entry->role_id);
+        return self::remember("role-model:{$roleId}", fn() => Role::find($roleId));
     }
 
     /**
@@ -41,14 +104,7 @@ class CurrentWorker
      */
     public static function hasPermission(string $permissionName): bool
     {
-        $roleIds = self::roleIdsForCurrentLocation();
-        if (empty($roleIds)) {
-            return false;
-        }
-
-        return Role::whereIn('id', $roleIds)
-            ->whereHas('permissions', fn($q) => $q->where('name', $permissionName))
-            ->exists();
+        return in_array($permissionName, self::permissions(), true);
     }
 
     /**
@@ -72,40 +128,33 @@ class CurrentWorker
         $locationId = CurrentLocation::id();
 
         if ($locationId) {
-            $roleId = DB::table('user_location_roles')
-                ->where('user_id', $user->id)
-                ->where('location_id', $locationId)
-                ->value('role_id');
+            $locationRoles = self::locationRoleIds($user);
+            $roleId = $locationRoles[$locationId] ?? null;
 
             if ($roleId) {
-                $roleIds[] = (int) $roleId;
+                $roleIds[] = $roleId;
             } elseif (self::canAccessAllLocations($user)) {
-                $roleIds = DB::table('user_location_roles')
-                    ->where('user_id', $user->id)
-                    ->whereNotNull('role_id')
-                    ->pluck('role_id')
-                    ->map(fn($id) => (int) $id)
-                    ->all();
+                $roleIds = array_values(array_filter($locationRoles));
             }
         }
 
-        $directRoleIds = $user->roles()->pluck('roles.id')->map(fn($id) => (int) $id)->all();
-
-        return array_values(array_unique(array_merge($roleIds, $directRoleIds)));
+        return array_values(array_unique(array_merge($roleIds, self::directRoleIds($user))));
     }
 
     /**
-     * El usuario puede ver y operar cualquier sucursal de la empresa.
+     * El usuario puede ver y operar cualquier sucursal de la empresa: es
+     * administrador del sistema o tiene locations_all ("Acceso a todas las
+     * sucursales"). locations_list ya no cuenta: solo deja listar sucursales.
+     * El selector de sucursales (LocationController) usa el mismo criterio.
      *
-     * Mismo criterio que el selector de sucursales (LocationController): quien
-     * tiene locations_list es administrador. Se busca en todos sus roles —los
-     * directos y los de cualquier sucursal—, no solo en el de la sucursal
-     * actual, porque esto se usa justamente para decidir si puede estar en ella.
+     * Se busca en todos sus roles —los directos y los de cualquier sucursal—,
+     * no solo en el de la sucursal actual, porque esto se usa justamente para
+     * decidir si puede estar en ella.
      *
-     * El permiso se evalúa SOLO con los roles que aplican a la empresa actual
-     * (los de la empresa + los roles de sistema sin empresa, como Super Admin).
-     * Así un administrador de la empresa A no hereda "todas las sucursales"
-     * cuando manda el contexto de la empresa B.
+     * Los dos permisos se evalúan SOLO con los roles que aplican a la empresa
+     * actual (los de la empresa + los roles de sistema sin empresa, como Super
+     * Admin). Así un administrador de la empresa A no hereda "todas las
+     * sucursales" cuando manda el contexto de la empresa B.
      */
     public static function canAccessAllLocations(?Authenticatable $user = null): bool
     {
@@ -114,25 +163,19 @@ class CurrentWorker
             return false;
         }
 
-        $roleIds = DB::table('user_location_roles')
-            ->where('user_id', $user->getAuthIdentifier())
-            ->whereNotNull('role_id')
-            ->pluck('role_id')
-            ->merge($user->roles()->pluck('roles.id'))
-            ->unique();
-
-        if ($roleIds->isEmpty()) {
-            return false;
-        }
-
         $companyId = CurrentCompany::id();
 
-        return Role::whereIn('id', $roleIds)
-            ->when($companyId, fn($q) => $q->where(
-                fn($w) => $w->where('company_id', $companyId)->orWhereNull('company_id')
-            ))
-            ->whereHas('permissions', fn($q) => $q->where('name', 'locations_list'))
-            ->exists();
+        foreach (self::roles(self::allRoleIds($user)) as $role) {
+            if ($companyId && $role['company_id'] !== null && $role['company_id'] !== $companyId) {
+                continue;
+            }
+
+            if (array_intersect(['system_admin', self::ALL_LOCATIONS_PERMISSION], $role['permissions'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -148,16 +191,30 @@ class CurrentWorker
             return false;
         }
 
-        $roleIds = DB::table('user_location_roles')
-            ->where('user_id', $user->getAuthIdentifier())
-            ->whereNotNull('role_id')
-            ->pluck('role_id')
-            ->merge($user->roles()->pluck('roles.id'))
-            ->unique();
+        return in_array('system_admin', self::allPermissionNames($user), true);
+    }
 
-        return $roleIds->isNotEmpty() && Role::whereIn('id', $roleIds)
-            ->whereHas('permissions', fn($q) => $q->where('name', 'system_admin'))
-            ->exists();
+    /**
+     * Todos los permisos del usuario en cualquiera de sus roles: directos y de
+     * todas sus sucursales, de cualquier empresa. Para comparar a dos usuarios
+     * (nadie modifica a quien tiene permisos que él no tiene), no para
+     * autorizar una acción en la sucursal actual (eso es hasPermission()).
+     *
+     * @return string[]
+     */
+    public static function allPermissionNames(?Authenticatable $user = null): array
+    {
+        $user ??= Auth::user();
+        if (!$user) {
+            return [];
+        }
+
+        $names = [];
+        foreach (self::roles(self::allRoleIds($user)) as $role) {
+            array_push($names, ...$role['permissions']);
+        }
+
+        return array_values(array_unique($names));
     }
 
     /**
@@ -171,12 +228,30 @@ class CurrentWorker
             return false;
         }
 
-        $belongs = DB::table('user_company')
-            ->where('user_id', $user->getAuthIdentifier())
-            ->where('company_id', $companyId)
-            ->exists();
+        return in_array($companyId, self::companyIds($user), true) || self::isSystemAdmin($user);
+    }
 
-        return $belongs || self::isSystemAdmin($user);
+    /**
+     * Empresas a las que pertenece el usuario (user_company).
+     *
+     * @return int[]
+     */
+    public static function companyIds(?Authenticatable $user = null): array
+    {
+        $user ??= Auth::user();
+        if (!$user) {
+            return [];
+        }
+
+        $userId = (int) $user->getAuthIdentifier();
+
+        return self::remember("company-ids:{$userId}", fn() => DB::table('user_company')
+            ->where('user_id', $userId)
+            ->pluck('company_id')
+            ->map(fn($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all());
     }
 
     /**
@@ -206,10 +281,7 @@ class CurrentWorker
             return false;
         }
 
-        $assigned = DB::table('user_location_roles')
-            ->where('user_id', $user->getAuthIdentifier())
-            ->where('location_id', $locationId)
-            ->exists();
+        $assigned = array_key_exists($locationId, self::locationRoleIds($user));
 
         return $assigned || self::canAccessAllLocations($user);
     }
@@ -290,10 +362,13 @@ class CurrentWorker
 
     private static function locationBelongsToCompany(int $locationId, int $companyId): bool
     {
-        return DB::table('locations')
-            ->where('id', $locationId)
-            ->where('company_id', $companyId)
-            ->exists();
+        $locationCompanyId = self::remember("location-company:{$locationId}", function () use ($locationId) {
+            $companyId = DB::table('locations')->where('id', $locationId)->value('company_id');
+
+            return $companyId === null ? null : (int) $companyId;
+        });
+
+        return $locationCompanyId === $companyId;
     }
 
     /**
@@ -315,30 +390,23 @@ class CurrentWorker
     }
 
     /**
-     * Verificar si el usuario actual tiene todos los permisos especificados
+     * Verificar si el usuario actual tiene todos los permisos especificados.
+     * Con los mismos roles que hasPermission(): antes solo se miraba el rol de
+     * la sucursal y se ignoraban los roles directos y los de quien entra a
+     * todas las sucursales.
      */
     public static function hasAllPermissions(array $permissionNames): bool
     {
-        $role = self::role();
-        if (!$role) {
-            return false;
-        }
-
-        $found = $role->permissions()->whereIn('name', $permissionNames)->pluck('name')->toArray();
-        return count($found) === count($permissionNames);
+        return array_diff(array_unique($permissionNames), self::permissions()) === [];
     }
 
     /**
      * Verificar si el usuario actual tiene alguno de los permisos especificados
+     * (mismos roles que hasPermission()).
      */
     public static function hasAnyPermission(array $permissionNames): bool
     {
-        $role = self::role();
-        if (!$role) {
-            return false;
-        }
-
-        return $role->permissions()->whereIn('name', $permissionNames)->exists();
+        return array_intersect($permissionNames, self::permissions()) !== [];
     }
 
     /**
@@ -355,12 +423,114 @@ class CurrentWorker
             return [];
         }
 
-        return DB::table('permissions')
-            ->join('rol_permission', 'permissions.id', '=', 'rol_permission.permission_id')
-            ->whereIn('rol_permission.role_id', $roleIds)
-            ->pluck('permissions.name')
+        $names = [];
+        foreach (self::roles($roleIds) as $role) {
+            array_push($names, ...$role['permissions']);
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    // ─── Datos del usuario (cacheados durante la petición) ──────────────────
+
+    /**
+     * Sucursales del usuario y su rol en cada una: [location_id => role_id|null].
+     *
+     * @return array<int, int|null>
+     */
+    private static function locationRoleIds(Authenticatable $user): array
+    {
+        $userId = (int) $user->getAuthIdentifier();
+
+        return self::remember("location-roles:{$userId}", fn() => DB::table('user_location_roles')
+            ->where('user_id', $userId)
+            ->pluck('role_id', 'location_id')
+            ->mapWithKeys(fn($roleId, $locationId) => [(int) $locationId => $roleId === null ? null : (int) $roleId])
+            ->all());
+    }
+
+    /**
+     * Roles directos del usuario (users_roles).
+     *
+     * @return int[]
+     */
+    private static function directRoleIds(Authenticatable $user): array
+    {
+        $userId = (int) $user->getAuthIdentifier();
+
+        return self::remember("direct-roles:{$userId}", fn() => DB::table('users_roles')
+            ->where('user_id', $userId)
+            ->pluck('role_id')
+            ->map(fn($id) => (int) $id)
             ->unique()
             ->values()
-            ->toArray();
+            ->all());
+    }
+
+    /**
+     * Todos los roles del usuario: directos y de cualquier sucursal.
+     *
+     * @return int[]
+     */
+    private static function allRoleIds(Authenticatable $user): array
+    {
+        return array_values(array_unique(array_merge(
+            array_values(array_filter(self::locationRoleIds($user))),
+            self::directRoleIds($user)
+        )));
+    }
+
+    /**
+     * Empresa y permisos de cada rol, consultando solo los que aún no se
+     * conocen en esta petición.
+     *
+     * @param int[] $roleIds
+     * @return array<int, array{company_id: int|null, permissions: string[]}>
+     */
+    private static function roles(array $roleIds): array
+    {
+        $roleIds = array_values(array_unique(array_map('intval', $roleIds)));
+        if ($roleIds === []) {
+            return [];
+        }
+
+        $known = [];
+        $missing = [];
+        foreach ($roleIds as $roleId) {
+            if (self::$cache !== null && array_key_exists("role:{$roleId}", self::$cache)) {
+                $known[$roleId] = self::$cache["role:{$roleId}"];
+            } else {
+                $missing[] = $roleId;
+            }
+        }
+
+        if ($missing !== []) {
+            $companies = DB::table('roles')->whereIn('id', $missing)->pluck('company_id', 'id');
+            $permissions = DB::table('rol_permission')
+                ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
+                ->whereIn('rol_permission.role_id', $missing)
+                ->get(['rol_permission.role_id', 'permissions.name'])
+                ->groupBy('role_id');
+
+            foreach ($missing as $roleId) {
+                // Un rol borrado ya no da nada.
+                if (!$companies->has($roleId)) {
+                    continue;
+                }
+
+                $companyId = $companies[$roleId];
+                $role = [
+                    'company_id' => $companyId === null ? null : (int) $companyId,
+                    'permissions' => collect($permissions->get($roleId, []))->pluck('name')->unique()->values()->all(),
+                ];
+
+                $known[$roleId] = $role;
+                if (self::$cache !== null) {
+                    self::$cache["role:{$roleId}"] = $role;
+                }
+            }
+        }
+
+        return $known;
     }
 }

@@ -100,6 +100,13 @@ class PermissionSeeder extends Seeder
                 'description' => 'Cambiar precio y aplicar descuentos en el punto de venta',
                 'resource' => Resources::SALES->value,
             ],
+            [
+                // Entrar y operar en cualquier sucursal de la empresa. Antes lo
+                // daba locations_list ("Listar ubicaciones") sin que se notara.
+                'name' => 'locations_all',
+                'description' => 'Acceso a todas las sucursales',
+                'resource' => Resources::LOCATIONS->value,
+            ],
         ];
 
         foreach ($specialPermissions as $specialPermission) {
