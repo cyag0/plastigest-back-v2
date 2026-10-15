@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\InventoryTransfer;
 use App\Enums\TransferStatus;
 use App\Enums\StockLedgerReason;
@@ -10,7 +11,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use App\Notifications\NotificationEngine;
-use Exception;
 
 class TransferService
 {
@@ -21,16 +21,37 @@ class TransferService
         $this->movementService = $movementService;
     }
     /**
+     * Relee la transferencia bloqueando su fila hasta el fin de la
+     * transacción. Cada paso decide con esta copia, no con la que el
+     * controlador cargó antes: dos pasos simultáneos sobre la misma
+     * transferencia (recibir y cancelar, enviar y cancelar, dos
+     * cancelaciones) se esperan y el segundo ve el estado que dejó el primero.
+     * Antes cancelar y rechazar decidían con el estado viejo y podían devolver
+     * al origen lo que ya se había recibido en el destino.
+     */
+    protected function lockForWorkflow(InventoryTransfer $transfer): InventoryTransfer
+    {
+        $locked = InventoryTransfer::whereKey($transfer->id)->lockForUpdate()->first();
+
+        if (!$locked) {
+            throw new BusinessRuleException('La transferencia ya no existe', 'not_found');
+        }
+
+        return $locked;
+    }
+
+    /**
      * Aprobar transferencia
      */
     public function approve(InventoryTransfer $transfer, array $data): InventoryTransfer
     {
-        if ($transfer->status !== TransferStatus::PENDING) {
-            throw new Exception("Solo se pueden aprobar transferencias pendientes");
-        }
+        $transfer = DB::transaction(function () use ($transfer, $data) {
+            $transfer = $this->lockForWorkflow($transfer);
 
-        DB::beginTransaction();
-        try {
+            if ($transfer->status !== TransferStatus::PENDING) {
+                throw new BusinessRuleException('Solo se pueden aprobar transferencias pendientes', 'invalid_status');
+            }
+
             $content = $transfer->content;
             if (!is_array($content)) {
                 $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
@@ -47,7 +68,7 @@ class TransferService
 
                 $detail = $transfer->details()->find((int) $item['detail_id']);
                 if (!$detail) {
-                    throw new Exception("Detalle de transferencia no encontrado");
+                    throw new BusinessRuleException('Detalle de transferencia no encontrado', 'invalid_detail');
                 }
 
                 $detail->quantity_requested = (float) $item['quantity_requested'];
@@ -80,13 +101,11 @@ class TransferService
             $transfer->content = $content;
             $transfer->save();
 
-            DB::commit();
-            $this->notifyTransferUpdate($transfer, 'approved', [$transfer->requested_by]);
-            return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+            return $transfer;
+        });
+
+        $this->notifyTransferUpdate($transfer, 'approved', [$transfer->requested_by]);
+        return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
     }
 
     /**
@@ -94,12 +113,13 @@ class TransferService
      */
     public function reject(InventoryTransfer $transfer, string $reason): InventoryTransfer
     {
-        if (in_array($transfer->status, [TransferStatus::COMPLETED, TransferStatus::CANCELLED, TransferStatus::REJECTED], true)) {
-            throw new Exception("Esta transferencia ya se encuentra en estado final y no puede rechazarse");
-        }
+        $transfer = DB::transaction(function () use ($transfer, $reason) {
+            $transfer = $this->lockForWorkflow($transfer);
 
-        DB::beginTransaction();
-        try {
+            if (in_array($transfer->status, [TransferStatus::COMPLETED, TransferStatus::CANCELLED, TransferStatus::REJECTED], true)) {
+                throw new BusinessRuleException('Esta transferencia ya se encuentra en estado final y no puede rechazarse', 'invalid_status');
+            }
+
             $content = $transfer->content;
             if (!is_array($content)) {
                 $content = InventoryTransfer::defaultWorkflowContent((int) ($transfer->requested_by ?? 0));
@@ -151,13 +171,11 @@ class TransferService
             $transfer->content = $content;
             $transfer->save();
 
-            DB::commit();
-            $this->notifyTransferUpdate($transfer, 'rejected', [$transfer->requested_by], ['reason' => $reason]);
-            return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+            return $transfer;
+        });
+
+        $this->notifyTransferUpdate($transfer, 'rejected', [$transfer->requested_by], ['reason' => $reason]);
+        return $transfer->load(['details.product.mainImage', 'fromLocation', 'toLocation']);
     }
 
     /**
@@ -168,6 +186,12 @@ class TransferService
     public function cancel(InventoryTransfer $transfer, string $reason): InventoryTransfer
     {
         return DB::transaction(function () use ($transfer, $reason) {
+            $transfer = $this->lockForWorkflow($transfer);
+
+            if (!$transfer->status->canCancel()) {
+                throw new BusinessRuleException('Esta transferencia no puede ser cancelada', 'invalid_status');
+            }
+
             if ($transfer->status === TransferStatus::IN_TRANSIT) {
                 $this->returnShippedStock($transfer, 'Traspaso cancelado en tránsito');
             }
@@ -186,7 +210,9 @@ class TransferService
      */
     protected function returnShippedStock(InventoryTransfer $transfer, string $notes): void
     {
-        foreach ($transfer->details()->get() as $detail) {
+        // Por producto, como ship() y receive(): las transacciones que tocan
+        // los mismos productos los bloquean en el mismo orden.
+        foreach ($transfer->details()->orderBy('product_id')->orderBy('id')->get() as $detail) {
             $quantity = (float) ($detail->quantity_shipped ?? 0);
             if ($quantity <= 0) {
                 continue;
@@ -214,18 +240,13 @@ class TransferService
      */
     public function ship(InventoryTransfer $transfer, array $shipments): InventoryTransfer
     {
-        if ($transfer->status !== TransferStatus::APPROVED) {
-            throw new Exception("Solo se pueden enviar transferencias aprobadas");
-        }
-
-        DB::beginTransaction();
-        try {
+        $transfer = DB::transaction(function () use ($transfer, $shipments) {
             // Bloqueo de fila + relectura del estado dentro de la transacción:
             // evita que un doble envío (doble clic/dos dispositivos) procese el
             // envío dos veces.
-            $locked = InventoryTransfer::whereKey($transfer->id)->lockForUpdate()->first();
-            if (!$locked || $locked->status !== TransferStatus::APPROVED) {
-                throw new Exception("La transferencia ya no está en estado aprobado");
+            $transfer = $this->lockForWorkflow($transfer);
+            if ($transfer->status !== TransferStatus::APPROVED) {
+                throw new BusinessRuleException('Solo se pueden enviar transferencias aprobadas', 'invalid_status');
             }
 
             $content = $transfer->content;
@@ -236,18 +257,24 @@ class TransferService
 
             $totalCost = 0;
 
+            // Por producto: dos transacciones que mueven los mismos productos
+            // bloquean sus existencias en el mismo orden y no se cruzan.
+            usort($shipments, fn(array $a, array $b) => [(int) $a['product_id'], (int) $a['transfer_detail_id']]
+                <=> [(int) $b['product_id'], (int) $b['transfer_detail_id']]);
+
             // Procesar cada envío directamente sobre el detalle
             foreach ($shipments as $shipmentData) {
                 $detail = $transfer->details()->find($shipmentData['transfer_detail_id']);
 
                 if (!$detail) {
-                    throw new Exception("Detalle de transferencia no encontrado");
+                    throw new BusinessRuleException('Detalle de transferencia no encontrado', 'invalid_detail');
                 }
 
                 // Validar que no se envíe más de lo solicitado
                 if ($shipmentData['quantity_shipped'] > $detail->quantity_requested) {
-                    throw new Exception(
-                        "No se puede enviar más de lo solicitado. Solicitado: {$detail->quantity_requested}, Intentando enviar: {$shipmentData['quantity_shipped']}"
+                    throw new BusinessRuleException(
+                        "No se puede enviar más de lo solicitado. Solicitado: {$detail->quantity_requested}, Intentando enviar: {$shipmentData['quantity_shipped']}",
+                        'quantity_exceeded'
                     );
                 }
 
@@ -308,17 +335,15 @@ class TransferService
             $transfer->content = $content;
             $transfer->save();
 
-            DB::commit();
-            $this->notifyTransferUpdate($transfer, 'shipped', [$transfer->requested_by]);
-            return $transfer->load([
-                'details.product.mainImage',
-                'fromLocation',
-                'toLocation'
-            ]);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+            return $transfer;
+        });
+
+        $this->notifyTransferUpdate($transfer, 'shipped', [$transfer->requested_by]);
+        return $transfer->load([
+            'details.product.mainImage',
+            'fromLocation',
+            'toLocation'
+        ]);
     }
 
     /**
@@ -327,17 +352,12 @@ class TransferService
      */
     public function receive(InventoryTransfer $transfer, array $receivedData): InventoryTransfer
     {
-        if ($transfer->status !== TransferStatus::IN_TRANSIT) {
-            throw new Exception("Solo se pueden recibir transferencias en tránsito");
-        }
-
-        DB::beginTransaction();
-        try {
+        $transfer = DB::transaction(function () use ($transfer, $receivedData) {
             // Bloqueo de fila + relectura del estado: evita que un doble envío
             // reciba la transferencia dos veces (sumaría stock por duplicado).
-            $locked = InventoryTransfer::whereKey($transfer->id)->lockForUpdate()->first();
-            if (!$locked || $locked->status !== TransferStatus::IN_TRANSIT) {
-                throw new Exception("La transferencia ya no está en tránsito");
+            $transfer = $this->lockForWorkflow($transfer);
+            if ($transfer->status !== TransferStatus::IN_TRANSIT) {
+                throw new BusinessRuleException('Solo se pueden recibir transferencias en tránsito', 'invalid_status');
             }
 
             $content = $transfer->content;
@@ -346,20 +366,30 @@ class TransferService
             }
             $content = $this->normalizeWorkflowProgress($content);
 
+            // Por producto, igual que ship(): mismo orden de bloqueo.
+            $details = $transfer->details()->get()->keyBy('id');
+            usort($receivedData, fn(array $a, array $b) => [
+                (int) ($details->get((int) ($a['detail_id'] ?? 0))?->product_id ?? 0),
+                (int) ($a['detail_id'] ?? 0),
+            ] <=> [
+                (int) ($details->get((int) ($b['detail_id'] ?? 0))?->product_id ?? 0),
+                (int) ($b['detail_id'] ?? 0),
+            ]);
+
             // Procesar cada recepción directamente sobre el detalle
             foreach ($receivedData as $item) {
                 $detailId = (int) ($item['detail_id'] ?? 0);
-                $detail = $transfer->details()->find($detailId);
+                $detail = $details->get($detailId);
 
                 if (!$detail) {
-                    throw new Exception("Detalle de transferencia no encontrado");
+                    throw new BusinessRuleException('Detalle de transferencia no encontrado', 'invalid_detail');
                 }
 
                 $quantityReceived = (float) $item['quantity_received'];
                 $quantityShipped = (float) $detail->quantity_shipped;
 
                 if ($quantityReceived > $quantityShipped) {
-                    throw new Exception("La cantidad recibida no puede superar la enviada");
+                    throw new BusinessRuleException('La cantidad recibida no puede superar la enviada', 'quantity_exceeded');
                 }
 
                 // Actualizar cantidad recibida
@@ -418,21 +448,19 @@ class TransferService
             $transfer->content = $content;
             $transfer->save();
 
-            DB::commit();
-            $this->notifyTransferUpdate($transfer, 'received', [$this->originActor($transfer)], [
-                'with_differences' => $transfer->details()->get()->contains(
-                    fn($detail) => (float) $detail->quantity_received !== (float) $detail->quantity_shipped
-                ),
-            ]);
-            return $transfer->load([
-                'details.product.mainImage',
-                'fromLocation',
-                'toLocation'
-            ]);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+            return $transfer;
+        });
+
+        $this->notifyTransferUpdate($transfer, 'received', [$this->originActor($transfer)], [
+            'with_differences' => $transfer->details()->get()->contains(
+                fn($detail) => (float) $detail->quantity_received !== (float) $detail->quantity_shipped
+            ),
+        ]);
+        return $transfer->load([
+            'details.product.mainImage',
+            'fromLocation',
+            'toLocation'
+        ]);
     }
 
     private function normalizeWorkflowProgress(array $content): array
