@@ -84,6 +84,13 @@ class UserController extends CrudController
         // devolvía TODOS los usuarios de todas las empresas.
         $this->scopeToAccessibleUsers($query);
 
+        // El administrador del sistema está en todas las sucursales (así le
+        // llegan los avisos y cortes de cada una), pero en las listas solo lo
+        // ve otro administrador del sistema: nadie más lo puede modificar.
+        if (!CurrentWorker::isSystemAdmin()) {
+            $this->excludeSystemAdmins($query);
+        }
+
         // "Usuarios" de la empresa: solo los de la empresa seleccionada. El
         // administrador del sistema veía aquí a los de todas las empresas.
         if (filter_var($params['by_company'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($companyId = CurrentCompany::id())) {
@@ -121,6 +128,24 @@ class UserController extends CrudController
 
         if ($this->actorIsBranchOnly()) {
             $this->scopeToCurrentLocation($query);
+        }
+    }
+
+    /**
+     * Quita de la query a los administradores del sistema (system_admin en un
+     * rol directo o en el de alguna sucursal).
+     */
+    private function excludeSystemAdmins($query): void
+    {
+        foreach (['users_roles', 'user_location_roles'] as $pivot) {
+            $query->whereNotExists(function ($sub) use ($pivot) {
+                $sub->selectRaw('1')
+                    ->from($pivot)
+                    ->join('rol_permission', 'rol_permission.role_id', '=', "{$pivot}.role_id")
+                    ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
+                    ->whereColumn("{$pivot}.user_id", 'users.id')
+                    ->where('permissions.name', 'system_admin');
+            });
         }
     }
 
@@ -190,32 +215,20 @@ class UserController extends CrudController
      */
     private function actorPermissionNames(): array
     {
-        $roleIds = DB::table('user_location_roles')
-            ->where('user_id', Auth::id())
-            ->whereNotNull('role_id')
-            ->pluck('role_id')
-            ->merge(DB::table('users_roles')->where('user_id', Auth::id())->pluck('role_id'))
-            ->unique();
-
-        if ($roleIds->isEmpty()) {
-            return [];
-        }
-
-        return DB::table('permissions')
-            ->join('rol_permission', 'permissions.id', '=', 'rol_permission.permission_id')
-            ->whereIn('rol_permission.role_id', $roleIds)
-            ->pluck('permissions.name')
-            ->unique()
-            ->values()
-            ->all();
+        return CurrentWorker::allPermissionNames(Auth::user());
     }
 
     /**
      * Impide la escalación de privilegios al crear/editar usuarios: salvo el
      * administrador del sistema, nadie puede asignar roles de sistema, roles de
      * otra empresa, permisos que no tiene, ni empresas/sucursales ajenas.
+     *
+     * Al editar ($target), lo que la petición le QUITA al usuario se revisa
+     * igual que lo que le asigna: role_ids, location_roles y company_ids
+     * reemplazan todo, y antes así se le podía quitar a alguien un rol (o una
+     * sucursal o empresa) que el actor no habría podido darle.
      */
-    private function guardAssignment(Request $request): ?JsonResponse
+    private function guardAssignment(Request $request, ?Model $target = null): ?JsonResponse
     {
         $actor = Auth::user();
         if (!$actor || CurrentWorker::isSystemAdmin($actor)) {
@@ -240,24 +253,8 @@ class UserController extends CrudController
             ->map(fn($id) => (int) $id)
             ->unique();
 
-        if ($roleIds->isNotEmpty()) {
-            $actorPermissions = $this->actorPermissionNames();
-            $roles = Role::with('permissions')->whereIn('id', $roleIds)->get();
-
-            foreach ($roles as $role) {
-                if ($role->is_system) {
-                    return $this->forbiddenResponse('asignar un rol del sistema');
-                }
-
-                if ($role->company_id !== null && !in_array((int) $role->company_id, $actorCompanyIds, true)) {
-                    return $this->forbiddenResponse('asignar un rol de otra empresa');
-                }
-
-                $extraPermissions = $role->permissions->pluck('name')->diff($actorPermissions);
-                if ($extraPermissions->isNotEmpty()) {
-                    return $this->forbiddenResponse('asignar permisos que tú no tienes');
-                }
-            }
+        if ($denied = $this->guardRoles($roleIds->all(), 'asignar')) {
+            return $denied;
         }
 
         // Empresas: solo las del actor.
@@ -279,7 +276,254 @@ class UserController extends CrudController
             }
         }
 
+        if (!$target) {
+            return null;
+        }
+
+        $removed = $this->removedAssignments($target, $request);
+
+        if ($denied = $this->guardRoles($removed['role_ids'], 'quitar')) {
+            return $denied;
+        }
+
+        if (array_diff($removed['company_ids'], $actorCompanyIds)) {
+            return $this->forbiddenResponse('quitar una empresa a la que no perteneces');
+        }
+
+        if ($removed['location_ids'] && Location::whereIn('id', $removed['location_ids'])
+            ->whereNotIn('company_id', $actorCompanyIds)->exists()) {
+            return $this->forbiddenResponse('quitar una sucursal de otra empresa');
+        }
+
         return null;
+    }
+
+    /**
+     * Roles que el actor puede asignar o quitar: de su empresa, que no sean de
+     * sistema y sin permisos que él no tenga.
+     *
+     * @param int[] $roleIds
+     * @param string $verb "asignar" o "quitar"
+     */
+    private function guardRoles(array $roleIds, string $verb): ?JsonResponse
+    {
+        if (empty($roleIds)) {
+            return null;
+        }
+
+        $actorPermissions = $this->actorPermissionNames();
+        $actorCompanyIds = $this->actorCompanyIds();
+        $roles = Role::with('permissions')->whereIn('id', $roleIds)->get();
+
+        foreach ($roles as $role) {
+            if ($role->is_system) {
+                return $this->forbiddenResponse("{$verb} un rol del sistema");
+            }
+
+            if ($role->company_id !== null && !in_array((int) $role->company_id, $actorCompanyIds, true)) {
+                return $this->forbiddenResponse("{$verb} un rol de otra empresa");
+            }
+
+            $extraPermissions = $role->permissions->pluck('name')->diff($actorPermissions);
+            if ($extraPermissions->isNotEmpty()) {
+                return $verb === 'asignar'
+                    ? $this->forbiddenResponse('asignar permisos que tú no tienes')
+                    : $this->forbiddenResponse('quitar un rol con permisos que tú no tienes');
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Lo que la petición le quitaría al usuario: roles directos (role_ids),
+     * roles y sucursales (location_roles o location_role_id) y empresas
+     * (company_ids). Un rol que se cambia por otro cuenta como quitado.
+     *
+     * @return array{role_ids: int[], location_ids: int[], company_ids: int[]}
+     */
+    private function removedAssignments(Model $target, Request $request): array
+    {
+        $removed = ['role_ids' => [], 'location_ids' => [], 'company_ids' => []];
+
+        if ($request->has('role_ids')) {
+            $requested = $this->idList($request->input('role_ids'));
+            $current = DB::table('users_roles')->where('user_id', $target->getKey())->pluck('role_id')
+                ->map(fn($id) => (int) $id)->all();
+            $removed['role_ids'] = array_values(array_diff($current, $requested));
+        }
+
+        $currentLocationRoles = DB::table('user_location_roles')
+            ->where('user_id', $target->getKey())
+            ->pluck('role_id', 'location_id')
+            ->mapWithKeys(fn($roleId, $locationId) => [(int) $locationId => $roleId === null ? null : (int) $roleId])
+            ->all();
+
+        if ($request->has('location_roles')) {
+            $requested = $this->requestedLocationRoles($request);
+
+            foreach ($currentLocationRoles as $locationId => $roleId) {
+                if (!array_key_exists($locationId, $requested)) {
+                    $removed['location_ids'][] = $locationId;
+                }
+                if ($roleId !== null && ($requested[$locationId] ?? null) !== $roleId) {
+                    $removed['role_ids'][] = $roleId;
+                }
+            }
+        }
+
+        if ($request->has('location_role_id') && ($locationId = $this->currentBranchId())) {
+            $roleId = $currentLocationRoles[$locationId] ?? null;
+            if ($roleId !== null && $this->nullableId($request->input('location_role_id')) !== $roleId) {
+                $removed['role_ids'][] = $roleId;
+            }
+        }
+
+        if ($request->has('company_ids') && is_array($request->input('company_ids'))) {
+            $current = DB::table('user_company')->where('user_id', $target->getKey())->pluck('company_id')
+                ->map(fn($id) => (int) $id)->all();
+            $removed['company_ids'] = array_values(array_diff($current, $this->idList($request->input('company_ids'))));
+        }
+
+        $removed['role_ids'] = array_values(array_unique($removed['role_ids']));
+
+        return $removed;
+    }
+
+    /**
+     * location_roles de la petición: [location_id => role_id|null].
+     *
+     * @return array<int, int|null>
+     */
+    private function requestedLocationRoles(Request $request): array
+    {
+        $requested = [];
+        foreach ((array) $request->input('location_roles', []) as $lr) {
+            if (!empty($lr['location_id'])) {
+                $requested[(int) $lr['location_id']] = $this->nullableId($lr['role_id'] ?? null);
+            }
+        }
+
+        return $requested;
+    }
+
+    /** @return int[] */
+    private function idList(mixed $ids): array
+    {
+        return collect((array) $ids)
+            ->filter(fn($id) => $id !== null && $id !== '')
+            ->map(fn($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /** "" o null (multipart/form-data) = sin rol. */
+    private function nullableId(mixed $id): ?int
+    {
+        return ($id === null || $id === '') ? null : (int) $id;
+    }
+
+    /**
+     * Nadie modifica a quien tiene más permisos que él. Sin esto cualquiera
+     * con users_update le cambiaba la contraseña, el correo o el estado al
+     * dueño (administrador del sistema) y entraba con su cuenta, o le quitaba
+     * sus roles.
+     *
+     * - A un administrador del sistema solo lo modifica otro administrador del
+     *   sistema (cualquier cambio).
+     * - A los demás, cambiarles contraseña, correo, estado, roles, sucursales
+     *   o empresas, quitarlos de la sucursal o eliminarlos exige tener todos
+     *   sus permisos (los de todos sus roles, en todas sus sucursales). El
+     *   nombre y la foto sí se pueden editar.
+     *
+     * Sin $request (eliminar, quitar de la sucursal) siempre se exige.
+     */
+    private function guardTarget(User $target, ?Request $request = null): ?JsonResponse
+    {
+        $actor = Auth::user();
+        if (!$actor || CurrentWorker::isSystemAdmin($actor)) {
+            return null;
+        }
+
+        if (CurrentWorker::isSystemAdmin($target)) {
+            return $this->forbiddenResponse('modificar a un administrador del sistema');
+        }
+
+        if ($request && !$this->changesAccess($target, $request)) {
+            return null;
+        }
+
+        $extra = array_diff(CurrentWorker::allPermissionNames($target), $this->actorPermissionNames());
+        if ($extra) {
+            return $this->forbiddenResponse('modificar a un usuario con permisos que tú no tienes');
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿La petición cambia cómo entra el usuario o lo que puede hacer?
+     * Contraseña, correo, estado, roles, sucursales o empresas. Los formularios
+     * reenvían todos los campos: solo cuenta lo que de verdad cambia.
+     */
+    private function changesAccess(User $target, Request $request): bool
+    {
+        if ($request->filled('password')) {
+            return true;
+        }
+
+        if ($request->has('email')
+            && mb_strtolower(trim((string) $request->input('email'))) !== mb_strtolower(trim((string) $target->email))) {
+            return true;
+        }
+
+        if ($request->has('is_active')
+            && filter_var($request->input('is_active'), FILTER_VALIDATE_BOOLEAN) !== (bool) ($target->is_active ?? true)) {
+            return true;
+        }
+
+        if ($request->has('role_ids')) {
+            $current = DB::table('users_roles')->where('user_id', $target->getKey())->pluck('role_id')
+                ->map(fn($id) => (int) $id)->sort()->values()->all();
+            $requested = collect($this->idList($request->input('role_ids')))->sort()->values()->all();
+            if ($current !== $requested) {
+                return true;
+            }
+        }
+
+        $currentLocationRoles = DB::table('user_location_roles')
+            ->where('user_id', $target->getKey())
+            ->pluck('role_id', 'location_id')
+            ->mapWithKeys(fn($roleId, $locationId) => [(int) $locationId => $roleId === null ? null : (int) $roleId])
+            ->sortKeys()
+            ->all();
+
+        if ($request->has('location_roles')) {
+            $requested = $this->requestedLocationRoles($request);
+            ksort($requested);
+            if ($requested !== $currentLocationRoles) {
+                return true;
+            }
+        }
+
+        if ($request->has('location_role_id') && ($locationId = $this->currentBranchId())) {
+            $requestedRole = $this->nullableId($request->input('location_role_id'));
+            if (!array_key_exists($locationId, $currentLocationRoles) || $currentLocationRoles[$locationId] !== $requestedRole) {
+                return true;
+            }
+        }
+
+        if ($request->has('company_ids') && is_array($request->input('company_ids'))) {
+            $current = DB::table('user_company')->where('user_id', $target->getKey())->pluck('company_id')
+                ->map(fn($id) => (int) $id)->sort()->values()->all();
+            $requested = collect($this->idList($request->input('company_ids')))->sort()->values()->all();
+            if ($current !== $requested) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -333,15 +577,37 @@ class UserController extends CrudController
         }
 
         // El objetivo debe ser accesible (comparte empresa con el actor).
-        if (!$this->findModel($id)) {
+        $target = $this->findModel($id);
+        if (!$target) {
             return response()->json(['message' => 'Recurso no encontrado'], 404);
         }
 
-        if ($denied = $this->guardAssignment($request) ?? $this->requireBranchForLocationRole($request)) {
+        if ($denied = $this->guardTarget($target, $request)
+            ?? $this->guardAssignment($request, $target)
+            ?? $this->requireBranchForLocationRole($request)) {
             return $denied;
         }
 
         return parent::update($request, $id);
+    }
+
+    public function destroy($id)
+    {
+        if (!$this->canDestroy()) {
+            return $this->forbiddenResponse('eliminar este recurso');
+        }
+
+        $target = $this->findModel($id);
+        if (!$target) {
+            return response()->json(['message' => 'Recurso no encontrado'], 404);
+        }
+
+        // Eliminarse a sí mismo lo rechaza canDelete() con su mensaje.
+        if ((int) $target->getKey() !== (int) Auth::id() && ($denied = $this->guardTarget($target))) {
+            return $denied;
+        }
+
+        return parent::destroy($id);
     }
 
     /**
@@ -563,6 +829,7 @@ class UserController extends CrudController
             $locationIds[] = $locationId;
         }
         $this->syncCompanies($user, $request, array_values(array_unique($locationIds)));
+        CurrentWorker::flush();
 
         $relations = $this->getShowRelations();
         if (!empty($relations)) {
@@ -585,6 +852,9 @@ class UserController extends CrudController
             $locationIds[] = $locationId;
         }
         $this->syncCompanies($user, $request, array_values(array_unique($locationIds)));
+
+        // Los roles leídos al autorizar ya no valen (p. ej. si se editó a sí mismo).
+        CurrentWorker::flush();
 
         // Cerrar las sesiones del usuario afectado cuando:
         //  - se cambió su contraseña (un token viejo no debe seguir vivo), o
@@ -745,7 +1015,15 @@ class UserController extends CrudController
             return response()->json(['message' => 'El usuario no está en esta sucursal.'], 404);
         }
 
+        // Quitarle la sucursal es quitarle su rol en ella: mismas reglas que
+        // al asignarlo, y nadie se lo quita a quien tiene más permisos que él.
+        if ($denied = $this->guardTarget($user)
+            ?? $this->guardRoles($current->role_id ? [(int) $current->role_id] : [], 'quitar')) {
+            return $denied;
+        }
+
         $user->locationRoles()->detach($locationId);
+        CurrentWorker::flush();
 
         $role = $current->role_id ? Role::whereKey($current->role_id)->value('name') : null;
         $location = CurrentLocation::name();
