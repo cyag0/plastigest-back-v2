@@ -145,6 +145,19 @@ final class SalePricing
                 ]);
             }
 
+            // El descuento no pasa del importe del renglón. Antes se aceptaba:
+            // los pagos se comparaban contra un total y SaleService guardaba
+            // otro (recorta el descuento), y quedaba un saldo pendiente que no
+            // existía.
+            if (Money::toCents($discount) > 0) {
+                $quantity = $detail['quantity'] ?? $detail['requested_quantity'] ?? 0;
+                if (Money::toCents($discount) > Money::line($quantity, $price)['subtotal']) {
+                    throw ValidationException::withMessages([
+                        "details.{$i}.discount" => ['El descuento no puede ser mayor que el importe del renglón.'],
+                    ]);
+                }
+            }
+
             $details[$i] = array_merge($detail, [
                 'product_id' => $product->id,
                 'package_id' => $package?->id,
