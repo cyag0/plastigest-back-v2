@@ -55,8 +55,9 @@ abstract class CrudController extends Controller
     /**
      * Columna de sucursal del recurso. Cuando está definida, los usuarios que
      * NO pueden ver todas las sucursales (no son administradores) solo ven los
-     * registros de su sucursal actual. Los administradores (locations_list) ven
-     * todas las sucursales de la empresa. null = el recurso no se filtra por
+     * registros de su sucursal actual. Los administradores (system_admin o
+     * locations_all, ver CurrentWorker::canAccessAllLocations()) ven todas las
+     * sucursales de la empresa. null = el recurso no se filtra por
      * sucursal (catálogos de empresa como productos, clientes, etc.).
      */
     protected ?string $locationColumn = null;

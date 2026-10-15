@@ -10,6 +10,14 @@ use Illuminate\Support\Facades\DB;
 class CurrentWorker
 {
     /**
+     * Permiso que da acceso a todas las sucursales de la empresa (además de
+     * system_admin). Antes era locations_list ("Listar ubicaciones"), así que
+     * cualquier rol con ese permiso era, sin decirlo, administrador de todas
+     * las sucursales.
+     */
+    public const ALL_LOCATIONS_PERMISSION = 'locations_all';
+
+    /**
      * Lo que ya se consultó durante la petición en curso: roles por sucursal,
      * roles directos y permisos de cada rol. Una pantalla revisaba permisos
      * decenas de veces y cada revisión eran 3 consultas.
@@ -134,17 +142,19 @@ class CurrentWorker
     }
 
     /**
-     * El usuario puede ver y operar cualquier sucursal de la empresa.
+     * El usuario puede ver y operar cualquier sucursal de la empresa: es
+     * administrador del sistema o tiene locations_all ("Acceso a todas las
+     * sucursales"). locations_list ya no cuenta: solo deja listar sucursales.
+     * El selector de sucursales (LocationController) usa el mismo criterio.
      *
-     * Mismo criterio que el selector de sucursales (LocationController): quien
-     * tiene locations_list es administrador. Se busca en todos sus roles —los
-     * directos y los de cualquier sucursal—, no solo en el de la sucursal
-     * actual, porque esto se usa justamente para decidir si puede estar en ella.
+     * Se busca en todos sus roles —los directos y los de cualquier sucursal—,
+     * no solo en el de la sucursal actual, porque esto se usa justamente para
+     * decidir si puede estar en ella.
      *
-     * El permiso se evalúa SOLO con los roles que aplican a la empresa actual
-     * (los de la empresa + los roles de sistema sin empresa, como Super Admin).
-     * Así un administrador de la empresa A no hereda "todas las sucursales"
-     * cuando manda el contexto de la empresa B.
+     * Los dos permisos se evalúan SOLO con los roles que aplican a la empresa
+     * actual (los de la empresa + los roles de sistema sin empresa, como Super
+     * Admin). Así un administrador de la empresa A no hereda "todas las
+     * sucursales" cuando manda el contexto de la empresa B.
      */
     public static function canAccessAllLocations(?Authenticatable $user = null): bool
     {
@@ -160,7 +170,7 @@ class CurrentWorker
                 continue;
             }
 
-            if (in_array('locations_list', $role['permissions'], true)) {
+            if (array_intersect(['system_admin', self::ALL_LOCATIONS_PERMISSION], $role['permissions'])) {
                 return true;
             }
         }

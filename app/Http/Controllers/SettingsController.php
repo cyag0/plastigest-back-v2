@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Admin\Location;
 use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -16,13 +17,21 @@ class SettingsController extends Controller
      * tener el permiso indicado. Antes esto usaba $user->workers(), un método
      * inexistente que hacía que TODA la pantalla de configuración respondiera 500.
      *
+     * Quien no tiene acceso a todas las sucursales solo ve y cambia la de la
+     * sucursal actual: sus permisos son los del rol de esa sucursal, y antes
+     * podía cambiar la configuración de cualquier otra mandando su id.
+     *
      * @return Location|\Illuminate\Http\JsonResponse
      */
     private function authorizeLocation($locationId, string $permission)
     {
-        $location = Location::findOrFail($locationId);
+        $location = Location::find($locationId);
 
-        if ((int) $location->company_id !== (int) CurrentCompany::id()) {
+        if (!$location || (int) $location->company_id !== (int) CurrentCompany::id()) {
+            return response()->json(['success' => false, 'message' => 'Sucursal no encontrada'], 404);
+        }
+
+        if (!CurrentWorker::canAccessAllLocations() && (int) $location->id !== (int) CurrentLocation::id()) {
             return response()->json(['success' => false, 'message' => 'Sucursal no encontrada'], 404);
         }
 

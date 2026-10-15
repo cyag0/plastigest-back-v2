@@ -73,12 +73,12 @@ class LocationController extends CrudController
             $query->where('company_id', $company->id);
         }
 
-        // Scope por usuario: si NO tiene el permiso de listar sucursales
-        // (permiso de admin de empresa), solo puede ver las sucursales a las
-        // que está asignado vía la tabla user_location_roles. Así el selector
-        // de sucursal en el login muestra únicamente las sucursales del usuario.
-        // Los admins (con locations_list) ven todas para administración.
-        if (!CurrentWorker::hasPermission('locations_list')) {
+        // Scope por usuario: quien no tiene acceso a todas las sucursales
+        // (system_admin o locations_all) solo ve las sucursales a las que está
+        // asignado vía la tabla user_location_roles. Así el selector de
+        // sucursal en el login muestra únicamente las sucursales a las que
+        // puede entrar. Antes bastaba locations_list ("Listar ubicaciones").
+        if (!CurrentWorker::canAccessAllLocations()) {
             $userId = Auth::id();
             $query->whereIn('id', function ($q) use ($userId) {
                 $q->select('location_id')

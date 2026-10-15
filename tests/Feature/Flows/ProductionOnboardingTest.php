@@ -95,7 +95,9 @@ class ProductionOnboardingTest extends TestCase
         ])->assertCreated()->json('data.id');
         $this->assertSame(count($cashierPerms), DB::table('rol_permission')->where('role_id', $cashierRole)->count());
 
-        $managerPerms = ['users_list', 'users_read', 'users_create', 'users_update', 'roles_list', 'locations_list',
+        // locations_all: es encargado de todas las sucursales (da de alta
+        // cajeros con sus sucursales, location_roles).
+        $managerPerms = ['users_list', 'users_read', 'users_create', 'users_update', 'roles_list', 'locations_list', 'locations_all',
             'products_list', 'products_read', 'products_create', 'products_update', 'inventory_list', 'inventory_manage',
             'cash_registers_list', 'cash_registers_create', 'sales_list', 'sales_read', 'dashboard_view',
             // Para dar de alta cajeros tiene que tener, al menos, los permisos del cajero.
