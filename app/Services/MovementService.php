@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\InsufficientStockException;
 use App\Models\Admin\Location;
 use App\Models\Product;
 use App\Models\ProductPackage;
@@ -80,6 +81,7 @@ class MovementService
      * @param int|null $packageId ID del paquete (opcional)
      * @param StockContext|null $context Por qué se mueve el stock (para la trazabilidad)
      * @return void
+     * @throws InsufficientStockException Si no alcanza la existencia (responde 422)
      * @throws Exception
      */
     public function decrement(int $locationId, int $productId, int $unitId, float $quantity, ?int $packageId = null, ?StockContext $context = null): void
@@ -99,8 +101,8 @@ class MovementService
             // el saldo para que el asiento no mienta bajo concurrencia.
             $previousStock = $this->lockCurrentStock($locationId, $productId);
 
-            // Validar que hay suficiente stock
-            $this->validateStock($locationId, $productId, $quantityInProductUnit);
+            // Validar que hay suficiente stock (contra el saldo recién bloqueado)
+            $this->validateStock($locationId, $productId, $quantityInProductUnit, $previousStock);
 
             // Decrementar el stock
             $this->decrementStock($locationId, $productId, $quantityInProductUnit);
@@ -312,31 +314,23 @@ class MovementService
     /**
      * Validar que hay suficiente stock
      *
+     * Se valida contra el saldo que decrement() ya leyó bloqueando la fila
+     * (lockCurrentStock). Antes se volvía a leer sin bloqueo, y en REPEATABLE
+     * READ esa lectura puede devolver una foto anterior a una venta simultánea
+     * ya confirmada: el rechazo terminaba saliendo del UPDATE condicional como
+     * "No se pudo decrementar el stock..." (un 500 sin explicación).
+     *
      * @param int $locationId ID de la ubicación
      * @param int $productId ID del producto
      * @param float $quantity Cantidad solicitada (en unidad base del producto)
+     * @param float $currentStock Existencia actual, leída con la fila bloqueada
      * @return void
-     * @throws Exception
+     * @throws InsufficientStockException
      */
-    protected function validateStock(int $locationId, int $productId, float $quantity): void
+    protected function validateStock(int $locationId, int $productId, float $quantity, float $currentStock): void
     {
-        $stock = DB::table('product_location')
-            ->where('location_id', $locationId)
-            ->where('product_id', $productId)
-            ->value('current_stock');
-
-        if ($stock === null || $stock < $quantity) {
-            $product = Product::with('unit')->find($productId);
-            $productName = $product?->name ?? "producto ID {$productId}";
-            $unitName = $product?->unit?->name ?? '';
-            $suffix = $unitName !== '' ? " {$unitName}" : '';
-            $available = round((float) ($stock ?? 0), 3);
-            $requested = round($quantity, 3);
-
-            throw new Exception(
-                "Stock insuficiente para \"{$productName}\". " .
-                "Disponible: {$available}{$suffix}, solicitado: {$requested}{$suffix}."
-            );
+        if ($currentStock < $quantity) {
+            throw InsufficientStockException::forProduct($productId, $currentStock, $quantity, $locationId);
         }
     }
 
@@ -347,6 +341,7 @@ class MovementService
      * @param int $productId ID del producto
      * @param float $quantity Cantidad a decrementar (en unidad base del producto)
      * @return void
+     * @throws InsufficientStockException
      * @throws Exception
      */
     protected function decrementStock(int $locationId, int $productId, float $quantity): void
@@ -360,6 +355,19 @@ class MovementService
             ->decrement('current_stock', $quantity);
 
         if (!$updated) {
+            // Con la fila bloqueada y el saldo ya validado no debería pasar. Si
+            // la causa es que no alcanza (o no hay fila), se informa como stock
+            // insuficiente, con la existencia real; si no, es otro problema.
+            $currentStock = DB::table('product_location')
+                ->where('location_id', $locationId)
+                ->where('product_id', $productId)
+                ->lockForUpdate()
+                ->value('current_stock');
+
+            if ($currentStock === null || (float) $currentStock < $quantity) {
+                throw InsufficientStockException::forProduct($productId, (float) ($currentStock ?? 0), $quantity, $locationId);
+            }
+
             throw new Exception("No se pudo decrementar el stock para el producto ID {$productId}");
         }
     }

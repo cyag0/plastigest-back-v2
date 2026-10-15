@@ -15,7 +15,9 @@ use App\Models\Admin\Location;
 use App\Services\MovementService;
 use App\Services\CashMovementService;
 use App\Enums\StockLedgerReason;
+use App\Exceptions\InsufficientStockException;
 use App\Support\StockContext;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Exception;
 
@@ -326,6 +328,13 @@ class Sale extends Model
                     $detail->package_id, // Package si se vendió como paquete
                     StockContext::for(StockLedgerReason::SALE, $this)
                 );
+            } catch (InsufficientStockException|QueryException $e) {
+                // Sin envolver: la de stock ya nombra el producto y la
+                // existencia, y tiene que llegar como tal para responder 422
+                // (envuelta salía como 500 y con el texto repetido). Un error
+                // de base de datos (bloqueo, deadlock) debe seguir siendo
+                // interno, no salir con su SQL como "stock insuficiente".
+                throw $e;
             } catch (Exception $e) {
                 // Personalizar el mensaje de error con el nombre del producto
                 throw new Exception(

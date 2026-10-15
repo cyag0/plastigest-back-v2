@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\BusinessRuleException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Http\JsonResponse;
@@ -33,6 +34,12 @@ abstract class Controller
         }
         if ($e instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface) {
             return response()->json(['message' => $e->getMessage() ?: $message], $e->getStatusCode());
+        }
+        // Reglas de negocio (stock insuficiente, turno cerrado…): su propio 422
+        // {message, code}, igual que si llegaran al manejador global. Antes
+        // salían como 500 con el motivo escondido en `error`.
+        if ($e instanceof BusinessRuleException) {
+            return $e->render();
         }
 
         Log::error($message, [
