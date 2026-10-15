@@ -3,11 +3,15 @@
 namespace Tests\Feature\ComprasProduccion;
 
 use App\Models\Admin\Location;
+use App\Models\CashMovement;
 use App\Models\Product;
+use App\Models\ProductPackage;
 use App\Models\PurchaseDetailV2;
 use App\Models\PurchaseV2;
+use App\Models\StockLedgerEntry;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Services\TaskService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\Concerns\CreatesTenant;
@@ -253,6 +257,98 @@ class ComprasProduccionPurchasesTest extends TestCase
         $this->actingInBranch($this->user)
             ->postJson('/api/auth/admin/purchases-v2/upsert-draft', ['items' => [$line($this->coco)]])
             ->assertOk();
+    }
+
+    // ─── Recepción ──────────────────────────────────────────────────────────
+
+    private function receive(PurchaseV2 $purchase, array $lines, ?User $user = null)
+    {
+        return $this->actingInBranch($user ?? $this->buyer())
+            ->postJson("/api/auth/admin/purchases-v2/{$purchase->id}/receive", ['details' => $lines]);
+    }
+
+    private function cashOut(PurchaseV2 $purchase): ?float
+    {
+        $amount = CashMovement::where('source_type', 'purchase_v2')->where('source_id', $purchase->id)->value('amount');
+
+        return $amount === null ? null : (float) $amount;
+    }
+
+    public function test_a_short_delivery_books_in_the_register_only_what_arrived(): void
+    {
+        $water = $this->createProduct(['name' => 'Agua'], 0);
+        $purchase = $this->purchase($this->location, PurchaseV2::STATUS_IN_TRANSIT, [[100, 15]]);
+        $waterLine = $purchase->details()->create([
+            'product_id' => $water->id, 'quantity' => 10, 'unit_id' => $this->unitId('Pieza'), 'unit_price' => 20,
+        ]);
+        $cocoLine = $purchase->details->first();
+
+        // De 100 cocos llegaron 90 y el agua no llegó.
+        $this->receive($purchase, [
+            ['id' => $cocoLine->id, 'quantity_received' => 90],
+            ['id' => $waterLine->id, 'quantity_received' => 0],
+        ])->assertOk();
+
+        $this->assertSame(PurchaseV2::STATUS_RECEIVED, $purchase->fresh()->status);
+        $this->assertEquals(90, $this->stockOf($this->coco));
+        $this->assertEquals(0, $this->stockOf($water));
+        $this->assertEquals(1350, $this->cashOut($purchase), 'se paga lo recibido: 90 × 15, no los 1700 pedidos');
+        $this->assertEquals(1700, (float) $purchase->fresh()->total, 'el total sigue siendo lo pedido');
+        $this->assertSame(
+            1,
+            StockLedgerEntry::where('reference_type', PurchaseV2::class)->where('reference_id', $purchase->id)->count(),
+            'lo que no llegó no deja un movimiento en cero'
+        );
+        $this->assertNotNull(app(TaskService::class)->findOpenPurchaseDiscrepancyTask($purchase->fresh()));
+    }
+
+    public function test_more_than_was_ordered_cannot_be_received(): void
+    {
+        $purchase = $this->purchase($this->location, PurchaseV2::STATUS_IN_TRANSIT, [[100, 15]]);
+
+        $this->receive($purchase, [['id' => $purchase->details->first()->id, 'quantity_received' => 101]])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('details.0.quantity_received')
+            ->assertJsonPath('message', fn($message) => str_contains($message, 'Coco') && str_contains($message, '100'));
+
+        $this->assertSame(PurchaseV2::STATUS_IN_TRANSIT, $purchase->fresh()->status);
+        $this->assertEquals(0, $this->stockOf($this->coco));
+        $this->assertNull($this->cashOut($purchase));
+    }
+
+    public function test_a_line_of_another_purchase_cannot_be_received_here(): void
+    {
+        $purchase = $this->purchase($this->location, PurchaseV2::STATUS_IN_TRANSIT, [[10, 15]]);
+        $other = $this->purchase($this->location, PurchaseV2::STATUS_IN_TRANSIT, [[50, 15]]);
+
+        $this->receive($purchase, [['id' => $other->details->first()->id, 'quantity_received' => 50]])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('details.0.id');
+
+        $this->assertSame(PurchaseV2::STATUS_IN_TRANSIT, $purchase->fresh()->status);
+        $this->assertNull($other->details()->first()->quantity_received);
+        $this->assertEquals(0, $this->stockOf($this->coco));
+    }
+
+    public function test_a_package_line_is_received_and_paid_by_package(): void
+    {
+        $box = ProductPackage::create([
+            'product_id' => $this->coco->id,
+            'company_id' => $this->company->id,
+            'package_name' => 'Caja con 12',
+            'barcode' => 'CAJA-12-' . uniqid(),
+            'quantity_per_package' => 12,
+        ]);
+        $purchase = $this->purchase($this->location, PurchaseV2::STATUS_IN_TRANSIT, []);
+        $line = $purchase->details()->create([
+            'product_id' => $this->coco->id, 'package_id' => $box->id, 'quantity' => 2,
+            'unit_id' => $this->unitId('Pieza'), 'unit_price' => 100,
+        ]);
+
+        $this->receive($purchase, [['id' => $line->id, 'quantity_received' => 1]])->assertOk();
+
+        $this->assertEquals(12, $this->stockOf($this->coco), 'una caja son 12 cocos');
+        $this->assertEquals(100, $this->cashOut($purchase), 'se paga una caja');
     }
 
     // ─── Lista y estadísticas ───────────────────────────────────────────────

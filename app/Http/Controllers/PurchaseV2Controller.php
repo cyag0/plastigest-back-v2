@@ -25,6 +25,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Exception;
 
@@ -510,6 +511,35 @@ class PurchaseV2Controller extends Controller
             'details.*.quantity_received' => 'required|numeric|min:0',
         ]);
 
+        $purchase = $this->purchases()->with('details.product')->find($id);
+        if (!$purchase) {
+            return $this->purchaseNotFound();
+        }
+
+        // Se recibe lo que llegó, de 0 a lo pedido, en la misma unidad (o
+        // empaque) del renglón. Lo pedido ya no cambia después del borrador,
+        // así que se puede revisar antes de bloquear la compra.
+        $errors = [];
+        $details = $purchase->details->keyBy('id');
+        foreach ($validated['details'] as $index => $line) {
+            $detail = $details->get((int) $line['id']);
+            if (!$detail) {
+                $errors["details.{$index}.id"] = ['Ese renglón no es de esta compra.'];
+                continue;
+            }
+
+            if ((float) $line['quantity_received'] > (float) $detail->quantity + 0.0001) {
+                $errors["details.{$index}.quantity_received"] = [sprintf(
+                    'De %s se pidieron %s: no se puede recibir más de lo pedido.',
+                    $detail->product?->name ?? 'este producto',
+                    rtrim(rtrim(number_format((float) $detail->quantity, 4, '.', ''), '0'), '.')
+                )];
+            }
+        }
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
         try {
             $result = DB::transaction(fn() => $this->receivePurchase($id, $validated['details']));
 
@@ -563,6 +593,12 @@ class PurchaseV2Controller extends Controller
                 'received_at' => now(),
             ]);
 
+            // Lo que no llegó no mueve stock (ni deja un renglón en cero en
+            // el kárdex).
+            if ((float) $detail->quantity_received <= 0) {
+                continue;
+            }
+
             // Incrementar stock usando MovementService
             $movementService->increment(
                 $purchase->location_id,
@@ -582,8 +618,15 @@ class PurchaseV2Controller extends Controller
             'received_by' => Auth::id(),
         ]);
 
-        // Registrar egreso en caja
-        CashMovementService::fromPurchaseV2($purchase);
+        // Registrar egreso en caja por lo que de verdad llegó (y se pagó):
+        // recibido × precio de cada renglón, no el total pedido. Si de 100
+        // cocos llegan 90, al proveedor se le pagan 90 y el corte de caja
+        // tiene que cuadrar con eso. El total de la compra se queda como lo
+        // pedido; la diferencia es la discrepancia de abajo.
+        $receivedTotal = round((float) $purchase->details()->get()->sum(
+            fn(PurchaseDetailV2 $detail) => round((float) ($detail->quantity_received ?? 0) * (float) $detail->unit_price, 2)
+        ), 2);
+        CashMovementService::fromPurchaseV2((clone $purchase)->forceFill(['total' => $receivedTotal]));
 
         // Notificar recepción de compra
         $purchase->load(['supplier', 'details.product']);
