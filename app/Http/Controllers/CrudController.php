@@ -98,8 +98,14 @@ abstract class CrudController extends Controller
     protected function resolveStoreCompany(Request $request): ?\Illuminate\Http\JsonResponse
     {
         $column = $this->companyColumn;
-        if (!$column || !$this->modelHasColumn($column) || !($current = CurrentCompany::id())) {
+        if (!$column || !$this->modelHasColumn($column)) {
             return null;
+        }
+
+        // Sin empresa en el contexto no se crea nada: el company_id quedaba
+        // como lo mandara el cliente. SetCurrentCompany ya lo corta antes.
+        if (!($current = CurrentCompany::id())) {
+            return $this->companyRequiredResponse();
         }
 
         $requested = $request->input($column);
@@ -124,14 +130,24 @@ abstract class CrudController extends Controller
      */
     protected function applyTenantScope($query)
     {
-        if ($this->companyColumn && ($companyId = CurrentCompany::id()) && $this->modelHasColumn($this->companyColumn)) {
-            // Los registros sin empresa son catálogos globales compartidos
-            // (unidades, tipos de inventario): visibles para todas las empresas.
-            // Los registros con empresa solo los ve esa empresa.
-            $query->where(function ($q) use ($companyId) {
-                $q->where($this->companyColumn, $companyId)
-                    ->orWhereNull($this->companyColumn);
-            });
+        if ($this->companyColumn && $this->modelHasColumn($this->companyColumn)) {
+            $companyId = CurrentCompany::id();
+
+            if (!$companyId) {
+                // Sin empresa en el contexto no se devuelve nada. Antes la
+                // consulta salía sin filtro de empresa: todos los registros de
+                // todas las empresas. SetCurrentCompany ya corta esas
+                // peticiones; esto es la segunda barrera.
+                $query->whereRaw('1 = 0');
+            } else {
+                // Los registros sin empresa son catálogos globales compartidos
+                // (unidades, tipos de inventario): visibles para todas las
+                // empresas. Los registros con empresa solo los ve esa empresa.
+                $query->where(function ($q) use ($companyId) {
+                    $q->where($this->companyColumn, $companyId)
+                        ->orWhereNull($this->companyColumn);
+                });
+            }
         }
 
         if (
@@ -230,6 +246,18 @@ abstract class CrudController extends Controller
     {
         return response()->json([
             'message' => "No tienes permiso para {$action}.",
+        ], 403);
+    }
+
+    /**
+     * Falta la empresa del contexto (X-Company-ID). Mismo `code` que
+     * SetCurrentCompany: la app muestra el selector de empresa.
+     */
+    protected function companyRequiredResponse()
+    {
+        return response()->json([
+            'message' => 'Selecciona una empresa para continuar.',
+            'code' => 'company_required',
         ], 403);
     }
 
