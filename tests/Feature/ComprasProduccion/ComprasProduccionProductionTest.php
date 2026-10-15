@@ -410,4 +410,38 @@ class ComprasProduccionProductionTest extends TestCase
         $this->actingInBranch($this->user)->putJson($url, $this->payload(['consumptions_empty' => 1]))->assertOk();
         $this->assertSame(1, $order->consumptions()->count());
     }
+
+    // ─── Folios ─────────────────────────────────────────────────────────────
+
+    public function test_each_company_numbers_its_own_production_orders(): void
+    {
+        $prefix = 'PROD-' . date('Y') . '-';
+        [, $branch] = $this->createCompanyWithBranch();
+        $owner = $this->createUserWithRole($branch)->fresh();
+        $coco = $this->createProduct(['name' => 'Coco B', 'company_id' => $branch->company_id], 0);
+        $granel = $this->createProduct(['name' => 'Granel B', 'company_id' => $branch->company_id], 0, 'Kilogramo', InventoryType::FINISHED_PRODUCT);
+
+        $first = $this->draft();
+        // La primera orden de la otra empresa chocaba con el índice único.
+        $foreign = $this->draft($branch, $owner, [], $coco, $granel);
+        $second = $this->draft();
+
+        $this->assertSame("{$prefix}0001", ProductionOrder::findOrFail($first)->folio);
+        $this->assertSame("{$prefix}0001", ProductionOrder::findOrFail($foreign)->folio);
+        $this->assertSame("{$prefix}0002", ProductionOrder::findOrFail($second)->folio);
+    }
+
+    public function test_numbering_continues_after_the_folios_already_issued(): void
+    {
+        $prefix = 'PROD-' . date('Y') . '-';
+        ProductionOrder::create([
+            'company_id' => $this->company->id,
+            'location_id' => $this->location->id,
+            'folio' => "{$prefix}0041",
+            'production_date' => now()->toDateString(),
+            'status' => 'draft',
+        ]);
+
+        $this->assertSame("{$prefix}0042", ProductionOrder::findOrFail($this->draft())->folio);
+    }
 }

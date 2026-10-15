@@ -10,11 +10,11 @@ use App\Models\InventoryAdjustmentDetail;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\DocumentSequence;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\DB;
 
 /**
  * @mixin IdeHelperProductionOrder
@@ -71,28 +71,27 @@ class ProductionOrder extends Model
     }
 
     /**
-     * Genera el siguiente folio PROD-YYYY-NNNN con lock pesimista.
+     * Siguiente folio PROD-YYYY-NNNN de la empresa.
+     *
+     * Cada empresa lleva su propio consecutivo por año (DocumentSequence,
+     * como compras y transferencias), así que dos empresas pueden tener el
+     * mismo folio: el índice único es (company_id, folio). Antes el índice era
+     * solo el folio y la primera orden de una segunda empresa chocaba con la
+     * PROD-YYYY-0001 de la primera; además el bloqueo sobre "el último folio"
+     * no protegía la primera orden del año, en la que no había fila que
+     * bloquear.
      */
     public static function nextFolio(?int $companyId): string
     {
         $year = date('Y');
         $prefix = "PROD-{$year}-";
 
-        return DB::transaction(function () use ($companyId, $prefix) {
-            $lastFolio = static::query()
-                ->where('company_id', $companyId)
-                ->where('folio', 'like', $prefix . '%')
-                ->orderByDesc('id')
-                ->lockForUpdate()
-                ->value('folio');
+        $number = DocumentSequence::next(
+            "production:{$companyId}:{$year}",
+            fn() => DocumentSequence::lastUsed(static::query()->where('company_id', $companyId), 'folio', $prefix),
+        );
 
-            $nextNumber = 1;
-            if ($lastFolio && preg_match('/(\d+)$/', $lastFolio, $m)) {
-                $nextNumber = ((int) $m[1]) + 1;
-            }
-
-            return $prefix . str_pad((string) $nextNumber, 4, '0', STR_PAD_LEFT);
-        });
+        return $prefix . str_pad((string) $number, 4, '0', STR_PAD_LEFT);
     }
 
     public function company(): BelongsTo
