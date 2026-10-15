@@ -41,6 +41,18 @@ class CashClosingController extends CrudController
         return $this->closedByShifts();
     }
 
+    /**
+     * Los cierres anteriores son historial: no se eliminan. Antes se heredaba
+     * el destroy de CrudController y un corte cerrado se podía borrar por id.
+     */
+    public function destroy($id)
+    {
+        return response()->json([
+            'message' => 'Los cortes de caja son historial y no se pueden eliminar.',
+            'code' => 'closing_read_only',
+        ], 405, ['Allow' => 'GET, HEAD']);
+    }
+
     private function closedByShifts()
     {
         return response()->json([

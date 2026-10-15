@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\SaleResource;
 use App\Models\Sale;
-use App\Models\SaleDetail;
 use App\Models\Product;
 use App\Models\ProductPackage;
 use Illuminate\Validation\ValidationException;
@@ -159,174 +158,59 @@ class SaleController extends CrudController
     }
 
     /**
-     * Validación para update
+     * Las ventas no se editan (ver update()): no hay datos de edición que validar.
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        return $request->validate([
-            // Información del cliente (opcional)
-            'customer_name' => 'nullable|string|max:255',
-            'customer_phone' => 'nullable|string|max:20',
-            'customer_email' => 'nullable|email|max:255',
-
-            // Método de pago
-            'payment_method' => 'sometimes|required|in:cash,card,transfer,credit',
-            'paid_amount' => 'nullable|numeric|min:0',
-            'notes' => 'nullable|string',
-            'document_number' => 'nullable|string|max:255',
-            'comments' => 'nullable|string',
-
-            // Detalles de la venta
-            'details' => 'sometimes|required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
-            'details.*.package_id' => 'nullable|exists:product_packages,id',
-            'details.*.unit_id' => 'required|exists:units,id',
-            'details.*.quantity' => 'required|numeric|min:0.01',
-            'details.*.unit_price' => 'required|numeric|min:0',
-        ]);
+        return [];
     }
 
     /**
-     * Manejo unificado del proceso de creación/actualización
+     * PUT/PATCH sales/{id}: las ventas no se editan.
+     *
+     * Antes reescribía la venta desde la petición (renglones, precios, total,
+     * cobrado, fecha, cajero y sucursal) sin tocar el stock, los pagos ni la
+     * caja, aun cerrada o cancelada: editar 10 piezas a 100 y cancelar
+     * devolvía al inventario 90 piezas que nunca existieron. Ninguna pantalla
+     * la usa; una corrección es cancelar la venta y registrar otra.
+     */
+    public function update(Request $request, $id)
+    {
+        return response()->json([
+            'message' => 'Las ventas no se editan. Para corregir una venta, cancélala y registra una nueva.',
+            'code' => 'sale_update_not_allowed',
+        ], 405, ['Allow' => 'GET, HEAD, DELETE']);
+    }
+
+    /**
+     * Alta de la venta (las ventas no se editan: ver update()).
      */
     protected function process($callback, array $data, $method = 'create'): Model
     {
+        if ($method !== 'create') {
+            throw new \LogicException('Las ventas no se editan.');
+        }
+
         // El alta vive en SaleService (la comparte el punto de venta). Si quien
         // vende tiene turno de caja abierto, la venta entra en ese turno.
-        if ($method === 'create') {
-            $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
+        $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
 
-            // Solo se adjunta el turno si es de la sucursal actual: si no, la
-            // venta quedaría apuntando al turno de otra sucursal e inflaría su
-            // total de ventas.
-            if ($session && $session->location_id !== CurrentLocation::id()) {
-                $session = null;
-            }
-
-            // Sin permiso sales_discount, el precio sale del catálogo: la
-            // pantalla anterior no debe poder cobrar a un precio arbitrario.
-            $data['details'] = $this->enforceCatalogPricing($data['details']);
-
-            return app(\App\Services\SaleService::class)->create([
-                'company_id' => CurrentCompany::get()->id,
-                'location_id' => CurrentLocation::get()->id,
-                'user_id' => Auth::id(),
-            ] + $data, $session)->load($this->getShowRelations());
+        // Solo se adjunta el turno si es de la sucursal actual: si no, la
+        // venta quedaría apuntando al turno de otra sucursal e inflaría su
+        // total de ventas.
+        if ($session && $session->location_id !== CurrentLocation::id()) {
+            $session = null;
         }
 
-        try {
-            DB::beginTransaction();
+        // Sin permiso sales_discount, el precio sale del catálogo: la
+        // pantalla anterior no debe poder cobrar a un precio arbitrario.
+        $data['details'] = $this->enforceCatalogPricing($data['details']);
 
-            $user = Auth::user();
-
-            // Obtener company y location del contexto
-            $company = CurrentCompany::get();
-            $location = CurrentLocation::get();
-
-            // Preparar datos del content
-            $content = [
-                'payment_method' => $data['payment_method'],
-                'customer_name' => $data['customer_name'] ?? null,
-                'customer_phone' => $data['customer_phone'] ?? null,
-                'customer_email' => $data['customer_email'] ?? null,
-                'notes' => $data['notes'] ?? null,
-            ];
-
-            // Agregar document_number y comments a content
-            if (isset($data['document_number'])) {
-                $content['document_number'] = $data['document_number'];
-            }
-            if (isset($data['comments'])) {
-                $content['comments'] = $data['comments'];
-            }
-
-
-            // Preparar datos de la venta
-            $saleData = [
-                'location_id' => $location->id,
-                'sale_date' => $data['sale_date'] ?? now()->toDateString(),
-                'content' => $content,
-                'company_id' => $company->id,
-                'user_id' => $user->id,
-                'payment_method' => $data['payment_method'],
-            ];
-
-            // Calcular total
-            $totalCost = 0;
-            foreach ($data['details'] as $detail) {
-                $totalCost += $detail['quantity'] * $detail['unit_price'];
-            }
-            $saleData['total'] = $totalCost;
-            $saleData['subtotal'] = $totalCost;
-            $saleData['tax'] = 0;
-            $saleData['discount'] = 0;
-
-            // Manejar pago inicial
-            $paidAmount = $data['paid_amount'] ?? $totalCost;
-            $saleData['paid_amount'] = $paidAmount;
-
-            // Determinar payment_status
-            if ($paidAmount >= $totalCost) {
-                $saleData['payment_status'] = 'paid';
-            } elseif ($paidAmount > 0) {
-                $saleData['payment_status'] = 'partial';
-            } else {
-                $saleData['payment_status'] = 'pending';
-            }
-
-            // Inicializar payment_history
-            $paymentHistory = [];
-            if ($paidAmount > 0) {
-                $paymentHistory[] = [
-                    'amount' => $paidAmount,
-                    'payment_method' => $data['payment_method'],
-                    'date' => now()->toDateTimeString(),
-                    'notes' => $data['notes'] ?? null,
-                ];
-            }
-            $saleData['payment_history'] = $paymentHistory;
-
-            // Crear o actualizar venta
-            /** @var Sale $sale */
-            $sale = $callback($saleData);
-
-            // Manejar detalles
-            if (isset($data['details'])) {
-                // Si es actualización, eliminar detalles existentes
-                if ($method === 'update') {
-                    $sale->details()->delete();
-                }
-
-                // Crear nuevos detalles
-                foreach ($data['details'] as $detail) {
-                    $unitPrice = $detail['unit_price'];
-                    $quantity = $detail['quantity'];
-                    $subtotal = $quantity * $unitPrice;
-
-                    SaleDetail::create([
-                        'sale_id' => $sale->id,
-                        'product_id' => $detail['product_id'],
-                        'package_id' => $detail['package_id'] ?? null,
-                        'unit_id' => $detail['unit_id'],
-                        'quantity' => $quantity,
-                        'unit_price' => $unitPrice,
-                        'subtotal' => $subtotal,
-                        'tax' => 0,
-                        'discount' => 0,
-                        'total' => $subtotal,
-                    ]);
-                }
-            }
-
-            // Recargar relaciones
-            $sale->load($this->getShowRelations());
-
-            DB::commit();
-            return $sale;
-        } catch (\Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        return app(\App\Services\SaleService::class)->create([
+            'company_id' => CurrentCompany::get()->id,
+            'location_id' => CurrentLocation::get()->id,
+            'user_id' => Auth::id(),
+        ] + $data, $session)->load($this->getShowRelations());
     }
 
     /**
