@@ -8,6 +8,7 @@ use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\Permissions\RolesResource;
 use App\Models\Admin\Permission;
 use App\Models\Admin\Role;
+use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
@@ -95,6 +96,7 @@ class RolesController extends CrudController
         ]);
 
         $this->guardGrantedPermissions($request);
+        $this->guardRoleChanges($request, $model);
 
         // Para la bitácora: los permisos no son atributos del modelo y el
         // observer no los ve.
@@ -122,6 +124,46 @@ class RolesController extends CrudController
 
         if ($extra->isNotEmpty()) {
             abort(response()->json(['message' => 'No puedes asignar permisos que tú no tienes.'], 403));
+        }
+    }
+
+    /**
+     * Quitar también se controla: sync() reemplaza todos los permisos del rol,
+     * y con roles_update se podía vaciar el rol del gerente y, ya degradado,
+     * cambiarle la contraseña (UserController::guardTarget solo compara
+     * permisos). Salvo el administrador del sistema:
+     * - nadie quita permisos que él no tiene;
+     * - nadie edita un rol que tiene un usuario con permisos que él no tiene
+     *   (la misma regla que UserController::guardTarget, en todas sus
+     *   sucursales; un administrador del sistema siempre tiene system_admin).
+     */
+    private function guardRoleChanges(Request $request, Role $role): void
+    {
+        if (CurrentWorker::isSystemAdmin()) {
+            return;
+        }
+
+        $actorPermissions = CurrentWorker::allPermissionNames();
+
+        if ($request->has('permissions')) {
+            $kept = array_keys(array_filter((array) $request->input('permissions')));
+            $removed = $role->permissions()->whereNotIn('permissions.id', $kept)->pluck('permissions.name');
+
+            if ($removed->diff($actorPermissions)->isNotEmpty()) {
+                abort(response()->json(['message' => 'No puedes quitar permisos que tú no tienes.'], 403));
+            }
+        }
+
+        $holderIds = DB::table('user_location_roles')->where('role_id', $role->id)->pluck('user_id')
+            ->merge(DB::table('users_roles')->where('role_id', $role->id)->pluck('user_id'))
+            ->unique();
+
+        foreach (User::whereIn('id', $holderIds)->get() as $holder) {
+            if (array_diff(CurrentWorker::allPermissionNames($holder), $actorPermissions)) {
+                abort(response()->json([
+                    'message' => 'No puedes editar un rol que tiene un usuario con permisos que tú no tienes.',
+                ], 403));
+            }
         }
     }
 
@@ -301,13 +343,16 @@ class RolesController extends CrudController
         try {
             // Iniciar transacción para operaciones complejas con roles y permisos
             DB::beginTransaction();
-            $permissions = $data['permissions'] ?? [];
-            $permissions = array_keys(array_filter($permissions));
 
             /** @var Role */
             $model = $callback($data);
 
-            $model->permissions()->sync($permissions);
+            // Sin "permissions" en la petición los permisos se quedan como
+            // están: antes se sincronizaba con una lista vacía y una edición
+            // sin ellos (solo el nombre) dejaba el rol sin ningún permiso.
+            if (array_key_exists('permissions', $data)) {
+                $model->permissions()->sync(array_keys(array_filter((array) $data['permissions'])));
+            }
 
             // Confirmar la transacción
             DB::commit();
