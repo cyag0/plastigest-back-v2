@@ -35,12 +35,29 @@ class InventoryTransferController extends Controller
     }
 
     /**
-     * Listar transferencias con filtros
+     * Listar transferencias ("Solicitudes pendientes" e "Historial" de la app).
+     *
+     * Filtros: status (separados por coma), direction (sent = salen de la
+     * sucursal actual, received = llegan a ella; como las flechas ↑/↓ de las
+     * pantallas), search (folio, notas, sucursales, quien la pidió o
+     * producto), from_location_id, to_location_id y fechas (date_from/date_to
+     * o start_date/end_date). Con per_page responde con la forma estándar de
+     * los listados paginados ({data, links, meta} con from/to), la que lee
+     * AppList.
      */
     public function index(Request $request): JsonResponse
     {
         if (!CurrentWorker::hasPermission('transfers_list')) {
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $currentLocationId = CurrentLocation::id();
+        $seesAllLocations = CurrentWorker::canAccessAllLocations();
+
+        // Sin sucursal actual el filtro de sucursal no tiene contra qué
+        // comparar: antes, en ese caso, se listaban las de todas.
+        if (!$seesAllLocations && !$currentLocationId) {
+            return response()->json(['message' => 'Selecciona una sucursal para continuar.'], 403);
         }
 
         try {
@@ -58,7 +75,7 @@ class InventoryTransferController extends Controller
 
             // Aislamiento por sucursal: quien no es administrador solo ve las
             // transferencias de su sucursal (entrantes o salientes).
-            if (!CurrentWorker::canAccessAllLocations() && ($currentLocationId = CurrentLocation::id())) {
+            if (!$seesAllLocations) {
                 $query->where(function ($q) use ($currentLocationId) {
                     $q->where('from_location_id', $currentLocationId)
                         ->orWhere('to_location_id', $currentLocationId);
@@ -82,60 +99,54 @@ class InventoryTransferController extends Controller
                 }
             }
 
-            // Filtrar por ubicación de origen
-            if ($request->has('from_location_id')) {
-                $query->where('from_location_id', $request->from_location_id);
+            // Dirección respecto a la sucursal actual: "Enviadas" (salen de
+            // aquí) o "Recibidas" (llegan aquí).
+            $direction = (string) $request->input('direction', '');
+            if ($currentLocationId && $direction === 'sent') {
+                $query->where('from_location_id', $currentLocationId);
+            } elseif ($currentLocationId && $direction === 'received') {
+                $query->where('to_location_id', $currentLocationId);
             }
 
-            // Filtrar por ubicación de destino
-            if ($request->has('to_location_id')) {
-                $query->where('to_location_id', $request->to_location_id);
+            if ($request->filled('from_location_id')) {
+                $query->where('from_location_id', (int) $request->input('from_location_id'));
             }
 
-            // Filtrar envíos salientes (desde mi sucursal actual)
-            if ($request->has('is_outgoing') && $request->is_outgoing) {
-                $userLocationId = $request->user_location_id ?? CurrentLocation::id();
-                if ($userLocationId) {
-                    $query->where('from_location_id', $userLocationId);
-                }
+            if ($request->filled('to_location_id')) {
+                $query->where('to_location_id', (int) $request->input('to_location_id'));
             }
 
-            // Filtrar recepciones entrantes (hacia mi sucursal actual)
-            if ($request->has('is_incoming') && $request->is_incoming) {
-                $userLocationId = $request->user_location_id ?? CurrentLocation::id();
-                if ($userLocationId) {
-                    $query->where('to_location_id', $userLocationId);
-                }
+            $search = trim((string) $request->input('search', ''));
+            if ($search !== '') {
+                $like = '%' . $search . '%';
+                $query->where(function ($q) use ($like) {
+                    $q->where('transfer_number', 'like', $like)
+                        ->orWhere('notes', 'like', $like)
+                        ->orWhereHas('fromLocation', fn($location) => $location->where('name', 'like', $like))
+                        ->orWhereHas('toLocation', fn($location) => $location->where('name', 'like', $like))
+                        ->orWhereHas('requestedByUser', fn($user) => $user->where('name', 'like', $like))
+                        ->orWhereHas('details.product', fn($product) => $product->where('name', 'like', $like)->orWhere('code', 'like', $like));
+                });
             }
 
-            // Filtrar por usuario (si se solicita, mostrar solo las transferencias del usuario actual)
-            if ($request->has('my_transfers') && $request->my_transfers) {
-                $query->where('requested_by', Auth::id());
+            // Rango de fechas (cada extremo es opcional).
+            $dateFrom = $request->input('date_from', $request->input('start_date'));
+            $dateTo = $request->input('date_to', $request->input('end_date'));
+            if ($dateFrom) {
+                $query->whereDate('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $query->whereDate('created_at', '<=', $dateTo);
             }
 
-            // Filtrar por rango de fechas
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $query->whereBetween('created_at', [
-                    $request->start_date,
-                    $request->end_date
-                ]);
-            }
-
-            // Ordenar
-            $query->orderBy('created_at', 'desc');
+            // Ordenar (el id desempata las creadas en el mismo segundo).
+            $query->orderBy('created_at', 'desc')->orderBy('id', 'desc');
 
             // Paginar o retornar todo
-            if ($request->has('per_page')) {
-                $transfers = $query->paginate($request->per_page);
-                return response()->json([
-                    'data' => InventoryTransferResource::collection($transfers->items()),
-                    'meta' => [
-                        'current_page' => $transfers->currentPage(),
-                        'last_page' => $transfers->lastPage(),
-                        'per_page' => $transfers->perPage(),
-                        'total' => $transfers->total(),
-                    ],
-                ]);
+            if ($request->filled('per_page')) {
+                $perPage = max(1, min((int) $request->input('per_page'), 100));
+
+                return InventoryTransferResource::collection($query->paginate($perPage))->response();
             }
 
             $transfers = $query->get();
@@ -143,11 +154,7 @@ class InventoryTransferController extends Controller
                 'data' => InventoryTransferResource::collection($transfers),
             ]);
         } catch (Exception $e) {
-            Log::error('Error listing transfers: ' . $e->getMessage());
-            return response()->json([
-                'message' => 'Error al obtener las transferencias',
-                'error' => $this->errorDetail($e)
-            ], 500);
+            return $this->errorResponse($e, 'Error al obtener las transferencias');
         }
     }
 
