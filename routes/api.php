@@ -16,6 +16,7 @@ use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ProductMovementController;
 use App\Http\Controllers\InventoryMovementController;
 use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\ReplenishmentController;
 use App\Http\Controllers\PrintController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PurchaseV2Controller;
@@ -314,6 +315,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('inventory-movements', [InventoryMovementController::class, 'index']);
             Route::get('inventory-movements/export-url', [InventoryMovementController::class, 'exportUrl']);
             Route::get('activity', [ActivityLogController::class, 'index']);
+            // Qué mandar a cada sucursal y qué comprar o producir para mañana.
+            Route::get('replenishment', [ReplenishmentController::class, 'index']);
             Route::get('home/summary', [HomeController::class, 'summary']);
 
             // URL firmadas de los documentos para imprimir.
