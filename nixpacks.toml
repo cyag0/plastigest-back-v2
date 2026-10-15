@@ -10,6 +10,16 @@
 # tiene soporte.
 NIXPACKS_NODE_VERSION = "22"
 
+[phases.install]
+# El de Nixpacks, pero sin dependencias de desarrollo (Telescope, Sail,
+# PHPUnit no van a producción) y sin --ignore-platform-reqs: si a la imagen
+# le falta una extensión que piden los paquetes, el build falla aquí y no en
+# producción.
+cmds = [
+    "mkdir -p /var/log/nginx && mkdir -p /var/cache/nginx",
+    "composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader",
+]
+
 [staticAssets]
 # php-fpm.conf de Nixpacks 1.41.0 (el pool [www] es el mismo) más [global].
 # Sin error_log, PHP-FPM guardaba los errores de la app (LOG_STACK=stderr)

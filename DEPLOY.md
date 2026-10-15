@@ -2,7 +2,7 @@
 
 Runbook para sacar el beta a producción montando el servidor **a mano** sobre un VPS. Stack detectado:
 
-- **Backend:** Laravel 12, PHP 8.2+, Sanctum (token Bearer), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00), PDFs con dompdf, push con Firebase (kreait).
+- **Backend:** Laravel 12, PHP 8.4 (`composer.json` lo exige: con otra versión la app no arranca), Sanctum (token Bearer), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00), PDFs con dompdf, push con Firebase (kreait).
 - **Frontend:** Expo SDK 56 / Expo Router (web `output: "single"`, SPA). API por `EXPO_PUBLIC_API_URL`.
 - **Objetivo:** 8 sucursales, ~30 usuarios en total. Pico concurrente ~24 (3 por sucursal), realista ~8. Carga pequeña: el VPS va sobrado.
 
@@ -55,18 +55,18 @@ Arquitectura objetivo:
 
 ---
 
-## Fase 2 — Instalar el stack (Nginx, PHP 8.3, MySQL, Composer)
+## Fase 2 — Instalar el stack (Nginx, PHP 8.4, MySQL, Composer)
 
 ```bash
 # Nginx
 sudo apt install -y nginx
 
-# PHP 8.3 + extensiones que necesita el proyecto
+# PHP 8.4 + extensiones que necesita el proyecto
 sudo apt install -y software-properties-common
 sudo add-apt-repository ppa:ondrej/php -y
 sudo apt update
-sudo apt install -y php8.3-fpm php8.3-cli php8.3-mysql php8.3-mbstring \
-  php8.3-xml php8.3-curl php8.3-zip php8.3-bcmath php8.3-gd php8.3-intl
+sudo apt install -y php8.4-fpm php8.4-cli php8.4-mysql php8.4-mbstring \
+  php8.4-xml php8.4-curl php8.4-zip php8.4-bcmath php8.4-gd php8.4-intl
 
 # MySQL
 sudo apt install -y mysql-server
@@ -208,7 +208,7 @@ EXIT;
        client_max_body_size 30M;
 
        location ~ \.php$ {
-           fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+           fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;
            fastcgi_index index.php;
            fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
            include fastcgi_params;
@@ -478,7 +478,7 @@ Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez
 
 **Servidor (Fases 1-6) — todo pendiente**
 - [ ] Endurecer SO: usuario `deploy` con sudo, firewall UFW (22/80/443), deshabilitar login root por contraseña.
-- [ ] Instalar stack: Nginx, PHP 8.3 + extensiones, MySQL, Composer, Git.
+- [ ] Instalar stack: Nginx, PHP 8.4 + extensiones, MySQL, Composer, Git.
 - [ ] Crear BD `plastigest` + usuario.
 - [ ] Clonar repo, `composer install --no-dev`, `.env` de producción, `key:generate`.
 - [ ] Subir el **JSON de Firebase** por `scp` (nunca al repo) y apuntar `FIREBASE_CREDENTIALS`.

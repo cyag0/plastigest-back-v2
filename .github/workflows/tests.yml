@@ -13,7 +13,8 @@ jobs:
 
     services:
       mysql:
-        image: mysql:8.0
+        # La misma serie que el MySQL que crea Coolify por defecto.
+        image: mysql:8.4
         env:
           MYSQL_ROOT_PASSWORD: password
           MYSQL_DATABASE: testing
@@ -36,17 +37,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # La misma versión menor que producción: Nixpacks instala PHP 8.4.2
+      # ("php": "^8.4" y config.platform.php en composer.json) con estas
+      # extensiones.
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
-          extensions: bcmath, gd, intl, pdo_mysql, zip
+          extensions: bcmath, gd, intl, pcntl, pdo_mysql, sodium, xmlreader, zip
           coverage: none
 
       - name: Cache de Composer
         uses: actions/cache@v4
         with:
           path: vendor
-          key: composer-${{ hashFiles('composer.lock') }}
+          key: composer-php8.4-${{ hashFiles('composer.lock') }}
 
       - name: Instalar dependencias
         run: composer install --no-interaction --prefer-dist --no-progress

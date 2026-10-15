@@ -9,7 +9,7 @@
     ],
     "license": "MIT",
     "require": {
-        "php": "^8.2",
+        "php": "^8.4",
         "ext-xmlreader": "*",
         "ext-zip": "*",
         "barryvdh/laravel-dompdf": "^3.1",
@@ -89,7 +89,9 @@
             "pestphp/pest-plugin": true,
             "php-http/discovery": true
         },
-        "platform-check": false
+        "platform": {
+            "php": "8.4.2"
+        }
     },
     "minimum-stability": "stable",
     "prefer-stable": true
