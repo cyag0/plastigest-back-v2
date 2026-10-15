@@ -16,7 +16,10 @@ return [
     |
     */
 
-    'enabled' => env('TELESCOPE_ENABLED', true),
+    // Apagado por defecto fuera de local: graba cada petición (con tokens y
+    // contraseñas) en la base y nada la depura. Además, solo se registra en
+    // local (App\Providers\OperationsServiceProvider).
+    'enabled' => env('TELESCOPE_ENABLED', env('APP_ENV') === 'local'),
 
     /*
     |--------------------------------------------------------------------------
