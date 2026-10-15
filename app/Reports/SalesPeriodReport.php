@@ -29,6 +29,12 @@ final class SalesPeriodReport implements BusinessReport
 
     private const CANCELLED = SaleStatus::CANCELLED->value;
 
+    /**
+     * Un pago registrado hasta estos minutos después de crear la venta se
+     * cobró al vender (es la misma operación); uno posterior es un abono.
+     */
+    private const PAID_WITH_SALE_MINUTES = 10;
+
     private ?array $data = null;
 
     public function __construct(
@@ -64,6 +70,7 @@ final class SalesPeriodReport implements BusinessReport
 
         $previous = $this->period->previous();
         $products = $this->products();
+        [$payments, $abonos] = $this->payments();
 
         return $this->data = [
             'scope' => $this->scope,
@@ -77,7 +84,8 @@ final class SalesPeriodReport implements BusinessReport
             'by_hour' => $this->byHour(),
             'products' => $products,
             'categories' => $this->categories($products),
-            'payments' => $this->payments(),
+            'payments' => $payments,
+            'abonos' => $abonos,
             'cashiers' => $this->cashiers(),
             'cancellations' => $this->cancellations(),
             'discounts' => $this->discounts(),
@@ -295,9 +303,20 @@ final class SalesPeriodReport implements BusinessReport
     }
 
     /**
-     * Lo cobrado por método. Las ventas del punto de venta guardan cada pago
-     * (sale_payments); las anteriores solo traen un método y lo pagado. Lo que
-     * falta por cobrar (crédito, anticipo) va en su propio renglón.
+     * Lo cobrado en el periodo por método, y cuánto de eso fueron abonos.
+     *
+     * Sale de los ingresos de caja de las ventas (un movimiento por pago y
+     * método, el mismo dinero que suma la caja): ahí está lo pagado al vender
+     * y cada abono, con la hora en que se registró. Lo pagado al vender cuenta
+     * el día de la venta; un abono, el día en que se registró, aunque la venta
+     * sea de otro periodo. Antes todo contaba el día de la venta, y un abono
+     * sin renglón en sale_payments se sumaba al método original de la venta
+     * ("Crédito") o no aparecía. Se usa created_at del movimiento: los abonos
+     * anteriores quedaron con movement_date = día de la venta.
+     *
+     * Lo que falta por cobrar de las ventas del periodo va en su propio renglón.
+     *
+     * @return array{0: array<int, array>, 1: float}
      */
     private function payments(): array
     {
@@ -308,22 +327,46 @@ final class SalesPeriodReport implements BusinessReport
             $methods[$method]['total'] += $amount;
         };
 
-        $recorded = DB::table('sale_payments')
-            ->joinSub($this->closed($this->period)->select('sales.id'), 'closed_sales', 'closed_sales.id', '=', 'sale_payments.sale_id')
-            ->groupBy('sale_payments.method')
-            ->selectRaw('sale_payments.method, COUNT(DISTINCT sale_payments.sale_id) AS n, SUM(sale_payments.amount) AS amount')
-            ->get();
-        foreach ($recorded as $r) {
-            $add($r->method, (int) $r->n, (float) $r->amount);
-        }
+        $isAbono = 'cash_movements.created_at > sales.created_at + INTERVAL ' . self::PAID_WITH_SALE_MINUTES . ' MINUTE';
+        $saleMovements = fn() => DB::table('cash_movements')
+            ->join('sales', 'sales.id', '=', 'cash_movements.source_id')
+            ->where('cash_movements.source_type', 'sale')
+            ->where('sales.company_id', $this->scope->companyId())
+            ->when($this->scope->locationId(), fn($q, $id) => $q->where('sales.location_id', $id))
+            ->where('sales.status', '!=', self::CANCELLED);
+        $columns = ['cash_movements.payment_method AS method', 'cash_movements.source_id AS sale_id', 'cash_movements.amount', 'cash_movements.type'];
 
-        $legacy = $this->closed($this->period)
-            ->whereNotExists(fn($q) => $q->select(DB::raw(1))->from('sale_payments')->whereColumn('sale_payments.sale_id', 'sales.id'))
-            ->where('sales.paid_amount', '>', 0)
-            ->groupBy('sales.payment_method')
-            ->selectRaw('sales.payment_method AS method, COUNT(*) AS n, SUM(LEAST(sales.paid_amount, sales.total)) AS amount')
+        // Pagado al vender, de las ventas del periodo.
+        $atSale = $saleMovements()
+            ->whereBetween('sales.sale_date', [$this->period->fromDate(), $this->period->toDate()])
+            ->whereRaw("NOT COALESCE({$isAbono}, FALSE)")
+            ->select($columns)
+            ->selectRaw('0 AS abono');
+
+        // Abonos registrados en el periodo, sea cual sea la fecha de la venta.
+        // La pista INDEX hace que MySQL lea solo los movimientos del periodo por
+        // created_at (cash_movements_company_created_index); sin ella prefería
+        // recorrer todas las ventas de la sucursal o todos los ingresos. Si el
+        // índice no existiera, MySQL solo la ignora.
+        $abonos = $saleMovements()
+            ->where('cash_movements.company_id', $this->scope->companyId())
+            ->whereBetween('cash_movements.created_at', [$this->period->fromDateTime(), $this->period->toDateTime()])
+            ->whereRaw($isAbono)
+            ->selectRaw('/*+ INDEX(cash_movements cash_movements_company_created_index) */ cash_movements.payment_method AS method')
+            ->addSelect(array_slice($columns, 1))
+            ->selectRaw('1 AS abono');
+
+        // Un movimiento de venta siempre es ingreso (la devolución es
+        // sale_cancellation); el tipo se revisa aquí y no en el WHERE para que
+        // MySQL no escoja el índice de una columna de cash_movements.type.
+        $collected = DB::query()->fromSub($atSale->unionAll($abonos), 'collected')
+            ->groupBy('method')
+            ->selectRaw("method,
+                COUNT(DISTINCT CASE WHEN type = 'income' THEN sale_id END) AS n,
+                SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS amount,
+                SUM(CASE WHEN type = 'income' AND abono = 1 THEN amount ELSE 0 END) AS abonos")
             ->get();
-        foreach ($legacy as $r) {
+        foreach ($collected as $r) {
             $add($r->method ?: 'other', (int) $r->n, (float) $r->amount);
         }
 
@@ -339,7 +382,10 @@ final class SalesPeriodReport implements BusinessReport
         $methods = array_values($methods);
         usort($methods, fn($a, $b) => $b['total'] <=> $a['total']);
 
-        return array_map(fn($m) => $m + ['share' => $grand > 0 ? $m['total'] / $grand : 0.0], $methods);
+        return [
+            array_map(fn($m) => $m + ['share' => $grand > 0 ? $m['total'] / $grand : 0.0], $methods),
+            round((float) $collected->sum(fn($r) => (float) $r->abonos), 2),
+        ];
     }
 
     private function cashiers(): array
@@ -533,7 +579,10 @@ final class SalesPeriodReport implements BusinessReport
 
         $sheets[] = [
             'name' => 'Métodos de pago',
-            'title' => $title('Métodos de pago'),
+            'title' => array_merge($title('Métodos de pago'), [
+                'Lo cobrado en el periodo: lo pagado al vender y los abonos registrados en el periodo'
+                    . ($d['abonos'] > 0 ? ' (' . Format::money($d['abonos']) . ' de abonos)' : '') . '.',
+            ]),
             'columns' => [
                 ['label' => 'Método', 'width' => 20],
                 ['label' => 'Ventas', 'type' => Spreadsheet::INT, 'width' => 10],

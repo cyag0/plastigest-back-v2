@@ -18,6 +18,13 @@ final class CashDifferencesReport implements BusinessReport
     /** Faltantes en el periodo a partir de los cuales se marca al cajero. */
     public const REPEATED_SHORTAGES = 2;
 
+    /**
+     * Turnos con diferencia que caben en el PDF. Un año de turnos descuadrados
+     * por unos pesos eran miles de renglones y el PDF no alcanzaba a generarse;
+     * el Excel los trae todos.
+     */
+    public const PDF_LIST_LIMIT = 150;
+
     private ?array $data = null;
 
     public function __construct(
@@ -116,12 +123,19 @@ final class CashDifferencesReport implements BusinessReport
 
         $short = array_filter($sessions, fn($s) => $s['difference'] < 0);
         $over = array_filter($sessions, fn($s) => $s['difference'] > 0);
+        $withDifference = array_values(array_filter($sessions, fn($s) => abs($s['difference']) >= 0.005));
 
         return $this->data = [
             'scope' => $this->scope,
             'period' => $this->period,
             'sessions' => $sessions,
             'cashiers' => $cashiers,
+            // Para el PDF: todos en orden de cierre si caben; si no, los de
+            // mayor diferencia (faltante o sobrante), de mayor a menor.
+            'listed_differences' => count($withDifference) > self::PDF_LIST_LIMIT
+                ? $this->largestDifferences($withDifference)
+                : $withDifference,
+            'with_difference_count' => count($withDifference),
             'totals' => [
                 'sessions' => count($sessions),
                 'exact' => count($sessions) - count($short) - count($over),
@@ -133,6 +147,17 @@ final class CashDifferencesReport implements BusinessReport
                 'flagged' => count(array_filter($cashiers, fn($c) => $c['flagged'])),
             ],
         ];
+    }
+
+    /**
+     * Los PDF_LIST_LIMIT turnos con la diferencia más grande en valor absoluto;
+     * a igual diferencia, el que cerró primero.
+     */
+    private function largestDifferences(array $sessions): array
+    {
+        usort($sessions, fn($a, $b) => [abs($b['difference']), $a['closed_at'], $a['id']] <=> [abs($a['difference']), $b['closed_at'], $b['id']]);
+
+        return array_slice($sessions, 0, self::PDF_LIST_LIMIT);
     }
 
     // ─── Excel ──────────────────────────────────────────────────────────────

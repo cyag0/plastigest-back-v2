@@ -37,40 +37,54 @@ class HomeController extends Controller
                 ? DB::table('production_orders')
                     ->where('company_id', $companyId)
                     ->when($locationId, fn($q) => $q->where('location_id', $locationId))
-                    ->whereDate('production_date', today())
+                    // production_date ya es DATE: comparada tal cual usa el índice.
+                    ->where('production_date', today()->toDateString())
                     ->whereIn('status', ['completed', 'packaging', 'packed'])
                     ->count()
                 : null,
         ]);
     }
 
-    /** Ventas de hoy, ayer a esta hora y por hora (para la gráfica). */
+    /**
+     * Ventas de hoy, ayer a esta hora y por hora (para la gráfica).
+     *
+     * Una sola consulta por el día de la venta (sale_date, ayer y hoy) contra
+     * el índice sales_location_company_date_cover_index, que trae todo lo que
+     * se suma. created_at da la hora y "ayer a esta hora". Antes eran cinco
+     * consultas con whereDate()/DATE(created_at), que no pueden usar índice:
+     * cada carga de Inicio leía todas las ventas de la historia de la sucursal.
+     */
     private function sales(?int $companyId, ?int $locationId): array
     {
-        $base = fn() => DB::table('sales')
+        $now = now();
+        $yesterdayNow = $now->copy()->subDay();
+
+        $rows = DB::table('sales')
             ->where('company_id', $companyId)
             ->when($locationId, fn($q) => $q->where('location_id', $locationId))
             ->where('status', '!=', 'cancelled')
-            ->whereNull('deleted_at');
+            ->whereNull('deleted_at')
+            ->whereBetween('sale_date', [$yesterdayNow->toDateString(), $now->toDateString()])
+            ->groupByRaw('sale_date, HOUR(created_at)')
+            ->selectRaw('sale_date AS day, HOUR(created_at) AS h, COUNT(*) AS count, SUM(total) AS total,
+                SUM(CASE WHEN created_at <= ? THEN total ELSE 0 END) AS until_now', [$yesterdayNow])
+            ->get()
+            ->groupBy(fn($r) => substr((string) $r->day, 0, 10));
 
-        $now = now();
-        $today = (clone $base())->whereBetween('created_at', [$now->copy()->startOfDay(), $now])
-            ->selectRaw('COUNT(*) as count, COALESCE(SUM(total), 0) as total')->first();
-        $yesterdayNow = $now->copy()->subDay();
-        $yesterdaySoFar = (float) (clone $base())->whereBetween('created_at', [$yesterdayNow->copy()->startOfDay(), $yesterdayNow])->sum('total');
-        $yesterdayTotal = (float) (clone $base())->whereDate('created_at', $yesterdayNow->toDateString())->sum('total');
+        $today = $rows[$now->toDateString()] ?? collect();
+        $yesterday = $rows[$yesterdayNow->toDateString()] ?? collect();
 
-        $byHour = fn($day) => (clone $base())->whereDate('created_at', $day)
-            ->selectRaw('HOUR(created_at) as h, SUM(total) as t')->groupBy('h')->pluck('t', 'h');
-        $hoursToday = $byHour($now->toDateString());
-        $hoursYesterday = $byHour($yesterdayNow->toDateString());
+        $todayTotal = (float) $today->sum(fn($r) => (float) $r->total);
+        $todayCount = (int) $today->sum(fn($r) => (int) $r->count);
+        $hoursToday = $today->pluck('total', 'h');
+        $hoursYesterday = $yesterday->pluck('total', 'h');
 
         return [
-            'today_total' => round((float) $today->total, 2),
-            'today_count' => (int) $today->count,
-            'average_ticket' => $today->count > 0 ? round((float) $today->total / $today->count, 2) : 0,
-            'yesterday_same_time' => round($yesterdaySoFar, 2),
-            'yesterday_total' => round($yesterdayTotal, 2),
+            'today_total' => round($todayTotal, 2),
+            'today_count' => $todayCount,
+            'average_ticket' => $todayCount > 0 ? round($todayTotal / $todayCount, 2) : 0,
+            'yesterday_same_time' => round((float) $yesterday->sum(fn($r) => (float) $r->until_now), 2),
+            'yesterday_total' => round((float) $yesterday->sum(fn($r) => (float) $r->total), 2),
             'by_hour' => collect(range(0, 23))->map(fn($h) => [
                 'hour' => $h,
                 'today' => round((float) ($hoursToday[$h] ?? 0), 2),
