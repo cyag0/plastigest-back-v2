@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\DocumentSequence;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -35,9 +36,9 @@ class PurchaseV2 extends Model
 
     protected $casts = [
         'paid_from_cash' => 'boolean',
-        'purchase_date' => 'date',
-        'expected_delivery_date' => 'date',
-        'delivery_date' => 'date',
+        'purchase_date' => 'date:Y-m-d',
+        'expected_delivery_date' => 'date:Y-m-d',
+        'delivery_date' => 'date:Y-m-d',
         'total' => 'decimal:2',
         'metadata' => 'array',
     ];
@@ -115,10 +116,13 @@ class PurchaseV2 extends Model
      */
     public static function generatePurchaseNumber(): string
     {
-        $lastPurchase = self::orderBy('id', 'desc')->first();
-        $nextNumber = $lastPurchase ? (int) substr($lastPurchase->purchase_number, 3) + 1 : 1;
+        // Serie global (purchase_number es único en toda la tabla).
+        $number = DocumentSequence::next(
+            'purchase',
+            fn () => DocumentSequence::lastUsed(self::query(), 'purchase_number', 'PUR'),
+        );
 
-        return 'PUR' . str_pad($nextNumber, 6, '0', STR_PAD_LEFT);
+        return 'PUR' . str_pad((string) $number, 6, '0', STR_PAD_LEFT);
     }
 
     /**

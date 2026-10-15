@@ -14,6 +14,7 @@ use App\Http\Controllers\ProductionOrderController;
 use App\Http\Controllers\FormulaController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ProductMovementController;
+use App\Http\Controllers\PrintController;
 use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
@@ -112,6 +113,20 @@ Route::get('products/{product}/labels/pdf', [ProductController::class, 'printLab
     ->name('products.labels.pdf')
     ->middleware('signed');
 
+// Documentos para imprimir (URL firmada; ver PrintController).
+Route::get('print/sales/{sale}/ticket', [PrintController::class, 'saleTicket'])
+    ->name('print.sale-ticket')->middleware('signed');
+Route::get('print/cash-register-sessions/{session}/ticket', [PrintController::class, 'shiftTicket'])
+    ->name('print.shift-ticket')->middleware('signed');
+Route::get('print/inventory-transfers/{transfer}/pdf', [PrintController::class, 'transferPdf'])
+    ->name('print.transfer')->middleware('signed');
+Route::get('print/production-orders/{order}/sheet', [PrintController::class, 'productionSheet'])
+    ->name('print.production-sheet')->middleware('signed');
+
+Route::get('product-packages/{package}/labels/pdf', [ProductPackageController::class, 'printLabels'])
+    ->name('product-packages.labels.pdf')
+    ->middleware('signed');
+
 // WhatsApp Webhook Routes (must be public, no auth)
 Route::prefix('webhooks')->group(function () {
     Route::get('whatsapp', [WhatsAppWebhookController::class, 'verify']);
@@ -169,6 +184,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::patch('images/order', [ProductController::class, 'updateImageOrder']);
                 Route::get('labels/pdf-url', [ProductController::class, 'generatePdfUrl']);
             });
+            Route::get('product-packages/{id}/labels/pdf-url', [ProductPackageController::class, 'generateLabelsUrl']);
             Route::apiResource("product-packages", ProductPackageController::class);
 
 
@@ -277,6 +293,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Existencia puntual (la usa la tabla editable de la app)
             Route::get('inventory/stock/current', [InventoryController::class, 'getCurrentStock']);
+            // URL firmadas de los documentos para imprimir.
+            Route::get('sales/{id}/ticket-url', [PrintController::class, 'saleTicketUrl'])->whereNumber('id');
+            Route::get('cash-register-sessions/{id}/ticket-url', [PrintController::class, 'shiftTicketUrl'])->whereNumber('id');
+            Route::get('inventory-transfers/{id}/pdf-url', [PrintController::class, 'transferPdfUrl'])->whereNumber('id');
+            Route::get('production-orders/{id}/sheet-url', [PrintController::class, 'productionSheetUrl'])->whereNumber('id');
+
             Route::apiResource('customers', CustomerController::class);
 
             // Units routes

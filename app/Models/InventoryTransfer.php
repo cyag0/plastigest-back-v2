@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\DocumentSequence;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -138,15 +139,16 @@ class InventoryTransfer extends Model
      */
     protected static function generateTransferNumber(): string
     {
-        $prefix = 'TRANS-';
+        // Serie global (transfer_number es único en toda la tabla).
         $date = now()->format('Ymd');
-        $lastTransfer = self::whereDate('created_at', today())
-            ->orderBy('id', 'desc')
-            ->first();
+        $prefix = "TRANS-{$date}-";
 
-        $sequence = $lastTransfer ? (int) substr($lastTransfer->transfer_number, -4) + 1 : 1;
+        $number = DocumentSequence::next(
+            "transfer:{$date}",
+            fn () => DocumentSequence::lastUsed(self::query(), 'transfer_number', $prefix),
+        );
 
-        return $prefix . $date . '-' . str_pad($sequence, 4, '0', STR_PAD_LEFT);
+        return $prefix . str_pad((string) $number, 4, '0', STR_PAD_LEFT);
     }
 
     /**

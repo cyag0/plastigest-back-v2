@@ -6,26 +6,42 @@ use App\Models\ProductPackage;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Validation\Rule;
+use App\Support\BarcodeLabelPdf;
 use App\Support\CurrentCompany;
+use App\Support\CurrentWorker;
 
 class ProductPackageController extends Controller
 {
+    private function forbidden()
+    {
+        return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+    }
+
+    /**
+     * Query base de empaques, aislada por la empresa del contexto. Sin esto,
+     * los empaques (y sus precios) de otra empresa quedaban visibles/editables.
+     */
+    private function scoped()
+    {
+        return ProductPackage::query()->where('company_id', CurrentCompany::id());
+    }
+
     /**
      * Display a listing of the resource.
      */
     public function index(Request $request)
     {
-        $query = ProductPackage::with(['product', 'unit']);
+        if (!CurrentWorker::hasPermission('products_list')) {
+            return $this->forbidden();
+        }
+
+        $query = $this->scoped()->with(['product', 'unit']);
 
         // Filtrar por producto
         if ($request->has('product_id')) {
             $query->where('product_id', $request->product_id);
-        }
-
-        // Filtrar por compañía
-        if ($request->has('company_id')) {
-            $query->where('company_id', $request->company_id);
         }
 
         // Solo activos
@@ -65,8 +81,12 @@ class ProductPackageController extends Controller
      */
     public function store(Request $request)
     {
+        if (!CurrentWorker::hasPermission('products_create')) {
+            return $this->forbidden();
+        }
+
         $validated = $request->validate([
-            'product_id' => 'required|exists:products,id',
+            'product_id' => ['required', Rule::exists('products', 'id')->where('company_id', CurrentCompany::id())],
             'unit_id' => 'nullable|exists:units,id',
             'package_name' => 'required|string|max:100',
             'barcode' => 'required|string|max:100|unique:product_packages,barcode',
@@ -102,7 +122,7 @@ class ProductPackageController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => 'Error al crear el empaque',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -112,7 +132,11 @@ class ProductPackageController extends Controller
      */
     public function show(string $id)
     {
-        $package = ProductPackage::with(['product', 'unit'])->findOrFail($id);
+        if (!CurrentWorker::hasPermission('products_read')) {
+            return $this->forbidden();
+        }
+
+        $package = $this->scoped()->with(['product', 'unit'])->findOrFail($id);
         return response()->json([
             'data' => $package
         ]);
@@ -123,7 +147,11 @@ class ProductPackageController extends Controller
      */
     public function update(Request $request, string $id)
     {
-        $package = ProductPackage::findOrFail($id);
+        if (!CurrentWorker::hasPermission('products_update')) {
+            return $this->forbidden();
+        }
+
+        $package = $this->scoped()->findOrFail($id);
 
         $validated = $request->validate([
             'unit_id' => 'nullable|exists:units,id',
@@ -160,7 +188,7 @@ class ProductPackageController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => 'Error al actualizar el empaque',
-                'error' => $e->getMessage()
+                'error' => $this->errorDetail($e)
             ], 500);
         }
     }
@@ -170,7 +198,11 @@ class ProductPackageController extends Controller
      */
     public function destroy(string $id)
     {
-        $package = ProductPackage::findOrFail($id);
+        if (!CurrentWorker::hasPermission('products_delete')) {
+            return $this->forbidden();
+        }
+
+        $package = $this->scoped()->findOrFail($id);
         $package->delete();
 
         return response()->json([
@@ -218,5 +250,68 @@ class ProductPackageController extends Controller
         return response()->json([
             'barcode' => $barcode
         ]);
+    }
+
+    /**
+     * URL firmada (1 hora) del PDF de etiquetas del empaque. Lleva el
+     * company_id dentro de la firma para validarlo al renderizar.
+     */
+    public function generateLabelsUrl(Request $request, string $id)
+    {
+        if (!CurrentWorker::hasPermission('products_list')) {
+            return $this->forbidden();
+        }
+
+        $validated = validator(
+            ['quantity' => $request->query('quantity', 1)],
+            ['quantity' => 'required|integer|min:1|max:100']
+        )->validate();
+
+        $package = $this->scoped()->findOrFail($id);
+
+        $signedUrl = URL::temporarySignedRoute(
+            'product-packages.labels.pdf',
+            now()->addHour(),
+            ['package' => $package->id, 'quantity' => (int) $validated['quantity'], 'company_id' => CurrentCompany::id()]
+        );
+
+        return response()->json([
+            'url' => $signedUrl,
+            'expires_at' => now()->addHour()->toISOString(),
+        ]);
+    }
+
+    /**
+     * PDF de etiquetas del empaque para impresora térmica (ruta pública con
+     * URL firmada): nombre del producto, empaque y contenido, código de
+     * barras del empaque y su precio.
+     */
+    public function printLabels(Request $request, string $package)
+    {
+        $validated = validator(
+            ['quantity' => $request->query('quantity')],
+            ['quantity' => 'required|integer|min:1|max:100']
+        )->validate();
+
+        // Defensa en profundidad: el company_id firmado debe ser el del empaque.
+        $companyId = $request->query('company_id');
+        abort_if($companyId === null, 404);
+
+        $model = ProductPackage::with('product.unit')
+            ->where('company_id', $companyId)
+            ->find($package);
+        abort_if(!$model, 404);
+
+        $quantityPerPackage = rtrim(rtrim(number_format((float) $model->quantity_per_package, 2, '.', ''), '0'), '.');
+        $unit = $model->product?->unit?->abbreviation;
+
+        return BarcodeLabelPdf::stream(
+            title: $model->product?->name ?? $model->package_name,
+            code: $model->barcode,
+            quantity: (int) $validated['quantity'],
+            fileName: 'etiquetas-paquete-' . $model->barcode . '.pdf',
+            subtitle: trim("{$model->package_name} · {$quantityPerPackage} {$unit}"),
+            price: $model->sale_price,
+        );
     }
 }

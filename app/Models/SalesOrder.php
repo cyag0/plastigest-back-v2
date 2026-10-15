@@ -11,6 +11,7 @@ use App\Models\Admin\Location;
 use App\Models\Sale;
 use App\Models\SalesOrderDetail;
 use App\Models\User;
+use App\Support\DocumentSequence;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -59,7 +60,7 @@ class SalesOrder extends Model
         'channel' => SalesOrderChannel::class,
         'service_mode' => \App\Enums\SalesOrderServiceMode::class,
         'status' => SalesOrderStatus::class,
-        'order_date' => 'date',
+        'order_date' => 'date:Y-m-d',
         'promised_at' => 'datetime',
         'prepared_at' => 'datetime',
         'shipped_at' => 'datetime',
@@ -192,16 +193,15 @@ class SalesOrder extends Model
 
     public static function generateOrderNumber(): string
     {
-        $datePrefix = now()->format('Ymd');
-        $lastOrder = self::whereDate('created_at', today())
-            ->orderByDesc('id')
-            ->first();
+        // Serie global (order_number es único en toda la tabla).
+        $date = now()->format('Ymd');
+        $prefix = "SOR-{$date}-";
 
-        $sequence = 1;
-        if ($lastOrder && preg_match('/(\d{4})$/', $lastOrder->order_number ?? '', $matches)) {
-            $sequence = ((int) $matches[1]) + 1;
-        }
+        $number = DocumentSequence::next(
+            "sales_order:{$date}",
+            fn () => DocumentSequence::lastUsed(self::query(), 'order_number', $prefix),
+        );
 
-        return sprintf('SOR-%s-%04d', $datePrefix, $sequence);
+        return sprintf('%s%04d', $prefix, $number);
     }
 }

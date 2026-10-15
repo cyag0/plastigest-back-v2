@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\DocumentSequence;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -64,7 +65,7 @@ class Sale extends Model
      */
     protected $casts = [
         'status' => SaleStatus::class,
-        'sale_date' => 'date',
+        'sale_date' => 'date:Y-m-d',
         'content' => 'json',
         'payment_history' => 'json',
         'subtotal' => 'decimal:2',
@@ -87,23 +88,32 @@ class Sale extends Model
                 $model->sale_date = now()->toDateString();
             }
             if (!$model->sale_number) {
-                $model->sale_number = self::generateSaleNumber();
+                $model->sale_number = self::generateSaleNumber($model->company_id);
             }
         });
     }
 
     /**
-     * Genera un número de venta único para el día actual con formato SAL-YYYYMMDD-####
+     * Folio de venta SAL-YYYYMMDD-####, consecutivo por empresa y día.
+     *
+     * Dentro de una transacción, el contador queda bloqueado hasta el commit:
+     * pídelo antes de bloquear stock para no cruzar bloqueos con otra venta.
      */
-    public static function generateSaleNumber(): string
+    public static function generateSaleNumber(?int $companyId = null): string
     {
-        $datePrefix = now()->format('Ymd');
-        $lastSale = self::whereDate('created_at', today())->orderByDesc('id')->first();
-        $sequence = 1;
-        if ($lastSale && preg_match('/(\d{4})$/', $lastSale->sale_number ?? '', $matches)) {
-            $sequence = ((int) $matches[1]) + 1;
-        }
-        return sprintf('SAL-%s-%04d', $datePrefix, $sequence);
+        $date = now()->format('Ymd');
+        $prefix = "SAL-{$date}-";
+
+        $number = DocumentSequence::next(
+            'sale:' . ($companyId ?? 0) . ":{$date}",
+            fn () => DocumentSequence::lastUsed(
+                self::withTrashed()->where('company_id', $companyId),
+                'sale_number',
+                $prefix,
+            ),
+        );
+
+        return sprintf('%s%04d', $prefix, $number);
     }
 
     /**
@@ -257,11 +267,22 @@ class Sale extends Model
         if ($newStatus !== SaleStatus::CANCELLED) {
             throw new Exception("Solo se permite transicionar a CANCELLED");
         }
-        if ($this->status === SaleStatus::CANCELLED) {
-            return false;
-        }
-        DB::beginTransaction();
-        try {
+
+        return DB::transaction(function () use ($newStatus): bool {
+            // El estado se decide con la fila bloqueada, no con el modelo que se
+            // cargó antes: dos cancelaciones simultáneas (doble toque, reintento)
+            // devolvían el stock y el dinero dos veces. La segunda espera aquí y
+            // después ve la venta ya cancelada.
+            $current = static::query()->lockForUpdate()->find($this->getKey());
+
+            if ($current) {
+                $this->setRawAttributes($current->getAttributes(), true);
+            }
+
+            if (!$current || $this->status === SaleStatus::CANCELLED) {
+                return false;
+            }
+
             // Solo revertir stock si la venta estaba CLOSED (la única forma de existir)
             if ($this->status === SaleStatus::CLOSED) {
                 $this->revertStock();
@@ -271,12 +292,9 @@ class Sale extends Model
             CashMovementService::reverseSale($this);
             $this->status = $newStatus;
             $this->save();
-            DB::commit();
+
             return true;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        });
     }
 
     /**
