@@ -94,12 +94,14 @@ class CashClosingController extends CrudController
             $query->where('location_id', $params['location_id']);
         }
 
+        // closing_date es DATE: comparación directa (whereDate() la envolvía en
+        // DATE() y no usaba índices).
         if (!empty($params['date_from'])) {
-            $query->whereDate('closing_date', '>=', $params['date_from']);
+            $query->where('closing_date', '>=', substr((string) $params['date_from'], 0, 10));
         }
 
         if (!empty($params['date_to'])) {
-            $query->whereDate('closing_date', '<=', $params['date_to']);
+            $query->where('closing_date', '<=', substr((string) $params['date_to'], 0, 10));
         }
 
         $query->orderBy('closing_date', 'desc');

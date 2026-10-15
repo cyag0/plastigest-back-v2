@@ -11,6 +11,7 @@ use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 
 /**
@@ -47,11 +48,14 @@ class CashRegisterSessionController extends Controller
                 $query->where($filter, $request->input($filter));
             }
         }
+        // Rangos sobre opened_at (índice sucursal + apertura); whereDate() lo
+        // envolvía en DATE() y no lo usaba.
+        $request->validate(['date_from' => 'nullable|date', 'date_to' => 'nullable|date']);
         if ($request->filled('date_from')) {
-            $query->whereDate('opened_at', '>=', $request->date_from);
+            $query->where('opened_at', '>=', Carbon::parse($request->date_from)->startOfDay());
         }
         if ($request->filled('date_to')) {
-            $query->whereDate('opened_at', '<=', $request->date_to);
+            $query->where('opened_at', '<', Carbon::parse($request->date_to)->startOfDay()->addDay());
         }
 
         $page = $query->paginate((int) $request->input('per_page', 20));

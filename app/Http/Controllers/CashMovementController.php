@@ -9,6 +9,7 @@ use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
@@ -207,7 +208,6 @@ class CashMovementController extends CrudController
         }
 
         $now   = now();
-        $month = $now->format('Y-m');
 
         // Balance actual (total histórico de la sucursal)
         $balanceRaw = (clone $baseQuery)->selectRaw("
@@ -217,8 +217,13 @@ class CashMovementController extends CrudController
 
         $balanceActual = (float) ($balanceRaw ?? 0);
 
-        // Totales del mes actual
-        $monthQuery = (clone $baseQuery)->whereRaw("DATE_FORMAT(movement_date, '%Y-%m') = ?", [$month]);
+        // Totales del mes actual. movement_date es DATE: rangos sobre la
+        // columna, que usan el índice (empresa, sucursal, fecha); con
+        // DATE_FORMAT()/DATE() se recorría todo el historial de la sucursal.
+        $monthQuery = (clone $baseQuery)->whereBetween('movement_date', [
+            $now->copy()->startOfMonth()->toDateString(),
+            $now->copy()->endOfMonth()->toDateString(),
+        ]);
 
         $monthTotals = (clone $monthQuery)->selectRaw("
             SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS total_income,
@@ -226,7 +231,7 @@ class CashMovementController extends CrudController
         ")->first();
 
         // Totales de hoy
-        $todayTotals = (clone $baseQuery)->whereDate('movement_date', $now->toDateString())
+        $todayTotals = (clone $baseQuery)->where('movement_date', $now->toDateString())
             ->selectRaw("
                 SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS today_income,
                 SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS today_expense,
@@ -269,8 +274,9 @@ class CashMovementController extends CrudController
         // Estadísticas por fecha específica (para cierres de caja)
         $dateStats = null;
         if ($request->filled('date')) {
-            $date = $request->input('date');
-            $dateQuery = (clone $baseQuery)->whereDate('movement_date', $date);
+            $request->validate(['date' => 'date']);
+            $date = Carbon::parse($request->input('date'))->toDateString();
+            $dateQuery = (clone $baseQuery)->where('movement_date', $date);
 
             // Saldo de apertura = efectivo que había en la caja al iniciar el día.
             //
@@ -285,19 +291,19 @@ class CashMovementController extends CrudController
             $lastClosing = CashClosing::query()
                 ->where('company_id', $companyId)
                 ->when($locationId, fn ($q) => $q->where('location_id', $locationId))
-                ->whereDate('closing_date', '<', $date)
+                ->where('closing_date', '<', $date)
                 ->orderByDesc('closing_date')
                 ->orderByDesc('id')
                 ->first();
 
             $sinceQuery = (clone $baseQuery)
                 ->where('payment_method', 'cash')
-                ->whereDate('movement_date', '<', $date);
+                ->where('movement_date', '<', $date);
 
             $cashBase = 0.0;
             if ($lastClosing) {
                 $cashBase = (float) ($lastClosing->physical_count ?? $lastClosing->total_cash ?? 0);
-                $sinceQuery->whereDate('movement_date', '>', $lastClosing->closing_date);
+                $sinceQuery->where('movement_date', '>', Carbon::parse($lastClosing->closing_date)->toDateString());
             }
 
             $cashSince = (float) ((clone $sinceQuery)->selectRaw("

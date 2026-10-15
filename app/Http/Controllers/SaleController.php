@@ -103,13 +103,24 @@ class SaleController extends CrudController
         $dateFrom = $params['date_from'] ?? $params['start_date'] ?? null;
         $dateTo = $params['date_to'] ?? $params['end_date'] ?? null;
 
+        // sale_date es DATE: se compara directo para que use el índice
+        // (whereDate() lo envolvía en DATE() y recorría toda la sucursal).
         if (!empty($dateFrom)) {
-            $query->whereDate($this->dateColumn, '>=', $dateFrom);
+            $query->where($this->dateColumn, '>=', self::dateOnly($dateFrom));
         }
 
         if (!empty($dateTo)) {
-            $query->whereDate($this->dateColumn, '<=', $dateTo);
+            $query->where($this->dateColumn, '<=', self::dateOnly($dateTo));
         }
+    }
+
+    /**
+     * La parte de fecha (Y-m-d) de un filtro: "2026-10-15" o
+     * "2026-10-15T08:00:00". Para comparar directo columnas DATE.
+     */
+    private static function dateOnly(string $value): string
+    {
+        return preg_match('/^\d{4}-\d{2}-\d{2}/', $value) ? substr($value, 0, 10) : $value;
     }
 
     /**
@@ -336,12 +347,22 @@ class SaleController extends CrudController
 
         try {
             $companyId = CurrentCompany::id();
-            $startDate = $request->input('start_date');
-            $endDate = $request->input('end_date');
+            $startDate = $request->filled('start_date') ? self::dateOnly($request->input('start_date')) : null;
+            $endDate = $request->filled('end_date') ? self::dateOnly($request->input('end_date')) : null;
+
+            // Sin rango: los últimos 30 días (el mismo divisor que ya usaba el
+            // promedio diario). Antes se agregaba todo el historial de la
+            // sucursal cada vez que se abría Ventas.
+            if (!$startDate && !$endDate) {
+                $startDate = now()->subDays(29)->toDateString();
+                $endDate = now()->toDateString();
+                $defaultRange = true;
+            }
 
             // Query base, aislada por empresa y sucursal.
-            $query = Sale::where('company_id', $companyId)
+            $baseQuery = Sale::where('company_id', $companyId)
                 ->when($locationId, fn($q) => $q->where('location_id', $locationId));
+            $query = clone $baseQuery;
 
             if ($startDate) {
                 $query->where('sale_date', '>=', $startDate);
@@ -361,12 +382,12 @@ class SaleController extends CrudController
             $totalAmount = (clone $query)->sum('total');
             $averageAmount = $totalSales > 0 ? $totalAmount / $totalSales : 0;
 
-            // Ventas del día
+            // Ventas del día (sale_date es DATE: comparación directa, con índice)
             $todaySales = (clone $query)
-                ->whereDate('sale_date', now()->toDateString())
+                ->where('sale_date', now()->toDateString())
                 ->count();
             $todayAmount = (clone $query)
-                ->whereDate('sale_date', now()->toDateString())
+                ->where('sale_date', now()->toDateString())
                 ->sum('total');
 
             // Ventas por estado
@@ -447,9 +468,13 @@ class SaleController extends CrudController
                     ];
                 });
 
-            // Tendencia de ventas (últimos 6 meses)
-            $sixMonthsAgo = now()->subMonths(6)->startOfMonth();
-            $salesTrend = (clone $query)
+            // Tendencia de ventas (últimos 6 meses): no se recorta a los 30 días
+            // por defecto, solo a un rango que se haya pedido.
+            $sixMonthsAgo = now()->subMonths(6)->startOfMonth()->toDateString();
+            $salesTrend = (clone $baseQuery)
+                ->where('status', '!=', SaleStatus::CANCELLED->value)
+                ->when(empty($defaultRange) && $startDate, fn($q) => $q->where('sale_date', '>=', $startDate))
+                ->when(empty($defaultRange) && $endDate, fn($q) => $q->where('sale_date', '<=', $endDate))
                 ->where('sale_date', '>=', $sixMonthsAgo)
                 ->select(
                     DB::raw('DATE_FORMAT(sale_date, "%Y-%m") as month'),
@@ -480,7 +505,7 @@ class SaleController extends CrudController
             // el valor absoluto para no obtener un divisor negativo/incorrecto.
             $daysInRange = $startDate && $endDate
                 ? max(1, (int) abs(now()->parse($startDate)->diffInDays(now()->parse($endDate))) + 1)
-                : 30; // Default 30 días si no hay rango
+                : 30; // Rango abierto de un lado: 30 días
 
             $averagePerDay = $totalAmount / $daysInRange;
 
@@ -501,6 +526,11 @@ class SaleController extends CrudController
                     'by_payment_method' => $byPaymentMethod,
                     'top_products' => $topProducts,
                     'sales_trend' => $salesTrend,
+                    // Periodo de los totales (sin rango pedido: últimos 30 días).
+                    'period' => [
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                    ],
                 ]
             ]);
         } catch (\Exception $e) {
@@ -549,7 +579,7 @@ class SaleController extends CrudController
                 ->when($locationId, function ($q) use ($locationId) {
                     $q->where('location_id', $locationId);
                 })
-                ->whereDate('sale_date', $date)
+                ->where('sale_date', self::dateOnly($date))
                 ->whereIn('status', ['closed', 'processed'])
                 ->with(['details.product'])
                 ->get();
@@ -648,7 +678,7 @@ class SaleController extends CrudController
                 ->when($locationId, function ($q) use ($locationId) {
                     $q->where('location_id', $locationId);
                 })
-                ->whereDate('expense_date', $date)
+                ->where('expense_date', self::dateOnly($date))
                 ->with(['user'])
                 ->get();
 
