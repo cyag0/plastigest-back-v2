@@ -51,10 +51,24 @@ class SaleTest extends TestCase
 
     public function test_can_filter_sales_by_status(): void
     {
-        // TODO: Re-enable when Sale lifecycle regains multiple statuses.
-        // Sale ahora se crea siempre como closed, por lo que ya no aplica
-        // el flujo draft -> processed -> closed.
-        $this->markTestSkipped('Sale ahora se crea siempre como closed');
+        // Una venta nace cerrada; el otro estado posible es cancelada.
+        $attributes = [
+            'company_id'  => $this->company->id,
+            'location_id' => $this->location->id,
+            'user_id'     => $this->user->id,
+        ];
+        Sale::factory()->count(2)->closed()->create($attributes);
+        Sale::factory()->cancelled()->create($attributes);
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/auth/admin/sales?status=cancelled')
+            ->assertStatus(200)
+            ->assertJsonCount(1, 'data');
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/auth/admin/sales?status=closed')
+            ->assertStatus(200)
+            ->assertJsonCount(2, 'data');
     }
 
     public function test_can_filter_sales_by_location(): void

@@ -20,10 +20,19 @@ class WhatsAppWebhookController extends Controller
         $token = $request->query('hub_verify_token');
         $challenge = $request->query('hub_challenge');
 
-        // El verify token lo defines tú en Meta Dashboard
-        $verifyToken = config('services.whatsapp.verify_token', 'plastigest_webhook_token');
+        // El verify token lo defines tú en Meta Dashboard y en
+        // WHATSAPP_VERIFY_TOKEN. Sin él no se verifica nada: antes había un
+        // valor por defecto, público en el repositorio, con el que cualquiera
+        // pasaba la verificación.
+        $verifyToken = config('services.whatsapp.verify_token');
 
-        if ($mode === 'subscribe' && $token === $verifyToken) {
+        if (empty($verifyToken)) {
+            Log::warning('WhatsApp webhook: falta WHATSAPP_VERIFY_TOKEN, verificación rechazada');
+
+            return response()->json(['error' => 'Verification failed'], 403);
+        }
+
+        if ($mode === 'subscribe' && is_string($token) && hash_equals((string) $verifyToken, $token)) {
             Log::info('WhatsApp webhook verified');
             return response($challenge, 200)->header('Content-Type', 'text/plain');
         }
@@ -45,7 +54,12 @@ class WhatsAppWebhookController extends Controller
         try {
             $data = $request->all();
 
-            Log::info('WhatsApp webhook received', ['data' => $data]);
+            // Sin el payload: trae teléfonos y textos de los proveedores. En
+            // los logs solo van ids de mensaje y estados.
+            Log::info('WhatsApp webhook received', [
+                'messages' => count($data['entry'][0]['changes'][0]['value']['messages'] ?? []),
+                'statuses' => count($data['entry'][0]['changes'][0]['value']['statuses'] ?? []),
+            ]);
 
             // Verificar que sea una notificación de mensajes
             if (!isset($data['entry'][0]['changes'][0]['value']['messages'])) {
@@ -107,6 +121,7 @@ class WhatsAppWebhookController extends Controller
     protected function processMessage($message, $webhookData)
     {
         $from = $message['from'] ?? null;
+        $messageId = $message['id'] ?? null;
         $messageType = $message['type'] ?? null;
         $messageText = $message['text']['body'] ?? null;
 
@@ -115,8 +130,8 @@ class WhatsAppWebhookController extends Controller
         }
 
         Log::info('Processing WhatsApp message', [
-            'from' => $from,
-            'text' => $messageText
+            'message_id' => $messageId,
+            'type' => $messageType,
         ]);
 
         // Buscar compras pendientes del proveedor que envió el mensaje
@@ -135,14 +150,8 @@ class WhatsAppWebhookController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
-        Log::info('Searching purchases for phone', [
-            'from' => $from,
-            'formatted' => WhatsAppService::formatPhoneNumber($from),
-            'last_digits' => substr(WhatsAppService::formatPhoneNumber($from), -10)
-        ]);
-
         if ($purchases->isEmpty()) {
-            Log::info('No pending purchases found for phone', ['phone' => $from]);
+            Log::info('No pending purchases found for WhatsApp message', ['message_id' => $messageId]);
             return;
         }
 
@@ -170,8 +179,6 @@ class WhatsAppWebhookController extends Controller
             'saliendo'
         ];
 
-        Log::info("compras", ['count' => $purchases->count()]);
-
         // Solo la compra más reciente. La recepción no se marca por WhatsApp:
         // recibir en v2 requiere capturar cantidades y mover stock, así que se
         // crea la tarea "Recibir compra" para hacerlo en la app.
@@ -184,8 +191,8 @@ class WhatsAppWebhookController extends Controller
 
                 Log::info('Purchase marked as in_transit via WhatsApp', [
                     'purchase_id' => $purchase->id,
+                    'message_id' => $messageId,
                     'keyword' => $keyword,
-                    'message' => $messageText,
                 ]);
 
                 $this->createReceiveTask($purchase);
@@ -195,8 +202,7 @@ class WhatsAppWebhookController extends Controller
 
         // Si no se detectó ninguna palabra clave, solo registrar
         Log::info('WhatsApp message received but no action taken', [
-            'from' => $from,
-            'text' => $messageText,
+            'message_id' => $messageId,
             'purchases_count' => $purchases->count()
         ]);
     }
@@ -210,13 +216,11 @@ class WhatsAppWebhookController extends Controller
         foreach ($statuses as $status) {
             $messageId = $status['id'] ?? null;
             $statusType = $status['status'] ?? null;
-            $recipientId = $status['recipient_id'] ?? null;
 
+            // Sin recipient_id: es el teléfono del proveedor.
             Log::info('WhatsApp message status update', [
                 'message_id' => $messageId,
                 'status' => $statusType,
-                'recipient_id' => $recipientId,
-                'errors' => $status['errors'] ?? null
             ]);
 
             // Si el mensaje falló, registrar el error
@@ -224,7 +228,6 @@ class WhatsAppWebhookController extends Controller
                 foreach ($status['errors'] as $error) {
                     Log::warning('WhatsApp message failed', [
                         'message_id' => $messageId,
-                        'recipient' => $recipientId,
                         'error_code' => $error['code'] ?? null,
                         'error_title' => $error['title'] ?? null,
                         'error_message' => $error['message'] ?? null,

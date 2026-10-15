@@ -146,6 +146,14 @@ Route::prefix('webhooks')->group(function () {
     Route::post('whatsapp', [WhatsAppWebhookController::class, 'handle']);
 });
 
+// Versión mínima de la app nativa (pública: la app la consulta antes del login).
+Route::get('app/version', [\App\Http\Controllers\AppVersionController::class, 'show']);
+
+// Errores que reporta la app (error boundaries y manejadores globales): solo
+// van al log del servidor. Límite por usuario en OperationsServiceProvider.
+Route::post('auth/admin/client-errors', [\App\Http\Controllers\ClientErrorController::class, 'store'])
+    ->middleware(['auth:sanctum', 'throttle:client-errors']);
+
 // Rutas protegidas (requieren autenticación)
 Route::middleware('auth:sanctum')->group(function () {
     // Rutas de autenticación

@@ -123,4 +123,22 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Versiones de la app nativa
+    |--------------------------------------------------------------------------
+    |
+    | Las publica GET /api/app/version (pública). Si la app móvil (EAS) tiene
+    | una versión menor que min_version muestra "Actualiza la app" y no deja
+    | operar: sirve cuando un cambio de la API ya no es compatible con las
+    | apps instaladas. Vacías = sin restricción. Formato x.y.z, como
+    | "version" en app.json.
+    |
+    */
+
+    'native_app' => [
+        'min_version' => env('MIN_NATIVE_APP_VERSION') ?: null,
+        'latest_version' => env('LATEST_NATIVE_APP_VERSION') ?: null,
+    ],
+
 ];

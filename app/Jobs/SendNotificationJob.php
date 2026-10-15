@@ -11,14 +11,17 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class SendNotificationJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries   = 3;
-    public int $backoff = 60;
+    public int $tries = 4;
+
+    /** Segundos antes de cada reintento: una caída breve de FCM o del correo no agota los intentos. */
+    public array $backoff = [10, 60, 300];
 
     public function __construct(
         private readonly string $eventType,
@@ -47,23 +50,66 @@ class SendNotificationJob implements ShouldQueue
             // propio aviso.
             $excludedUserId = $this->contextData['exclude_user_id'] ?? null;
 
+            // En un reintento (una excepción a medio envío, o el worker
+            // detenido por un deploy) no se repite el aviso a quienes ya lo
+            // recibieron en un intento anterior.
+            $served = $this->servedRecipients();
+
             foreach ($recipients as $user) {
                 if ($excludedUserId !== null && (int) $user->id === (int) $excludedUserId) {
                     continue;
                 }
+                if (in_array((int) $user->id, $served, true)) {
+                    continue;
+                }
+
                 $sender->send($template, $user, $this->companyId, $locationId);
+
+                $served[] = (int) $user->id;
+                $this->rememberServed($served);
             }
         } catch (\Throwable $e) {
             Log::error('SendNotificationJob: failed', [
                 'event_type'  => $this->eventType,
                 'company_id'  => $this->companyId,
                 'user_id'     => $this->specificUserId,
+                'attempt'     => $this->attempts(),
                 'error'       => $e->getMessage(),
                 'trace'       => $e->getTraceAsString(),
             ]);
 
             throw $e; // Let the queue retry
         }
+    }
+
+    /**
+     * Destinatarios ya atendidos por intentos anteriores de este mismo job
+     * (misma uuid en la cola).
+     *
+     * @return int[]
+     */
+    private function servedRecipients(): array
+    {
+        $key = $this->servedCacheKey();
+
+        return $key ? array_map('intval', (array) Cache::get($key, [])) : [];
+    }
+
+    /**
+     * @param int[] $served
+     */
+    private function rememberServed(array $served): void
+    {
+        if ($key = $this->servedCacheKey()) {
+            Cache::put($key, $served, now()->addDay());
+        }
+    }
+
+    private function servedCacheKey(): ?string
+    {
+        $uuid = $this->job?->uuid();
+
+        return $uuid ? "notification-job:{$uuid}:served" : null;
     }
 
     private function resolveLocationId(): ?int

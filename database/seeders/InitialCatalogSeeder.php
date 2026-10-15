@@ -19,6 +19,30 @@ use Illuminate\Support\Facades\DB;
  */
 class InitialCatalogSeeder extends Seeder
 {
+    /** true mientras corre run(): ahí sí se aceptan los seeders del catálogo. */
+    private static bool $running = false;
+
+    /**
+     * Los seeders del catálogo (categorías, proveedores, productos, paquetes,
+     * fórmulas) sobrescriben precios o borran datos: fuera de local/testing
+     * solo corren a través de este seeder, que se niega si la empresa ya
+     * tiene productos. Un `db:seed --class=ProductsSeeder` suelto en
+     * producción no hace nada.
+     */
+    public static function allows(Seeder $seeder): bool
+    {
+        if (self::$running || app()->environment('local', 'testing')) {
+            return true;
+        }
+
+        $seeder->command?->error(
+            class_basename($seeder) . ': en "' . app()->environment()
+            . '" solo se corre a través de InitialCatalogSeeder; no se hizo nada.'
+        );
+
+        return false;
+    }
+
     public function run(): void
     {
         $company = Company::where('name', 'Cocos Francisco')->first();
@@ -34,11 +58,16 @@ class InitialCatalogSeeder extends Seeder
             return;
         }
 
-        $this->call([
-            CategoriesSeeder::class,
-            SupplierSeeder::class,
-            ProductsSeeder::class,
-            PackageSeeder::class,
-        ]);
+        self::$running = true;
+        try {
+            $this->call([
+                CategoriesSeeder::class,
+                SupplierSeeder::class,
+                ProductsSeeder::class,
+                PackageSeeder::class,
+            ]);
+        } finally {
+            self::$running = false;
+        }
     }
 }

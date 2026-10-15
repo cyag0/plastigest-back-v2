@@ -99,8 +99,13 @@ class CompanyResource extends Resources
     /**
      * Formatear RFC para mejor visualización
      */
-    private function formatRFC(string $rfc): string
+    private function formatRFC(?string $rfc): string
     {
+        // La empresa se crea sin RFC (CompaniesSeeder): el dueño lo captura.
+        if ($rfc === null || $rfc === '') {
+            return '';
+        }
+
         if (strlen($rfc) === 12) {
             // Persona física: ABCD123456AB1
             return substr($rfc, 0, 4) . '-' . substr($rfc, 4, 6) . '-' . substr($rfc, 10);

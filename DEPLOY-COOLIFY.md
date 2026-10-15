@@ -2,7 +2,7 @@
 
 Runbook para sacar el beta a producción usando **Coolify** (PaaS self-hosted) sobre un VPS Hetzner. Coolify reemplaza el trabajo manual de Nginx, SSL, queue worker, cron y deploys: instalas Coolify **una vez** y todo lo demás se configura por panel/Docker.
 
-- **Backend:** Laravel 12, Sanctum (solo token Bearer, sin cookies), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00 + limpiezas nocturnas), PDFs con dompdf, Excel de los reportes con OpenSpout (necesita las extensiones `zip` y `xmlreader`, declaradas como `ext-*` en `composer.json` para que Nixpacks las instale), push con Firebase (kreait). Nixpacks elige PHP según `"php"` de `composer.json`: con `^8.2` instala **PHP 8.2** (CI y Sail usan 8.4; para igualarlos, poner `"php": "^8.4"`; OpenSpout está fijo en `~4.28.5`, la última versión que corre en 8.2: al subir a 8.4 se puede actualizar).
+- **Backend:** Laravel 12, Sanctum (solo token Bearer, sin cookies), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00 + limpiezas nocturnas), PDFs con dompdf, Excel de los reportes con OpenSpout (necesita las extensiones `zip` y `xmlreader`, declaradas como `ext-*` en `composer.json` para que Nixpacks las instale), push con Firebase (kreait). Nixpacks elige PHP según `"php"` de `composer.json`: con `^8.4` instala **PHP 8.4.2** (la misma serie que CI y Sail; la 8.2 pierde soporte de seguridad el 31/12/2026). `config.platform.php` está fijo en `8.4.2` para que `composer update` no traiga paquetes que pidan un PHP más nuevo que el de producción, y si la app corre en otra versión no arranca (chequeo de plataforma de Composer). OpenSpout sigue fijo en `~4.28.5` (ya se podría actualizar). El build lo ajusta `nixpacks.toml`: instala sin dependencias de desarrollo y falla si a la imagen le falta una extensión.
 - **Frontend:** Expo SDK 56 / Expo Router, web con `output: "single"` (SPA: un solo `index.html`; `public/_redirects` hace el fallback de rutas) → Cloudflare Pages.
 - **Objetivo:** 8 sucursales, ~30 usuarios. Carga pequeña: el VPS va sobrado.
 
@@ -163,6 +163,10 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
    ```
    > `InitialCatalogSeeder` carga el catálogo de Cocos Francisco una sola vez: si la empresa ya tiene productos no hace nada, así no pisa precios cambiados desde la app. El stock queda en 0: la existencia inicial se captura con un conteo (Inventario → Inv. semanal) o con ajustes de entrada en cada sucursal.
    >
+   > `CompaniesSeeder` crea la empresa y las sucursales **sin razón social, RFC, correo ni teléfonos** (no hay datos verificados y salen en los tickets). Captúralos desde la app en *Administración → Empresa* y en cada sucursal; mientras estén vacíos, el ticket simplemente no los muestra.
+   >
+   > Los seeders del catálogo (`CategoriesSeeder`, `SupplierSeeder`, `ProductsSeeder`, `PackageSeeder`, `FormulasSeeder`) no hacen nada si se corren sueltos en producción: solo a través de `InitialCatalogSeeder`.
+   >
    > En producción `db:seed` solo corre los seeders de referencia; nunca catálogos ni datos demo, y `CompaniesSeeder` no borra nada si ya existen empresas. Correr `db:seed --force` otra vez es seguro (idempotente; no pide ni cambia la contraseña del admin ya creado). Después del primer seed puedes quitar `ADMIN_PASSWORD` de las variables y cambiar la contraseña desde la app.
 
 ---
@@ -254,6 +258,7 @@ Cloudflare DNS:
 - [ ] `api.cocos-francisco.com` → registro **A** a la IP del VPS.
   - Ponlo en **DNS only** (nube gris) la primera vez para que Coolify/Let's Encrypt emita el cert sin interferencia.
   - Una vez emitido, puedes proxearlo (nube naranja) con SSL mode **Full (strict)** en Cloudflare.
+  - Con la nube naranja la API sigue viendo la IP real de cada usuario (límites de intentos del login, logs): confía en los rangos de Cloudflare de `config/trustedproxy.php` y lee `CF-Connecting-IP` (middleware `RestoreCloudflareClientIp`). Si Cloudflare publica rangos nuevos (https://www.cloudflare.com/ips/), actualiza esa lista.
 - [ ] `app.cocos-francisco.com` → lo crea Cloudflare Pages al añadir el *Custom domain* (Fase 9).
 - [ ] (Opcional) `coolify.cocos-francisco.com` → **A** a la IP, para el panel.
 - [ ] **Correo (Fase 7.5):** los **TXT de SPF y DKIM** del proveedor + **DMARC** en `_dmarc.cocos-francisco.com`. Van **DNS only** (no se proxean). Sin ellos los correos caen en spam.

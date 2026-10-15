@@ -37,13 +37,16 @@ class CompaniesSeeder extends Seeder
         Location::query()->delete();
         Company::query()->delete();
 
-        // Crear compañía Cocos Francisco
+        // Crear compañía Cocos Francisco. Razón social, RFC, correo y
+        // teléfonos van vacíos: salen en los tickets y no hay datos fiscales
+        // verificados. El dueño los captura en Administración → Empresa y en
+        // cada sucursal (el ticket omite lo que esté vacío).
         $company = Company::create([
             'name' => 'Cocos Francisco',
-            'business_name' => 'Cocos Francisco Distribuidora S.A. de C.V.',
-            'rfc' => 'CFD987654321',
-            'email' => 'ventas@cocosfrancisco.com',
-            'phone' => '+52 322 123 4567',
+            'business_name' => null,
+            'rfc' => null,
+            'email' => null,
+            'phone' => null,
             'address' => 'Puerto Vallarta, Jalisco',
             'is_active' => true,
         ]);
@@ -53,49 +56,41 @@ class CompaniesSeeder extends Seeder
             [
                 'name' => 'Cocos Francisco Sucursal Matriz',
                 'address' => 'Av. Las Torres #220A, Puerto Vallarta, Jalisco',
-                'phone' => '+52 322 123 4567',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco La Lija',
                 'address' => 'Cuba #701, Col. La Lija, Puerto Vallarta, Jalisco',
-                'phone' => '+52 322 123 4568',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco Pitillal',
                 'address' => 'Abasolo #242A, El Pitillal, Puerto Vallarta, Jalisco',
-                'phone' => '+52 322 123 4569',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco Volcanes',
                 'address' => 'Carboneras y Habana #492, Av. Víctor Iturbe, Col. Volcanes, Puerto Vallarta, Jalisco',
-                'phone' => '+52 322 123 4570',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco Ixtapa',
                 'address' => 'Carr. a las Palmas #2101-C, Niños Héroes, Ixtapa, Puerto Vallarta, Jalisco',
-                'phone' => '+52 322 123 4571',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco Mojoneras',
                 'address' => 'Av. México #210, Las Mojoneras, Puerto Vallarta, Jalisco',
-                'phone' => '+52 322 123 4572',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco Mezcales',
                 'address' => 'Carretera Mezcales - Colomo #213, Col. El Manguito, Mezcales, Nayarit',
-                'phone' => '+52 322 123 4573',
                 'is_active' => true,
             ],
             [
                 'name' => 'Cocos Francisco Guayabitos',
                 'address' => 'Guayabitos, Nayarit',
-                'phone' => '+52 322 123 4574',
                 'is_active' => true,
             ],
         ];

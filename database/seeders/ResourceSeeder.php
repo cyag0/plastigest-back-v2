@@ -13,20 +13,21 @@ class ResourceSeeder extends Seeder
      */
     public function run(): void
     {
-        // Truncar tabla para empezar limpio
-        DB::table('resources')->truncate();
+        // Empezar limpio con delete() y no truncate(): en MySQL TRUNCATE
+        // confirma la transacción abierta (en las pruebas, la de
+        // RefreshDatabase, que entonces vuelve a migrar todo). Nada apunta a
+        // resources.id, así que borrar y reinsertar es seguro.
+        DB::table('resources')->delete();
 
         // Insertar todos los recursos del enum
-        foreach (Resources::cases() as $resource) {
-            DB::table('resources')->insert([
-                'key' => $resource->value,
-                'name' => $resource->label(),
-                'description' => $resource->description(),
-                'icon' => $resource->icon(),
-                'is_active' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
+        DB::table('resources')->insert(array_map(fn(Resources $resource) => [
+            'key' => $resource->value,
+            'name' => $resource->label(),
+            'description' => $resource->description(),
+            'icon' => $resource->icon(),
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], Resources::cases()));
     }
 }

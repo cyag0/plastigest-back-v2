@@ -2,6 +2,7 @@
 
 return [
     App\Providers\AppServiceProvider::class,
-    // App\Providers\TelescopeServiceProvider::class, // Comentado temporalmente
-    Barryvdh\LaravelIdeHelper\IdeHelperServiceProvider::class,
+    // Herramientas de desarrollo (Telescope, IDE Helper) solo en local, y la
+    // operación en producción (ver la clase).
+    App\Providers\OperationsServiceProvider::class,
 ];

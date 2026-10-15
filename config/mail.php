@@ -45,7 +45,9 @@ return [
             'port' => env('MAIL_PORT', 2525),
             'username' => env('MAIL_USERNAME'),
             'password' => env('MAIL_PASSWORD'),
-            'timeout' => null,
+            // Segundos. Sin límite, un SMTP que no responde deja colgado al
+            // worker de la cola (el aviso por correo va dentro del job).
+            'timeout' => (int) env('MAIL_TIMEOUT', 15),
             'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
         ],
 
@@ -63,6 +65,9 @@ return [
 
         'resend' => [
             'transport' => 'resend',
+            // Ver OperationsServiceProvider: el cliente de Resend se arma con
+            // este límite (el SDK no trae ninguno).
+            'timeout' => (int) env('MAIL_TIMEOUT', 15),
         ],
 
         'sendmail' => [

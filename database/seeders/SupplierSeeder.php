@@ -16,6 +16,10 @@ class SupplierSeeder extends Seeder
      */
     public function run(): void
     {
+        if (!InitialCatalogSeeder::allows($this)) {
+            return;
+        }
+
         $now = Carbon::now();
         $companies = DB::table('companies')->get();
 
