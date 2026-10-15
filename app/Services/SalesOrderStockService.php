@@ -24,7 +24,14 @@ class SalesOrderStockService
     ) {
     }
 
-    public function validateDraftDetails(int $locationId, array $details): void
+    /**
+     * Revisa que alcance el stock disponible (existencia - apartado) para los
+     * renglones. Con $forUpdate las existencias se leen bloqueadas (en orden de
+     * producto, como Sale::assertStockNotReserved) y con su último valor: lo
+     * usa la reserva, que aparta justo después. Sin bloqueo es una lectura
+     * previa (la del alta y la edición de un pedido, que no apartan).
+     */
+    public function validateDraftDetails(int $locationId, array $details, bool $forUpdate = false): void
     {
         if ($details === []) {
             return;
@@ -61,6 +68,7 @@ class SalesOrderStockService
         $stockByProduct = DB::table('product_location')
             ->where('location_id', $locationId)
             ->whereIn('product_id', array_keys($requestedByProduct))
+            ->when($forUpdate, fn($query) => $query->orderBy('product_id')->lockForUpdate())
             ->get(['product_id', 'current_stock', 'reserved_stock'])
             ->keyBy('product_id');
 
@@ -146,7 +154,11 @@ class SalesOrderStockService
      */
     private function reserveLockedOrder(SalesOrder $order, array $draftDetails): void
     {
-        $this->validateDraftDetails($order->location_id, $draftDetails);
+        // Se valida con las existencias ya bloqueadas: con una lectura sin
+        // bloqueo dos "preparar" simultáneos de pedidos distintos veían el
+        // mismo disponible y apartaban los dos (en REPEATABLE READ esa lectura
+        // es de la foto de la transacción, aunque el bloqueo llegue después).
+        $this->validateDraftDetails($order->location_id, $draftDetails, true);
 
         $reservedByProduct = [];
 
