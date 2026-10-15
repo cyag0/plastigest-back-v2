@@ -454,10 +454,10 @@ class BusinessReportsTest extends TestCase
         Sanctum::actingAs($this->createUserWithRole($this->location, ['production_orders_read']), ['*']);
         $this->withHeaders($this->tenantHeaders())->getJson("/api/auth/admin/production-orders/{$order->id}/sheet-url")->assertNotFound();
 
-        // Desde otra empresa tampoco.
-        Sanctum::actingAs($this->user, ['*']);
-        $foreign = Company::factory()->create();
-        $this->withHeaders(['X-Company-ID' => (string) $foreign->id, 'X-Location-ID' => (string) $this->location->id, 'Accept' => 'application/json'])
+        // Desde otra empresa tampoco (con una sucursal de esa empresa: la de
+        // otra empresa ya se rechaza en la puerta con location_forbidden).
+        [, $foreignBranch] = $this->createCompanyWithBranch();
+        $this->actingInBranch($this->createUserWithRole($foreignBranch), $foreignBranch)
             ->getJson("/api/auth/admin/production-orders/{$order->id}/sheet-url")->assertNotFound();
     }
 }

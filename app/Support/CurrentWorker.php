@@ -180,12 +180,29 @@ class CurrentWorker
     }
 
     /**
-     * El usuario está asignado a la sucursal, o es administrador.
+     * ¿El usuario puede entrar a la sucursal? Sí cuando tiene acceso a todas
+     * las sucursales (canAccessAllLocations) o está asignado a ella
+     * (user_location_roles). Un id null nunca es accesible.
+     *
+     * Con una empresa en el contexto, la sucursal además tiene que ser de esa
+     * empresa: sin esto un administrador de la empresa A podía mandar en
+     * X-Location-ID una sucursal de la empresa B y quedar operando en ella.
+     * Sin empresa en el contexto no hay contra qué comparar y queda la regla
+     * de siempre.
+     *
+     * La usan SetCurrentLocation (para aceptar X-Location-ID) y las acciones
+     * sobre registros o location_id de otra sucursal (ver
+     * abortUnlessCanAccessLocation()).
      */
-    public static function canAccessLocation(int $locationId, ?Authenticatable $user = null): bool
+    public static function canAccessLocation(?int $locationId, ?Authenticatable $user = null): bool
     {
         $user ??= Auth::user();
-        if (!$user) {
+        if (!$user || !$locationId) {
+            return false;
+        }
+
+        $companyId = CurrentCompany::id();
+        if ($companyId && !self::locationBelongsToCompany($locationId, $companyId)) {
             return false;
         }
 
@@ -195,6 +212,88 @@ class CurrentWorker
             ->exists();
 
         return $assigned || self::canAccessAllLocations($user);
+    }
+
+    /**
+     * Corta con 404 si el registro es de una sucursal a la que el usuario no
+     * puede entrar (canAccessLocation). Es 404 y no 403 a propósito: a quien
+     * no tiene acceso no se le confirma que el registro existe.
+     *
+     * Para acciones que cargan un registro de sucursal por id (ventas, turnos,
+     * gastos, ajustes, producción, compras, transferencias...). Un location_id
+     * null también corta: un registro de sucursal sin sucursal no se expone.
+     *
+     *   CurrentWorker::abortUnlessCanAccessLocation($expense->location_id);
+     *
+     * Lanza una HttpException: llámalo antes del try/catch de la acción (o
+     * deja pasar HttpException), porque un catch (\Throwable) que responde con
+     * errorDetail() convertiría el 404 en 422/500. errorResponse() sí la
+     * respeta.
+     *
+     * Ojo: comprueba acceso a la sucursal, no que sea la sucursal actual. Un
+     * usuario asignado a dos sucursales pasa en las dos, y sus permisos se
+     * evalúan con el rol de la sucursal actual. Si la acción solo debe hacerse
+     * desde la sucursal del registro (p. ej. aprobar desde el origen), compara
+     * además con CurrentLocation::id() salvo para canAccessAllLocations().
+     */
+    public static function abortUnlessCanAccessLocation(?int $locationId): void
+    {
+        if (!self::canAccessLocation($locationId)) {
+            abort(404, 'Recurso no encontrado');
+        }
+    }
+
+    /**
+     * Sucursal a la que se limita una consulta de lectura que acepta un
+     * location_id opcional del cliente (reportes, estadísticas, kárdex,
+     * listados con filtro de sucursal):
+     *
+     * - Sin acceso a todas las sucursales: siempre la sucursal actual, diga lo
+     *   que diga el filtro. Sin sucursal actual responde 403, porque devolver
+     *   null significaría "todas".
+     * - Con acceso a todas: la que pida; null, '' o 'all' = todas (null). La
+     *   sucursal pedida tiene que ser de la empresa actual; si no (o si el
+     *   valor no es un id), 404.
+     *
+     * null = todas las sucursales de la empresa: quien llama sigue filtrando
+     * por empresa. Mismo criterio que InventoryMovementController::locationScope
+     * y BusinessReportController::locationScope. Corta con HttpException (como
+     * abortUnlessCanAccessLocation): llámalo fuera del try/catch.
+     *
+     *   $locationId = CurrentWorker::locationScope($request->input('location_id'));
+     *   $query->when($locationId, fn($q) => $q->where('location_id', $locationId));
+     */
+    public static function locationScope(mixed $requested): ?int
+    {
+        if (!self::canAccessAllLocations()) {
+            $currentLocationId = CurrentLocation::id();
+            if (!$currentLocationId) {
+                abort(403, 'Selecciona una sucursal para continuar.');
+            }
+
+            return $currentLocationId;
+        }
+
+        if ($requested === null || $requested === '' || $requested === 'all') {
+            return null;
+        }
+
+        $locationId = filter_var($requested, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $companyId = CurrentCompany::id();
+
+        if ($locationId === false || !$companyId || !self::locationBelongsToCompany($locationId, $companyId)) {
+            abort(404, 'Sucursal no encontrada');
+        }
+
+        return $locationId;
+    }
+
+    private static function locationBelongsToCompany(int $locationId, int $companyId): bool
+    {
+        return DB::table('locations')
+            ->where('id', $locationId)
+            ->where('company_id', $companyId)
+            ->exists();
     }
 
     /**

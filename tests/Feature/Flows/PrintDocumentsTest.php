@@ -103,8 +103,15 @@ class PrintDocumentsTest extends TestCase
         $this->get(preg_replace('/&signature=[^&]+/', '', $url))->assertForbidden();
 
         // Desde otra empresa la venta no existe.
-        $this->withHeaders(['X-Company-ID' => (string) $other->id, 'X-Location-ID' => (string) $this->location->id, 'Accept' => 'application/json'])
+        $otherBranch = $this->createBranch([], $other);
+        $this->actingInBranch($this->createUserWithRole($otherBranch), $otherBranch)
             ->getJson("/api/auth/admin/sales/{$saleId}/ticket-url")->assertNotFound();
+
+        // Y la sucursal de una empresa no se acepta con el contexto de otra.
+        $this->actingInBranch($this->user)->withHeaders(['X-Company-ID' => (string) $other->id])
+            ->getJson("/api/auth/admin/sales/{$saleId}/ticket-url")
+            ->assertForbidden()
+            ->assertJsonPath('code', 'location_forbidden');
     }
 
     public function test_transfer_remission(): void
