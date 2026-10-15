@@ -254,9 +254,16 @@ class UserController extends CrudController
 
         // Quien solo opera su sucursal cambia el rol de esa sucursal
         // (location_role_id), no las sucursales del usuario: location_roles
-        // reemplaza todas, incluidas las que él no ve.
-        if ($request->has('location_roles') && $this->actorIsBranchOnly()) {
-            return $this->forbiddenResponse('cambiar las sucursales de un usuario');
+        // reemplaza todas, incluidas las que él no ve. Tampoco los roles
+        // directos (role_ids): aplican en todas las sucursales del usuario, y
+        // así un encargado se daba (o le daba a otro) su rol en las demás.
+        if ($this->actorIsBranchOnly()) {
+            if ($request->has('location_roles')) {
+                return $this->forbiddenResponse('cambiar las sucursales de un usuario');
+            }
+            if ($request->has('role_ids')) {
+                return $this->forbiddenResponse('cambiar los roles que aplican en todas las sucursales');
+            }
         }
 
         // Roles pedidos: directos (role_ids) + por sucursal (location_roles) +
