@@ -306,6 +306,32 @@ class CashMovementService
     }
 
     /**
+     * ¿El egreso de caja del gasto pertenece a un turno ya cerrado? Ese corte
+     * ya se contó: el monto, el método, la fecha y "pagado con caja" del gasto
+     * no se cambian ni el gasto se borra (C15). Con $lock la fila del turno
+     * queda bloqueada hasta el final de la transacción: un cierre simultáneo
+     * espera, o el cambio ve el turno ya cerrado.
+     */
+    public static function expenseInClosedShift(Expense $expense, bool $lock = false): bool
+    {
+        $sessionIds = CashMovement::where('source_type', 'expense')
+            ->where('source_id', $expense->id)
+            ->whereNotNull('cash_register_session_id')
+            ->pluck('cash_register_session_id')
+            ->unique()
+            ->all();
+
+        if ($sessionIds === []) {
+            return false;
+        }
+
+        return CashRegisterSession::whereKey($sessionIds)
+            ->when($lock, fn($query) => $query->lockForUpdate())
+            ->get(['id', 'status'])
+            ->contains(fn(CashRegisterSession $session) => $session->status !== CashRegisterSession::STATUS_OPEN);
+    }
+
+    /**
      * Quita de la caja el egreso de un gasto (al eliminarlo o antes de
      * volver a registrarlo).
      */

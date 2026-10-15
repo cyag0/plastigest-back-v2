@@ -154,7 +154,13 @@ class CashRegisterSessionController extends Controller
             return response()->json(['message' => 'Turno no encontrado.'], 404);
         }
 
+        // El propio turno, o el de otro cajero con cash_registers_update en esa
+        // sucursal (o con acceso a todas). Antes un encargado podía cerrar el
+        // turno de cualquier sucursal de la empresa.
         $own = $session->user_id === Auth::id() && CurrentWorker::hasPermission('sales_pos');
+        if (!$own && !$this->isInMyBranch($session)) {
+            return response()->json(['message' => 'Turno no encontrado.'], 404);
+        }
         if (!$own && !CurrentWorker::hasPermission('cash_registers_update')) {
             return response()->json(['message' => 'Solo el cajero del turno o un administrador pueden cerrarlo.'], 403);
         }
@@ -168,7 +174,11 @@ class CashRegisterSessionController extends Controller
         ]);
     }
 
-    /** El propio turno, o cualquiera de la compañía para quien tiene permiso de consulta. */
+    /**
+     * El propio turno, o uno de la sucursal actual (de cualquiera, con acceso
+     * a todas las sucursales) para quien tiene permiso de consulta. Antes se
+     * podía ver el turno de cualquier sucursal de la empresa.
+     */
     private function findForViewing(int $id): ?CashRegisterSession
     {
         $session = CashRegisterSession::with(self::RELATIONS)
@@ -180,10 +190,16 @@ class CashRegisterSessionController extends Controller
         }
 
         $own = $session->user_id === Auth::id();
-        if (!$own && !CurrentWorker::hasPermission('cash_register_sessions_read')) {
+        if (!$own && (!CurrentWorker::hasPermission('cash_register_sessions_read') || !$this->isInMyBranch($session))) {
             return null;
         }
 
         return $session;
+    }
+
+    /** ¿El turno es de la sucursal actual (o el usuario ve todas)? */
+    private function isInMyBranch(CashRegisterSession $session): bool
+    {
+        return CurrentWorker::canAccessAllLocations() || (int) $session->location_id === (int) CurrentLocation::id();
     }
 }
