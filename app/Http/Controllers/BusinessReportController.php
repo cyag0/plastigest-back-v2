@@ -98,7 +98,10 @@ class BusinessReportController extends Controller
             'report' => $report,
             'format' => $validated['format'] ?? 'pdf',
             'company_id' => CurrentCompany::id(),
-            'location_id' => $this->locationScope($request->input('location_id')) ?? 'all',
+            // Quien no ve todas las sucursales solo saca la suya, diga lo que
+            // diga el filtro, y sin sucursal actual recibe 403 (antes le salía
+            // el reporte de todas); quien sí, elige una o todas.
+            'location_id' => CurrentWorker::locationScope($request->input('location_id')) ?? 'all',
         ];
 
         if (self::REPORTS[$report]['input'] === 'as_of') {
@@ -154,25 +157,6 @@ class BusinessReportController extends Controller
             'adjustments' => new AdjustmentsReport($scope, $period()),
             'cash-differences' => new CashDifferencesReport($scope, $period()),
         };
-    }
-
-    /**
-     * Sucursal del reporte: quien no ve todas las sucursales solo saca la
-     * suya, diga lo que diga el filtro; quien sí, elige una o todas.
-     */
-    private function locationScope(mixed $requested): ?int
-    {
-        if (!CurrentWorker::canAccessAllLocations()) {
-            return CurrentLocation::id();
-        }
-        if ($requested === null || $requested === '' || $requested === 'all') {
-            return null;
-        }
-
-        $id = (int) $requested;
-        abort_unless(Location::where('company_id', CurrentCompany::id())->whereKey($id)->exists(), 404);
-
-        return $id;
     }
 
     private function forbidden(): JsonResponse
