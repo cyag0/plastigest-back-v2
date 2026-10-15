@@ -72,6 +72,15 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
 1. [ ] En tu proyecto Coolify → *+ New* → *Database* → **MySQL**.
 2. [ ] Anota credenciales que genera (host interno, user, password, db). El **host** será el nombre de servicio interno de Docker (ej. el que muestre Coolify), no `127.0.0.1`.
 3. [ ] No expongas el puerto público de la DB salvo que lo necesites para una restauración puntual.
+4. [ ] Ajusta la memoria de MySQL en la configuración personalizada del recurso (*Custom MySQL Configuration*) y reinicia la base:
+   ```ini
+   [mysqld]
+   innodb_buffer_pool_size=2G      # CPX31 (8 GB); en un CPX21 (4 GB) usa 1G
+   innodb_redo_log_capacity=512M
+   slow_query_log=ON
+   long_query_time=1               # consultas de más de 1 s al log de MySQL
+   ```
+   El valor por defecto (128 MB) no alcanza para los ~1.5–2 GB de datos que se consultan a diario desde el primer año: sin esto, reportes, caja y listas terminan leyendo de disco.
 
 > Alternativa: instalar MySQL a mano en el host como en el deploy clásico. Pero dejar que Coolify lo gestione (backups incluidos, Fase 12) es más simple.
 
@@ -190,7 +199,7 @@ En el deploy manual esto era un servicio systemd; en Coolify es un **recurso apa
 
 ## Fase 7 — Scheduler (cron)
 
-El scheduler (definido en `routes/console.php`) dispara `tasks:generate-recurring` a las 06:00, `notifications:scheduled` cada hora de 07:00 a 21:00 (avisos de tareas por vencer o vencidas y de recordatorios: **sin el scheduler esos avisos nunca salen**) y dos limpiezas nocturnas: `queue:prune-failed` (jobs fallidos de más de 7 días, 03:30) y `sanctum:prune-expired` (tokens vencidos, 03:45). Horas en `APP_TIMEZONE` (America/Mexico_City).
+El scheduler (definido en `routes/console.php`) dispara `tasks:generate-recurring` a las 06:00, `notifications:scheduled` cada hora de 07:00 a 21:00 (avisos de tareas por vencer o vencidas y de recordatorios: **sin el scheduler esos avisos nunca salen**) dos limpiezas nocturnas: `queue:prune-failed` (jobs fallidos de más de 7 días, 03:30) y `sanctum:prune-expired` (tokens vencidos, 03:45), y el cuadre `inventory:reconcile` (04:00: compara la existencia de cada producto con su libro mayor; solo lee y, si algo no cuadra, deja en el log el error `Inventario: la existencia no cuadra con el libro mayor`). Horas en `APP_TIMEZONE` (America/Mexico_City).
 
 - [ ] En Coolify → app → *Scheduled Tasks* → nueva tarea:
   - **Frecuencia:** `* * * * *` (cada minuto, como Laravel espera).
@@ -337,6 +346,8 @@ Con Coolify el deploy es **automático**:
 
 > Migraciones destructivas o seeders nuevos: revísalos antes de mergear a `main`, porque el auto-deploy los corre solo.
 
+> Si `migrate` se detiene con una lista de filas repetidas (p. ej. dos existencias del mismo producto en la misma sucursal en `product_location`), no se borró nada: deja una sola fila correcta por cada caso y vuelve a desplegar. Esas migraciones no fusionan datos solas para no duplicar ni perder stock.
+
 ---
 
 ## Fase 14 — Prueba de humo antes de abrir a usuarios
@@ -364,6 +375,7 @@ En `app.cocos-francisco.com`, ciclo real completo:
 - [ ] Post-deploy con `migrate`, `storage:link` y cachés en **cada** deploy; health check `/up` en verde.
 - [ ] `TELESCOPE_ENABLED=false`, `LOG_STACK=stderr`, sin `SANCTUM_STATEFUL_DOMAINS`.
 - [ ] Backup diario de la DB **y** del volumen de `storage/app` **probados** (restauración verificada, fuera del servidor).
+- [ ] MySQL con `innodb_buffer_pool_size` ajustado y `slow_query_log` encendido (Fase 3, paso 4).
 - [ ] Fix de doble-venta desplegado.
 - [ ] Panel de Coolify por HTTPS y puerto `8000` cerrado.
 - [ ] Plan de internet de respaldo por sucursal (POS web = sin internet, sin ventas).
