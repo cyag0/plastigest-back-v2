@@ -1,0 +1,36 @@
+# Build de la API en Coolify (Nixpacks 1.41.0, la versión que trae Coolify).
+# Lo demás lo sigue decidiendo Nixpacks: la versión de PHP sale de "php" en
+# composer.json, las extensiones de los ext-* y el nginx de
+# nginx.template.conf. El job "nixpacks" de .github/workflows/tests.yml
+# construye esta imagen en cada push.
+
+[variables]
+# Node solo se usa al arrancar el contenedor (scripts/prestart.mjs de
+# Nixpacks genera /nginx.conf). Sin esto Nixpacks instala Node 18, que ya no
+# tiene soporte.
+NIXPACKS_NODE_VERSION = "22"
+
+[staticAssets]
+# php-fpm.conf de Nixpacks 1.41.0 (el pool [www] es el mismo) más [global].
+# Sin error_log, PHP-FPM guardaba los errores de la app (LOG_STACK=stderr)
+# en un archivo dentro del contenedor y nunca llegaban a los logs de
+# Coolify. Con /proc/self/fd/2 salen por el stderr del contenedor;
+# log_limit evita que se corten las líneas largas (el default es 1024) y
+# decorate_workers_output=no quita el prefijo "child N said into stderr".
+"php-fpm.conf" = '''
+[global]
+error_log = /proc/self/fd/2
+log_limit = 8192
+
+[www]
+listen = 127.0.0.1:9000
+user = nobody
+pm = dynamic
+pm.max_children = 50
+pm.min_spare_servers = 4
+pm.max_spare_servers = 32
+pm.start_servers = 18
+clear_env = no
+catch_workers_output = yes
+decorate_workers_output = no
+'''
