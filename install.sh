@@ -95,8 +95,11 @@ fi
 print_step "2. Instalando dependencias de Composer..."
 
 if command_exists composer; then
+    # Con dependencias de desarrollo: Sail (vendor/bin/sail) es de require-dev.
+    # Este script es para desarrollo local; producción se instala en Coolify
+    # (ver DEPLOY-COOLIFY.md).
     print_info "Usando Composer local..."
-    composer install --no-dev --optimize-autoloader
+    composer install
 else
     print_info "Usando Composer via Docker..."
     docker run --rm \
@@ -104,7 +107,7 @@ else
         -v "$(pwd):/var/www/html" \
         -w /var/www/html \
         laravelsail/php84-composer:latest \
-        composer install --ignore-platform-reqs --no-dev --optimize-autoloader
+        composer install --ignore-platform-reqs
 fi
 
 print_success "Dependencias de Composer instaladas"
@@ -118,19 +121,8 @@ fi
 # Crear alias para Sail
 SAIL="./vendor/bin/sail"
 
-# Paso 3: Generar clave de aplicación
-print_step "3. Generando clave de aplicación..."
-
-# Verificar si ya existe una clave
-if grep -q "APP_KEY=" .env && [ -n "$(grep "APP_KEY=" .env | cut -d'=' -f2)" ]; then
-    print_warning "APP_KEY ya existe, omitiendo generación"
-else
-    $SAIL artisan key:generate --force
-    print_success "Clave de aplicación generada"
-fi
-
-# Paso 4: Iniciar Laravel Sail
-print_step "4. Iniciando Laravel Sail..."
+# Paso 3: Iniciar Laravel Sail
+print_step "3. Iniciando Laravel Sail..."
 
 # Detener cualquier contenedor previo
 $SAIL down >/dev/null 2>&1 || true
@@ -156,55 +148,35 @@ for i in {1..30}; do
     sleep 2
 done
 
+# Paso 4: Generar clave de aplicación (sail artisan necesita los contenedores arriba)
+print_step "4. Generando clave de aplicación..."
+
+# Verificar si ya existe una clave
+if grep -q "APP_KEY=" .env && [ -n "$(grep "APP_KEY=" .env | cut -d'=' -f2)" ]; then
+    print_warning "APP_KEY ya existe, omitiendo generación"
+else
+    $SAIL artisan key:generate --force
+    print_success "Clave de aplicación generada"
+fi
+
 # Paso 5: Ejecutar migraciones
 print_step "5. Ejecutando migraciones..."
 
 $SAIL artisan migrate --force
 print_success "Migraciones ejecutadas"
 
-# Paso 6: Instalar dependencias de Node (opcional)
-print_step "6. Instalando dependencias de Node..."
+# Paso 6: Datos de desarrollo
+print_step "6. Cargando datos de desarrollo (db:seed)..."
 
-if [ -f "package.json" ]; then
-    $SAIL npm install
-    print_success "Dependencias de Node instaladas"
-else
-    print_warning "No se encontró package.json, omitiendo instalación de Node"
-fi
-
-# Paso 7: Crear datos de prueba
-print_step "7. Creando datos de prueba..."
-
-# Crear usuario administrador y compañía de prueba
-$SAIL artisan tinker --execute="
-\$user = App\Models\User::firstOrCreate(
-    ['email' => 'admin@plastigest.com'],
-    [
-        'name' => 'Admin',
-        'password' => bcrypt('password123')
-    ]
-);
-
-\$company = App\Models\Admin\Company::firstOrCreate(
-    ['rfc' => 'DEMO123456789'],
-    [
-        'name' => 'PlastiGest Demo',
-        'business_name' => 'PlastiGest Demo S.A. de C.V.',
-        'address' => 'Calle Demo 123, Ciudad Demo',
-        'phone' => '+52 555 123 4567',
-        'email' => 'demo@plastigest.com',
-        'is_active' => true
-    ]
-);
-
-echo 'Usuario Admin ID: ' . \$user->id . PHP_EOL;
-echo 'Compañía Demo ID: ' . \$company->id . PHP_EOL;
-"
+# En local DatabaseSeeder crea permisos, unidades, la empresa con sus
+# sucursales, el Super Admin (ADMIN_EMAIL / ADMIN_PASSWORD del .env; sin
+# ADMIN_PASSWORD usa "password", solo en local) y el catálogo.
+$SAIL artisan db:seed
 
 print_success "Datos de prueba creados"
 
-# Paso 8: Verificar instalación
-print_step "8. Verificando instalación..."
+# Paso 7: Verificar instalación
+print_step "7. Verificando instalación..."
 
 # Verificar que la aplicación responda
 sleep 5
@@ -226,9 +198,9 @@ echo -e "${NC}"
 
 echo -e "${BLUE}📋 Información de Acceso:${NC}"
 echo "🌐 URL: http://localhost"
-echo "📧 Admin Email: admin@plastigest.com"
-echo "🔑 Admin Password: password123"
-echo "🏢 Compañía: PlastiGest Demo"
+echo "📧 Admin: ADMIN_EMAIL del .env (por defecto admin@cocos-francisco.com)"
+echo "🔑 Contraseña: ADMIN_PASSWORD del .env (sin definir: \"password\", solo en local)"
+echo "🏢 Compañía: Cocos Francisco (8 sucursales)"
 
 echo -e "\n${BLUE}🔧 Comandos útiles:${NC}"
 echo "• Ver logs: $SAIL logs"
@@ -242,7 +214,7 @@ echo -e "\n${BLUE}🧪 Probar la API:${NC}"
 echo "curl -X POST http://localhost/api/auth/login \\"
 echo "  -H \"Content-Type: application/json\" \\"
 echo "  -H \"Accept: application/json\" \\"
-echo "  -d '{\"email\":\"admin@plastigest.com\",\"password\":\"password123\"}'"
+echo "  -d '{\"email\":\"admin@cocos-francisco.com\",\"password\":\"password\"}'"
 
 echo -e "\n${BLUE}📚 Documentación:${NC}"
 echo "• Instalación: ./INSTALLATION.md"
