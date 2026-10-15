@@ -34,16 +34,24 @@ class SendNotificationJob implements ShouldQueue
     ): void {
         try {
             $template   = $templateResolver->resolve($this->eventType, $this->contextData);
+            $locationId = $this->resolveLocationId();
             $recipients = $recipientResolver->resolve(
                 $this->companyId,
                 $this->eventType,
                 $template->getDefaultPermission(),
                 $this->specificUserId,
-                $this->resolveLocationId(),
+                $locationId,
             );
 
+            // Quien provocó el evento (p. ej. registró el ajuste) no recibe su
+            // propio aviso.
+            $excludedUserId = $this->contextData['exclude_user_id'] ?? null;
+
             foreach ($recipients as $user) {
-                $sender->send($template, $user, $this->companyId);
+                if ($excludedUserId !== null && (int) $user->id === (int) $excludedUserId) {
+                    continue;
+                }
+                $sender->send($template, $user, $this->companyId, $locationId);
             }
         } catch (\Throwable $e) {
             Log::error('SendNotificationJob: failed', [

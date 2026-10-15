@@ -16,7 +16,7 @@ class NotificationEngine
     /**
      * Dispatch a notification job asynchronously.
      *
-     * @param string   $eventType      One of: low_stock | inventory_adjustment | inventory_count_discrepancy | purchase_update | task_event
+     * @param string   $eventType      One of: low_stock | inventory_adjustment | inventory_count_discrepancy | purchase_update | task_event | transfer_update | reminder
      * @param int      $companyId      The company this notification belongs to
      * @param array    $contextData    Event-specific data passed to the template
      * @param int|null $userId         When set, only this user receives the notification (e.g. task assignments)
@@ -27,7 +27,11 @@ class NotificationEngine
         array  $contextData,
         ?int   $userId = null,
     ): void {
+        // afterCommit: si el evento ocurre dentro de una transacción (una venta,
+        // una recepción…) el aviso sale sólo cuando se confirma; si falla y se
+        // revierte, no se avisa de algo que no pasó.
         SendNotificationJob::dispatch($eventType, $companyId, $contextData, $userId)
-            ->onQueue('notifications');
+            ->onQueue('notifications')
+            ->afterCommit();
     }
 }

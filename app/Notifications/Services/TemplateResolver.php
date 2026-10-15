@@ -7,7 +7,9 @@ use App\Notifications\Templates\LowStockTemplate;
 use App\Notifications\Templates\InventoryAdjustmentTemplate;
 use App\Notifications\Templates\InventoryCountDiscrepancyTemplate;
 use App\Notifications\Templates\PurchaseUpdateTemplate;
+use App\Notifications\Templates\ReminderTemplate;
 use App\Notifications\Templates\TaskEventTemplate;
+use App\Notifications\Templates\TransferUpdateTemplate;
 
 class TemplateResolver
 {
@@ -17,6 +19,8 @@ class TemplateResolver
         'inventory_count_discrepancy'  => InventoryCountDiscrepancyTemplate::class,
         'purchase_update'              => PurchaseUpdateTemplate::class,
         'task_event'                   => TaskEventTemplate::class,
+        'transfer_update'              => TransferUpdateTemplate::class,
+        'reminder'                     => ReminderTemplate::class,
     ];
 
     public function resolve(string $eventType, array $contextData): NotificationTemplateInterface

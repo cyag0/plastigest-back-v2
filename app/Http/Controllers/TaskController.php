@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\Activity\ActivityLogger;
 use App\Models\Task;
 use App\Models\TaskComment;
 use App\Models\User;
@@ -23,6 +24,9 @@ class TaskController extends Controller
      */
     public function eligibleUsers(Request $request)
     {
+        if (!CurrentWorker::hasPermission('tasks_read')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
 
         $validated = $request->validate([
             'location_id' => 'required|integer|exists:locations,id',
@@ -199,6 +203,12 @@ class TaskController extends Controller
 
         $task->load(['assignedTo', 'assignedBy', 'location']);
 
+        ActivityLogger::log(
+            'tareas', 'created',
+            "Creó la tarea «{$task->title}»" . ($task->assignedTo ? " para {$task->assignedTo->name}" : ''),
+            $task, $task->title,
+        );
+
         // Enviar notificación si se asignó a alguien
         if ($task->assigned_to) {
             NotificationEngine::dispatch('task_event', $company->id, [
@@ -240,8 +250,32 @@ class TaskController extends Controller
             'status' => 'nullable|in:pending,in_progress,completed,cancelled,overdue',
         ]);
 
+        $previousAssignee = $task->assigned_to;
+        $previousDueDate = $task->due_date?->toDateTimeString();
+
+        // Con otra fecha límite los avisos de "vence pronto" / "vencida"
+        // vuelven a aplicar.
+        if (array_key_exists('due_date', $validated)) {
+            $newDueDate = $validated['due_date'] ? \Carbon\Carbon::parse($validated['due_date'])->toDateTimeString() : null;
+            if ($newDueDate !== $previousDueDate) {
+                $task->due_soon_notified_at = null;
+                $task->overdue_notified_at = null;
+            }
+        }
+
         $task->update($validated);
         $task->load(['assignedTo', 'assignedBy', 'location']);
+
+        // Reasignada: avisar a la nueva persona (antes no se enteraba).
+        if ($task->assigned_to
+            && (int) $task->assigned_to !== (int) $previousAssignee
+            && (int) $task->assigned_to !== (int) $request->user()->id) {
+            NotificationEngine::dispatch('task_event', $task->company_id, [
+                'task'       => $task,
+                'sub_type'   => 'assigned',
+                'actor_name' => $request->user()->name,
+            ], userId: $task->assigned_to);
+        }
 
         return response()->json($task);
     }
@@ -271,10 +305,6 @@ class TaskController extends Controller
      */
     public function changeStatus(Request $request, Task $task)
     {
-        if (!CurrentWorker::hasPermission('tasks_update')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
@@ -287,6 +317,10 @@ class TaskController extends Controller
 
         $user = $request->user();
         $success = false;
+
+        if (!$this->canWorkOn($task, $user->id, cancelling: $validated['action'] === 'cancel')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
 
         switch ($validated['action']) {
             case 'start':
@@ -327,14 +361,14 @@ class TaskController extends Controller
      */
     public function addComment(Request $request, Task $task)
     {
-        if (!CurrentWorker::hasPermission('tasks_update')) {
-            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
-        }
-
         $company = CurrentCompany::get();
 
         if ($task->company_id !== $company->id) {
             return response()->json(['message' => 'No autorizado'], 403);
+        }
+
+        if (!$this->canWorkOn($task, $request->user()->id)) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
         $validated = $request->validate([
@@ -381,7 +415,9 @@ class TaskController extends Controller
      */
     public function statistics(Request $request)
     {
-
+        if (!CurrentWorker::hasPermission('tasks_list')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
 
         $company = CurrentCompany::get();
         $query = Task::where('company_id', $company->id);
@@ -411,5 +447,25 @@ class TaskController extends Controller
         ];
 
         return response()->json($stats);
+    }
+
+    /**
+     * Quién puede trabajar una tarea. Las automáticas se asignan por el permiso
+     * del trabajo (recibir compras, transferencias, inventario), no por
+     * tasks_update: quien la tiene asignada o quien la creó puede iniciarla,
+     * completarla y comentarla aunque su rol no tenga tasks_update. Cancelarla
+     * queda para tasks_update o para quien la creó.
+     */
+    private function canWorkOn(Task $task, int $userId, bool $cancelling = false): bool
+    {
+        if (CurrentWorker::hasPermission('tasks_update')) {
+            return true;
+        }
+
+        if ((int) $task->assigned_by === $userId) {
+            return true;
+        }
+
+        return !$cancelling && (int) $task->assigned_to === $userId;
     }
 }

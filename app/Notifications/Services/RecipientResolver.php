@@ -12,8 +12,9 @@ class RecipientResolver
      * Resolve which users should receive a notification.
      *
      * When $specificUserId is given (e.g. task events) only that user is targeted.
-     * Otherwise, the company's NotificationPreference determines which permission
-     * gate to use, falling back to $defaultPermission when no preference exists.
+     * Otherwise, the NotificationPreference of the event's location (or, if it
+     * has none, the company's) determines which permission gate to use, falling
+     * back to $defaultPermission when no preference exists.
      *
      * @return Collection<User>
      */
@@ -24,18 +25,19 @@ class RecipientResolver
         ?int $specificUserId = null,
         ?int $locationId = null,
     ): Collection {
-        if ($specificUserId !== null) {
-            $user = User::find($specificUserId);
-            return $user ? collect([$user]) : collect();
-        }
+        // La de la sucursal del evento si la tiene; si no, la de la empresa.
+        $pref = NotificationPreference::effective($companyId, $eventType, $locationId);
 
-        $pref = NotificationPreference::where('company_id', $companyId)
-            ->where('event_type', $eventType)
-            ->first();
-
-        // Respect company-level deactivation
+        // Respect company-level deactivation (también para los avisos
+        // dirigidos a una persona, como las tareas: antes se enviaban aunque
+        // la empresa los hubiera apagado).
         if ($pref && !$pref->is_active) {
             return collect();
+        }
+
+        if ($specificUserId !== null) {
+            $user = User::where('is_active', true)->find($specificUserId);
+            return $user ? collect([$user]) : collect();
         }
 
         $permissionName = $pref?->permission_name ?: $defaultPermission;

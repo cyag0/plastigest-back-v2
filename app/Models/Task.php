@@ -39,6 +39,8 @@ class Task extends Model
         'recurrence_time',
         'last_generated_at',
         'next_occurrence',
+        'due_soon_notified_at',
+        'overdue_notified_at',
         'metadata',
     ];
 
@@ -46,6 +48,8 @@ class Task extends Model
         'metadata' => 'array',
         'assigned_users' => 'array',
         'due_date' => 'datetime',
+        'due_soon_notified_at' => 'datetime',
+        'overdue_notified_at' => 'datetime',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
         'last_generated_at' => 'datetime',
@@ -199,10 +203,17 @@ class Task extends Model
         return true;
     }
 
-    public function generateNextOccurrence(): void
+    /**
+     * Crea la siguiente ocurrencia de una tarea recurrente y la devuelve.
+     *
+     * La copia es una tarea normal: antes heredaba is_recurring y la
+     * next_occurrence vencida, así que en la siguiente corrida generaban la
+     * original y la copia (1, 2, 4, 8… tareas por día).
+     */
+    public function generateNextOccurrence(): ?self
     {
         if (!$this->is_recurring || !$this->recurrence_frequency) {
-            return;
+            return null;
         }
 
         $nextDate = match ($this->recurrence_frequency) {
@@ -224,11 +235,18 @@ class Task extends Model
         $newTask->completed_at = null;
         $newTask->completed_by = null;
         $newTask->due_date = $nextDate;
+        $newTask->is_recurring = false;
+        $newTask->next_occurrence = null;
+        $newTask->last_generated_at = null;
+        $newTask->due_soon_notified_at = null;
+        $newTask->overdue_notified_at = null;
         $newTask->save();
 
         $this->update([
             'last_generated_at' => now(),
             'next_occurrence' => $nextDate,
         ]);
+
+        return $newTask;
     }
 }

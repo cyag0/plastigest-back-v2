@@ -9,15 +9,19 @@ enum NotificationEventType: string
     case InventoryCountDiscrepancy = 'inventory_count_discrepancy';
     case PurchaseUpdate            = 'purchase_update';
     case TaskEvent                 = 'task_event';
+    case TransferUpdate            = 'transfer_update';
+    case Reminder                  = 'reminder';
 
     public function label(): string
     {
         return match ($this) {
-            self::LowStock                  => 'Stock Bajo',
-            self::InventoryAdjustment       => 'Ajuste de Inventario',
-            self::InventoryCountDiscrepancy => 'Discrepancia en Conteo',
-            self::PurchaseUpdate            => 'Actualización de Compra',
-            self::TaskEvent                 => 'Evento de Tarea',
+            self::LowStock                  => 'Stock bajo',
+            self::InventoryAdjustment       => 'Ajuste de inventario',
+            self::InventoryCountDiscrepancy => 'Discrepancia en conteo',
+            self::PurchaseUpdate            => 'Actualización de compra',
+            self::TaskEvent                 => 'Tareas',
+            self::TransferUpdate            => 'Transferencias',
+            self::Reminder                  => 'Recordatorios',
         };
     }
 }

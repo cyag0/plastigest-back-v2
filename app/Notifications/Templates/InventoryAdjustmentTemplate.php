@@ -18,22 +18,32 @@ class InventoryAdjustmentTemplate extends BaseNotificationTemplate
     {
         $product = $this->context['product'] ?? null;
         $name    = $product?->name ?? 'Producto';
-        return "Ajuste de Inventario: {$name}";
+        return "Ajuste de inventario: {$name}";
     }
 
     public function getMessage(): string
     {
         $product      = $this->context['product']        ?? null;
         $location     = $this->context['location']       ?? null;
-        $qty          = $this->context['adjustment_qty'] ?? 0;
+        $qty          = (float) ($this->context['adjustment_qty'] ?? 0);
         $reason       = $this->context['reason']         ?? 'Sin motivo';
         $adjustedBy   = $this->context['adjusted_by']   ?? 'Sistema';
-        $newStock     = $this->context['new_stock']      ?? 0;
+        $unit         = $this->context['unit']           ?? null;
         $productName  = $product?->name  ?? 'Producto';
-        $locationName = $location?->name ?? 'Ubicación';
-        $sign         = $qty >= 0 ? '+' : '';
+        $locationName = $location?->name ?? 'la sucursal';
+        $sign         = $qty >= 0 ? '+' : '−';
+        $change       = $sign . self::quantity(abs($qty), $unit);
+        $newStock     = self::quantity($this->context['new_stock'] ?? 0, $unit);
 
-        return "{$adjustedBy} ajustó '{$productName}' en '{$locationName}': {$sign}{$qty} (stock actual: {$newStock}). Motivo: {$reason}.";
+        return "{$adjustedBy} ajustó '{$productName}' en {$locationName}: {$change} ({$reason}). Existencia: {$newStock}.";
+    }
+
+    /** 3.000 → "3 pz"; 2.500 → "2.5 kg". */
+    private static function quantity(float|int|string $value, ?string $unit): string
+    {
+        $number = rtrim(rtrim(number_format((float) $value, 3, '.', ','), '0'), '.');
+
+        return $unit ? "{$number} {$unit}" : $number;
     }
 
     public function getEmailView(): string
@@ -45,6 +55,7 @@ class InventoryAdjustmentTemplate extends BaseNotificationTemplate
     {
         return [
             'event_type'     => $this->getEventType(),
+            'adjustment_id'  => $this->context['adjustment']?->id ?? null,
             'product_id'     => $this->context['product']?->id  ?? null,
             'location_id'    => $this->context['location']?->id ?? null,
             'adjustment_qty' => $this->context['adjustment_qty'] ?? null,

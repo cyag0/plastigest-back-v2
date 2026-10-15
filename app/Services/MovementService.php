@@ -2,9 +2,11 @@
 
 namespace App\Services;
 
+use App\Models\Admin\Location;
 use App\Models\Product;
 use App\Models\ProductPackage;
 use App\Models\StockLedgerEntry;
+use App\Notifications\NotificationEngine;
 use App\Support\StockContext;
 use App\Models\Unit;
 use Illuminate\Support\Facades\DB;
@@ -113,10 +115,57 @@ class MovementService
                 $context,
             );
 
+            $this->notifyIfLowStock($locationId, $productId, $previousStock, $previousStock - $quantityInProductUnit);
+
             DB::commit();
         } catch (Exception $e) {
             DB::rollBack();
             throw $e;
+        }
+    }
+
+    /**
+     * Aviso de stock bajo. Toda salida de inventario pasa por decrement()
+     * (POS, ventas, producción, empaque, transferencias, ajustes, conteos), así
+     * que aquí se cubren todas. Avisa una sola vez, cuando la existencia cruza
+     * el mínimo de la sucursal o se agota; no en cada venta mientras siga baja.
+     * El aviso sale al confirmarse la transacción (NotificationEngine).
+     */
+    protected function notifyIfLowStock(int $locationId, int $productId, float $before, float $after): void
+    {
+        try {
+            $minimum = (float) DB::table('product_location')
+                ->where('location_id', $locationId)
+                ->where('product_id', $productId)
+                ->value('minimum_stock');
+
+            $crossedMinimum = $minimum > 0 && $before >= $minimum && $after < $minimum;
+            $ranOut = $before > 0 && $after <= 0;
+
+            if (!$crossedMinimum && !$ranOut) {
+                return;
+            }
+
+            $product = Product::with('unit')->find($productId);
+            $location = Location::find($locationId);
+            if (!$product || !$location) {
+                return;
+            }
+
+            NotificationEngine::dispatch('low_stock', (int) $location->company_id, [
+                'product'       => $product,
+                'location'      => $location,
+                'current_stock' => round(max($after, 0), 3),
+                'minimum_stock' => $minimum,
+                'unit'          => $product->unit?->abbreviation,
+            ]);
+        } catch (\Throwable $e) {
+            // Un aviso nunca debe impedir el movimiento de inventario.
+            Log::warning('No se pudo evaluar el aviso de stock bajo', [
+                'location_id' => $locationId,
+                'product_id'  => $productId,
+                'error'       => $e->getMessage(),
+            ]);
         }
     }
 

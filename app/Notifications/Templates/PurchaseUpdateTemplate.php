@@ -2,8 +2,32 @@
 
 namespace App\Notifications\Templates;
 
+use App\Models\PurchaseV2;
+use App\Notifications\NotificationEngine;
+
 class PurchaseUpdateTemplate extends BaseNotificationTemplate
 {
+    /**
+     * Avisa a quienes administran compras en la sucursal de la compra.
+     * Mismo contexto en los tres puntos: en tránsito (app o respuesta del
+     * proveedor por WhatsApp) y recibida.
+     */
+    public static function dispatchFor(PurchaseV2 $purchase, string $subType, ?int $excludeUserId = null): void
+    {
+        $purchase->loadMissing(['supplier', 'details.product']);
+
+        NotificationEngine::dispatch('purchase_update', (int) $purchase->company_id, [
+            'purchase'        => $purchase,
+            'supplier_name'   => $purchase->supplier?->name ?? '',
+            'sub_type'        => $subType,
+            'products'        => $purchase->details->map(fn($detail) => [
+                'name'     => $detail->product?->name ?? '',
+                'quantity' => $subType === 'received' ? $detail->quantity_received : $detail->quantity,
+            ])->toArray(),
+            'exclude_user_id' => $excludeUserId,
+        ]);
+    }
+
     public function getEventType(): string
     {
         return 'purchase_update';
@@ -20,9 +44,9 @@ class PurchaseUpdateTemplate extends BaseNotificationTemplate
         $supplierName = $this->context['supplier_name'] ?? 'Proveedor';
 
         return match ($subType) {
-            'in_transit' => "Compra en Tránsito — {$supplierName}",
-            'received'   => "Compra Recibida — {$supplierName}",
-            default      => "Actualización de Compra — {$supplierName}",
+            'in_transit' => "Compra en camino — {$supplierName}",
+            'received'   => "Compra recibida — {$supplierName}",
+            default      => "Actualización de compra — {$supplierName}",
         };
     }
 
@@ -32,12 +56,13 @@ class PurchaseUpdateTemplate extends BaseNotificationTemplate
         $supplierName = $this->context['supplier_name'] ?? 'Proveedor';
         $subType      = $this->context['sub_type']      ?? '';
         $products     = $this->context['products']      ?? collect();
-        $purchaseRef  = $purchase?->id ? "#{$purchase->id}" : '';
+        $purchaseRef  = $purchase?->purchase_number ?: ($purchase?->id ? "#{$purchase->id}" : '');
         $productCount = is_countable($products) ? count($products) : 0;
+        $productsLabel = $productCount === 1 ? '1 producto' : "{$productCount} productos";
 
         return match ($subType) {
-            'in_transit' => "La compra {$purchaseRef} de {$supplierName} ({$productCount} productos) está en camino.",
-            'received'   => "La compra {$purchaseRef} de {$supplierName} ({$productCount} productos) fue recibida.",
+            'in_transit' => "La compra {$purchaseRef} de {$supplierName} ({$productsLabel}) está en camino.",
+            'received'   => "La compra {$purchaseRef} de {$supplierName} ({$productsLabel}) fue recibida.",
             default      => "La compra {$purchaseRef} de {$supplierName} fue actualizada.",
         };
     }

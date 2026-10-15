@@ -14,6 +14,15 @@ use InvalidArgumentException;
 
 class TaskService
 {
+    /** Permiso que hace falta para resolver cada tipo de tarea automática. */
+    private const TASK_PERMISSIONS = [
+        'receive_purchase' => 'purchases_update',
+        'approve_transfer' => 'transfers_update',
+        'send_transfer'    => 'transfers_update',
+        'receive_transfer' => 'transfers_update',
+        'stock_check'      => 'inventory_manage',
+    ];
+
     public function __construct() {}
 
     /**
@@ -41,7 +50,7 @@ class TaskService
             'metadata' => [
                 'inventory_count_id' => $count->id,
                 'discrepancies' => $discrepancies,
-                'count_date' => $count->count_date,
+                'count_date' => $count->count_date?->toDateString(),
             ],
         ]);
 
@@ -77,7 +86,9 @@ class TaskService
             'type' => 'receive_purchase',
             'priority' => 'high',
             'assigned_by' => $purchase->user_id,
-            'due_date' => $purchase->expected_delivery_date ?? now()->addDays(3),
+            // Fin del día esperado: medianoche se ve como "el día anterior" en
+            // sucursales al oeste del servidor (Guayabitos, UTC-7).
+            'due_date' => $purchase->expected_delivery_date?->copy()->endOfDay() ?? now()->addDays(3),
             'related_type' => PurchaseV2::class,
             'related_id' => $purchase->id,
             'metadata' => [
@@ -121,7 +132,7 @@ class TaskService
         $task = Task::create([
             'company_id' => $purchase->company_id,
             'location_id' => $purchase->location_id,
-            'title' => "Revisar diferencias de recepcion compra {$purchase->purchase_number}",
+            'title' => "Revisar diferencias de recepción compra {$purchase->purchase_number}",
             'description' => "Se detectaron {$discrepanciesCount} diferencia(s) al recibir la compra de {$supplierName}.\n\n{$lines}",
             'type' => 'stock_check',
             'priority' => $discrepanciesCount > 5 ? 'urgent' : 'high',
@@ -389,9 +400,6 @@ class TaskService
         ]);
     }
 
-    /**
-     * Generate recurring tasks that are due
-     */
     public function generateDueRecurringTasks(): int
     {
         $recurringTasks = Task::recurring()
@@ -404,38 +412,113 @@ class TaskService
         $generated = 0;
 
         foreach ($recurringTasks as $task) {
-            $task->generateNextOccurrence();
+            $newTask = $task->generateNextOccurrence();
+            if (!$newTask) {
+                continue;
+            }
             $generated++;
+
+            if ($newTask->assigned_to) {
+                NotificationEngine::dispatch('task_event', $newTask->company_id, [
+                    'task'       => $newTask,
+                    'sub_type'   => 'assigned',
+                    'actor_name' => 'Sistema',
+                ], userId: $newTask->assigned_to);
+            } else {
+                $this->autoAssignTask($newTask);
+            }
         }
 
         return $generated;
     }
 
     /**
-     * Auto-assign task to appropriate user
+     * Asigna la tarea a quien puede resolverla y le avisa.
+     *
+     * Antes se elegía al usuario con menos pendientes entre todos los de la
+     * sucursal, sin mirar permisos: "Aprobar transferencia" o "Recibir compra"
+     * caían en cajeros que ni siquiera ven la pantalla de tareas, y el
+     * encargado nunca se enteraba.
      */
+    /** Asigna (por permiso) y avisa una tarea creada fuera de este servicio. */
+    public function assignAndNotify(Task $task): void
+    {
+        $this->autoAssignTask($task);
+    }
+
     private function autoAssignTask(Task $task): void
     {
-        $users = User::where('is_active', true)
-            ->whereHas('companies', fn($q) => $q->where('companies.id', $task->company_id))
-            ->when($task->location_id, fn($q) => $q->whereHas('locationRoles', fn($locationQuery) => $locationQuery->where('locations.id', $task->location_id)))
-            ->get();
+        $assignee = $this->resolveAssignee($task);
 
-        // Assign to user with fewest pending tasks
-        $assignedUser = $users->sortBy(function ($user) {
-            return $user->assignedTasks()->pending()->count();
-        })->first();
-
-        if ($assignedUser) {
-            $task->update(['assigned_to' => $assignedUser->id]);
-
-            // Send notification
-            NotificationEngine::dispatch('task_event', $task->company_id, [
-                'task'       => $task,
-                'sub_type'   => 'assigned',
-                'actor_name' => 'Sistema',
-            ], userId: $assignedUser->id);
+        if (!$assignee) {
+            Log::warning('Tarea sin responsable: nadie con permiso en la sucursal', [
+                'task_id'     => $task->id,
+                'type'        => $task->type,
+                'location_id' => $task->location_id,
+            ]);
+            return;
         }
+
+        $task->update(['assigned_to' => $assignee->id]);
+
+        NotificationEngine::dispatch('task_event', $task->company_id, [
+            'task'       => $task,
+            'sub_type'   => 'assigned',
+            'actor_name' => 'Sistema',
+        ], userId: $assignee->id);
+    }
+
+    /**
+     * Quien puede resolver la tarea: primero el personal de la sucursal con el
+     * permiso (encargados); si no hay, cualquiera con el permiso en esa
+     * sucursal (administradores); si tampoco, cualquiera de la empresa con el
+     * permiso. Entre ellos, el que tenga menos tareas abiertas.
+     */
+    private function resolveAssignee(Task $task): ?User
+    {
+        $permission = self::TASK_PERMISSIONS[$task->type] ?? 'tasks_update';
+
+        $candidates = $this->usersWithPermission($task, $permission, $task->location_id, branchRolesOnly: true);
+
+        if ($candidates->isEmpty() && $task->location_id) {
+            $candidates = $this->usersWithPermission($task, $permission, $task->location_id, branchRolesOnly: false);
+        }
+
+        if ($candidates->isEmpty()) {
+            $candidates = $this->usersWithPermission($task, $permission, null, branchRolesOnly: false);
+        }
+
+        return $candidates
+            ->sortBy(fn(User $user) => Task::where('assigned_to', $user->id)
+                ->whereIn('status', ['pending', 'in_progress'])
+                ->count())
+            ->first();
+    }
+
+    /** @return \Illuminate\Support\Collection<int, User> */
+    private function usersWithPermission(Task $task, string $permission, ?int $locationId, bool $branchRolesOnly)
+    {
+        return User::query()
+            ->where('users.is_active', true)
+            ->whereHas('companies', fn($q) => $q->where('companies.id', $task->company_id))
+            ->whereExists(function ($sub) use ($permission, $locationId, $branchRolesOnly) {
+                $sub->selectRaw('1')
+                    ->from('user_location_roles')
+                    ->join('roles', 'roles.id', '=', 'user_location_roles.role_id')
+                    ->join('rol_permission', 'rol_permission.role_id', '=', 'roles.id')
+                    ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
+                    ->whereColumn('user_location_roles.user_id', 'users.id')
+                    ->where('permissions.name', $permission);
+
+                if ($locationId) {
+                    $sub->where('user_location_roles.location_id', $locationId);
+                }
+
+                if ($branchRolesOnly) {
+                    $sub->where(fn($q) => $q->whereNull('roles.is_system')->orWhere('roles.is_system', false));
+                }
+            })
+            ->get();
     }
 
     /**
@@ -452,105 +535,54 @@ class TaskService
     }
 
     /**
-     * Auto-assign to location manager
+     * Avisos programados (cada hora): "vence pronto" cuando falta menos de un
+     * día y "vencida" cuando ya pasó la fecha. Cada aviso sale una sola vez por
+     * tarea. El status no se toca: una tarea vencida sigue pendiente o en
+     * proceso (is_overdue lo indica), así no desaparece de esas listas.
+     *
+     * @return array{due_soon: int, overdue: int}
      */
-    private function autoAssignToManager(Task $task): void
+    public function notifyDueTasks(): array
     {
-        $manager = User::where('is_active', true)
-            ->whereHas('companies', fn($q) => $q->where('companies.id', $task->company_id))
-            ->when($task->location_id, fn($q) => $q->whereHas('locationRoles', fn($locationQuery) => $locationQuery->where('locations.id', $task->location_id)))
-            ->where(function ($q) use ($task) {
-                $q->whereHas('roles', fn($roleQuery) => $roleQuery->where('name', 'manager'))
-                    ->orWhereExists(function ($subquery) use ($task) {
-                        $subquery->selectRaw('1')
-                            ->from('user_location_roles')
-                            ->join('roles', 'user_location_roles.role_id', '=', 'roles.id')
-                            ->whereColumn('user_location_roles.user_id', 'users.id')
-                            ->where('roles.name', 'manager');
+        $open = fn() => Task::query()
+            ->whereIn('status', ['pending', 'in_progress'])
+            ->whereNotNull('assigned_to')
+            ->whereNotNull('due_date');
 
-                        if ($task->location_id) {
-                            $subquery->where('user_location_roles.location_id', $task->location_id);
-                        }
-                    });
-            })
-            ->first();
+        $overdue = 0;
+        $open()->where('due_date', '<', now())
+            ->whereNull('overdue_notified_at')
+            ->chunkById(100, function ($tasks) use (&$overdue) {
+                foreach ($tasks as $task) {
+                    NotificationEngine::dispatch('task_event', $task->company_id, [
+                        'task'       => $task,
+                        'sub_type'   => 'overdue',
+                        'actor_name' => 'Sistema',
+                    ], userId: $task->assigned_to);
+                    // Si ya venció, el "vence pronto" ya no tiene caso.
+                    $task->forceFill([
+                        'overdue_notified_at'  => now(),
+                        'due_soon_notified_at' => $task->due_soon_notified_at ?? now(),
+                    ])->save();
+                    $overdue++;
+                }
+            });
 
-        if ($manager) {
-            $task->update(['assigned_to' => $manager->id]);
+        $dueSoon = 0;
+        $open()->whereBetween('due_date', [now(), now()->addDay()])
+            ->whereNull('due_soon_notified_at')
+            ->chunkById(100, function ($tasks) use (&$dueSoon) {
+                foreach ($tasks as $task) {
+                    NotificationEngine::dispatch('task_event', $task->company_id, [
+                        'task'       => $task,
+                        'sub_type'   => 'due_soon',
+                        'actor_name' => 'Sistema',
+                    ], userId: $task->assigned_to);
+                    $task->forceFill(['due_soon_notified_at' => now()])->save();
+                    $dueSoon++;
+                }
+            });
 
-            // Send notification
-            NotificationEngine::dispatch('task_event', $task->company_id, [
-                'task'       => $task,
-                'sub_type'   => 'assigned',
-                'actor_name' => 'Sistema',
-            ], userId: $manager->id);
-        } else {
-            // Fallback to any admin
-            $this->autoAssignTask($task);
-        }
-    }
-
-    /**
-     * Mark task as overdue if past due date
-     */
-    public function markOverdueTasks(): int
-    {
-        return Task::overdue()
-            ->update(['status' => 'overdue']);
-    }
-
-    /**
-     * Send reminders for tasks due soon
-     */
-    public function sendDueTaskReminders(): int
-    {
-        $tasks = Task::pending()
-            ->whereBetween('due_date', [now(), now()->addDay()])
-            ->with('assignedTo')
-            ->get();
-
-        $sent = 0;
-
-        foreach ($tasks as $task) {
-            if ($task->assignedTo) {
-                NotificationEngine::dispatch('task_event', $task->company_id, [
-                    'task'       => $task,
-                    'sub_type'   => 'overdue',
-                    'actor_name' => 'Sistema',
-                ], userId: $task->assignedTo->id);
-                $sent++;
-            }
-        }
-
-        return $sent;
-    }
-
-    /**
-     * Notificar asignación de tarea de revisión de discrepancias
-     */
-    public function notifyDiscrepanciesTaskCreated(Task $task, InventoryCount $inventoryCount, array $discrepancies): void
-    {
-        try {
-            $discrepanciesCount = count($discrepancies);
-
-            // Notificar solo al usuario asignado (assigned_to)
-            if ($task->assigned_to) {
-                NotificationEngine::dispatch('task_event', $inventoryCount->company_id, [
-                    'task'       => $task,
-                    'sub_type'   => 'assigned',
-                    'actor_name' => 'Sistema',
-                ], userId: $task->assigned_to);
-            }
-
-            Log::info('Discrepancies task assignment notification sent', [
-                'task_id' => $task->id,
-                'assigned_to' => $task->assigned_to,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Error notifying discrepancies task assignment', [
-                'task_id' => $task->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
+        return ['due_soon' => $dueSoon, 'overdue' => $overdue];
     }
 }

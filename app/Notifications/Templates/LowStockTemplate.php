@@ -9,33 +9,53 @@ class LowStockTemplate extends BaseNotificationTemplate
         return 'low_stock';
     }
 
-    public function getSeverity(): string
-    {
-        return 'warning';
-    }
-
     public function getDefaultPermission(): string
     {
         return 'inventory_manage';
+    }
+
+    public function getSeverity(): string
+    {
+        return $this->isOutOfStock() ? 'error' : 'warning';
     }
 
     public function getTitle(): string
     {
         $product = $this->context['product'] ?? null;
         $name    = $product?->name ?? 'Producto';
-        return "Stock Bajo: {$name}";
+
+        return $this->isOutOfStock() ? "Agotado: {$name}" : "Stock bajo: {$name}";
     }
 
     public function getMessage(): string
     {
         $product      = $this->context['product']       ?? null;
         $location     = $this->context['location']      ?? null;
-        $current      = $this->context['current_stock'] ?? 0;
-        $minimum      = $this->context['minimum_stock'] ?? 0;
         $productName  = $product?->name   ?? 'Producto';
-        $locationName = $location?->name  ?? 'Ubicación';
+        $locationName = $location?->name  ?? 'la sucursal';
+        $unit         = $this->context['unit'] ?? null;
 
-        return "El producto '{$productName}' en '{$locationName}' tiene {$current} unidades, por debajo del mínimo de {$minimum}.";
+        if ($this->isOutOfStock()) {
+            return "Se agotó '{$productName}' en {$locationName}.";
+        }
+
+        $current = self::quantity($this->context['current_stock'] ?? 0, $unit);
+        $minimum = self::quantity($this->context['minimum_stock'] ?? 0, $unit);
+
+        return "Quedan {$current} de '{$productName}' en {$locationName}; el mínimo es {$minimum}.";
+    }
+
+    private function isOutOfStock(): bool
+    {
+        return (float) ($this->context['current_stock'] ?? 0) <= 0;
+    }
+
+    /** 12.000 → "12 pz"; 2.500 → "2.5 kg" (sin ceros de sobra). */
+    private static function quantity(float|int|string $value, ?string $unit): string
+    {
+        $number = rtrim(rtrim(number_format((float) $value, 3, '.', ','), '0'), '.');
+
+        return $unit ? "{$number} {$unit}" : $number;
     }
 
     public function getEmailView(): string

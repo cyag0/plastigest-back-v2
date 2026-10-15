@@ -178,10 +178,12 @@ Route::middleware('auth:sanctum')->group(function () {
             });
             Route::apiResource('notifications', NotificationController::class);
 
-            // Preferencias de notificaciones por empresa
+            // Preferencias de notificaciones por empresa (con scope=location,
+            // las de la sucursal actual)
             Route::prefix('notification-preferences')->group(function () {
                 Route::get('/', [NotificationPreferenceController::class, 'index']);
                 Route::patch('{eventType}', [NotificationPreferenceController::class, 'update']);
+                Route::delete('{eventType}', [NotificationPreferenceController::class, 'destroy']);
                 Route::post('reset', [NotificationPreferenceController::class, 'reset']);
                 Route::get('{eventType}/eligible-users', [NotificationPreferenceController::class, 'eligibleUsers']);
             });

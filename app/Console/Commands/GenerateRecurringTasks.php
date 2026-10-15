@@ -38,13 +38,9 @@ class GenerateRecurringTasks extends Command
 
         $this->info("Generated {$generated} recurring tasks.");
 
-        // Mark overdue tasks
-        $overdue = $this->taskService->markOverdueTasks();
-        $this->info("Marked {$overdue} tasks as overdue.");
-
-        // Send reminders
-        $reminders = $this->taskService->sendDueTaskReminders();
-        $this->info("Sent {$reminders} task reminders.");
+        // Los avisos de tareas por vencer / vencidas los envía cada hora
+        // `notifications:scheduled` (antes aquí se cambiaba el status a
+        // "overdue" sin avisar a nadie).
 
         return Command::SUCCESS;
     }

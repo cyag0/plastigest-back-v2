@@ -26,6 +26,7 @@ class TaskEventTemplate extends BaseNotificationTemplate
             'assigned'  => "Nueva tarea asignada: {$taskTitle}",
             'completed' => "Tarea completada: {$taskTitle}",
             'overdue'   => "Tarea vencida: {$taskTitle}",
+            'due_soon'  => "Vence pronto: {$taskTitle}",
             'comment'   => "{$actorName} comentó en: {$taskTitle}",
             default     => "Actualización de tarea: {$taskTitle}",
         };
@@ -41,9 +42,19 @@ class TaskEventTemplate extends BaseNotificationTemplate
         return match ($subType) {
             'assigned'  => "{$actorName} te asignó la tarea '{$taskTitle}'.",
             'completed' => "{$actorName} marcó como completada la tarea '{$taskTitle}'.",
-            'overdue'   => "La tarea '{$taskTitle}' ha pasado su fecha límite.",
+            'overdue'   => "La tarea '{$taskTitle}' ya pasó su fecha límite.",
+            'due_soon'  => "La tarea '{$taskTitle}' vence en menos de un día.",
             'comment'   => "{$actorName} dejó un comentario en '{$taskTitle}'.",
             default     => "La tarea '{$taskTitle}' fue actualizada.",
+        };
+    }
+
+    public function getSeverity(): string
+    {
+        return match ($this->context['sub_type'] ?? '') {
+            'overdue'   => 'warning',
+            'completed' => 'success',
+            default     => 'info',
         };
     }
 

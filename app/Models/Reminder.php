@@ -37,10 +37,10 @@ class Reminder extends Model
     ];
 
     protected $casts = [
-        'reminder_date' => 'date',
+        'reminder_date' => 'date:Y-m-d',
         'reminder_time' => 'datetime',
         'completed_at' => 'datetime',
-        'recurrence_end_date' => 'date',
+        'recurrence_end_date' => 'date:Y-m-d',
         'last_notified_at' => 'datetime',
         'is_recurring' => 'boolean',
         'notify_enabled' => 'boolean',

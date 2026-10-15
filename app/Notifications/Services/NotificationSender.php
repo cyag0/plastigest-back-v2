@@ -18,25 +18,29 @@ class NotificationSender
     ) {}
 
     /**
-     * Send the notification to all configured channels for this company+event.
+     * Send the notification to all configured channels for this company+event
+     * (the location's channels when the location customized the event).
      * Each channel is fully independent — a failure in one does not block the others.
      */
     public function send(
         NotificationTemplateInterface $template,
         User $user,
-        int $companyId
+        int $companyId,
+        ?int $locationId = null,
     ): void {
-        $pref = NotificationPreference::where('company_id', $companyId)
-            ->where('event_type', $template->getEventType())
-            ->first();
+        $pref = NotificationPreference::effective($companyId, $template->getEventType(), $locationId);
 
-        // Defaults: all channels enabled when no preference is saved
-        $channelDb    = $pref?->channel_db    ?? true;
-        $channelEmail = $pref?->channel_email ?? true;
-        $channelPush  = $pref?->channel_push  ?? true;
+        // Sin preferencia guardada se usan los mismos valores por defecto que
+        // muestra la pantalla de Preferencias (antes aquí todo era true y se
+        // mandaba correo de cada evento aunque la pantalla dijera lo contrario).
+        $defaults     = NotificationPreference::getDefaults()[$template->getEventType()] ?? [];
+        $channelDb    = $pref?->channel_db    ?? ($defaults['channel_db'] ?? true);
+        $channelEmail = $pref?->channel_email ?? ($defaults['channel_email'] ?? false);
+        $channelPush  = $pref?->channel_push  ?? ($defaults['channel_push'] ?? true);
 
+        $inAppId = null;
         if ($channelDb) {
-            $this->sendToDb($template, $user, $companyId);
+            $inAppId = $this->sendToDb($template, $user, $companyId);
         }
 
         if ($channelEmail) {
@@ -44,16 +48,17 @@ class NotificationSender
         }
 
         if ($channelPush) {
-            $this->sendPush($template, $user, $companyId);
+            $this->sendPush($template, $user, $companyId, $inAppId);
         }
     }
 
-    private function sendToDb(NotificationTemplateInterface $template, User $user, int $companyId): void
+    /** @return int|null id de la notificación en la bandeja */
+    private function sendToDb(NotificationTemplateInterface $template, User $user, int $companyId): ?int
     {
         try {
             $notifiable = $template->getNotifiable();
 
-            Notification::create([
+            return Notification::create([
                 'user_id'          => $user->id,
                 'company_id'       => $companyId,
                 'event_type'       => $template->getEventType(),
@@ -65,13 +70,15 @@ class NotificationSender
                 'delivery_status'  => 'sent',
                 'notifiable_type'  => $notifiable ? get_class($notifiable) : null,
                 'notifiable_id'    => $notifiable?->id,
-            ]);
+            ])->id;
         } catch (\Throwable $e) {
             Log::error('NotificationSender: DB channel failed', [
                 'event_type' => $template->getEventType(),
                 'user_id'    => $user->id,
                 'error'      => $e->getMessage(),
             ]);
+
+            return null;
         }
     }
 
@@ -138,7 +145,7 @@ class NotificationSender
         }
     }
 
-    private function sendPush(NotificationTemplateInterface $template, User $user, int $companyId): void
+    private function sendPush(NotificationTemplateInterface $template, User $user, int $companyId, ?int $inAppId = null): void
     {
         $notifiable = $template->getNotifiable();
 
@@ -157,11 +164,17 @@ class NotificationSender
         ]);
 
         try {
+            // notification_id: al tocar el push la app marca como leída la
+            // misma notificación de la bandeja.
             $result = $this->firebase->sendToUser(
                 $user->id,
                 $template->getPushTitle(),
                 $template->getPushBody(),
-                $template->getPushData()
+                array_merge($template->getPushData(), array_filter([
+                    'notification_id' => $inAppId,
+                    // Para no abrir un registro de otra empresa que la actual.
+                    'company_id'      => $companyId,
+                ]))
             );
 
             $record->update([
