@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Enums\AdjustmentReasonCode;
+use App\Exceptions\BusinessRuleException;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\InventoryCountResource;
 use App\Models\InventoryAdjustmentDetail;
@@ -168,6 +169,39 @@ class InventoryCountController extends CrudController
             DB::rollBack();
             throw $e;
         }
+    }
+
+    /**
+     * Actualiza el encabezado del conteo con la fila bloqueada (process() ya
+     * abrió la transacción).
+     *
+     * - Un conteo completado o cancelado ya no cambia de estado: el
+     *   completado ya aplicó sus diferencias y el cancelado las descartó.
+     *   Antes un PUT con status=completed sobre un conteo cancelado aplicaba
+     *   sus diferencias, y uno con status=counting reabría un completado.
+     *   Repetir el mismo estado sigue respondiendo bien (idempotente).
+     * - La sucursal no se cambia: el conteo es de la sucursal donde se creó
+     *   y sus diferencias se aplican ahí (antes location_id aceptaba
+     *   cualquier sucursal, incluso de otra empresa).
+     */
+    public function edit(array $data, int $id): Model
+    {
+        $inventoryCount = $this->scopedQuery()->lockForUpdate()->find($id);
+        if (!$inventoryCount) {
+            abort(404, 'Recurso no encontrado');
+        }
+
+        unset($data['location_id']);
+
+        $closed = in_array($inventoryCount->status, ['completed', 'cancelled'], true);
+        if ($closed && isset($data['status']) && $data['status'] !== $inventoryCount->status) {
+            $state = $inventoryCount->status === 'completed' ? 'completado' : 'cancelado';
+            throw new BusinessRuleException("Este conteo ya está {$state}; no se puede cambiar su estado.", 'count_closed');
+        }
+
+        $inventoryCount->update($data);
+
+        return $inventoryCount;
     }
 
     public function completeInventory(InventoryCount $inventoryCount)
