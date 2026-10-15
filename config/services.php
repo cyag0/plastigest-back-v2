@@ -42,7 +42,9 @@ return [
     'whatsapp' => [
         'access_token' => env('WHATSAPP_CLOUD_API_TOKEN'),
         'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
-        'verify_token' => env('WHATSAPP_VERIFY_TOKEN', 'plastigest_webhook_token'),
+        // Token que Meta manda al verificar el webhook. Sin valor por defecto:
+        // si falta, la verificación se rechaza (el webhook queda apagado).
+        'verify_token' => env('WHATSAPP_VERIFY_TOKEN'),
         // App secret de Meta para validar la firma X-Hub-Signature-256 de los
         // webhooks entrantes. Sin esto cualquiera podía forjar un webhook.
         'app_secret' => env('WHATSAPP_APP_SECRET'),
