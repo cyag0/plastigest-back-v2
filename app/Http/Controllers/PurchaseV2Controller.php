@@ -16,11 +16,14 @@ use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use App\Utils\AppUploadUtil;
 use App\Constants\Files;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Validation\Rule;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Exception;
 
@@ -29,6 +32,55 @@ class PurchaseV2Controller extends Controller
     public function __construct(
         private TaskService $taskService
     ) {}
+
+    /**
+     * Compras que el usuario puede tocar: las de la empresa actual y de su
+     * sucursal actual; quien ve todas las sucursales, las de cualquier
+     * sucursal de la empresa. Toda acción sobre una compra por id pasa por
+     * aquí: confirmar, marcar en tránsito, cancelar y editar renglones la
+     * buscaban solo por id y se podía actuar sobre la compra de otra sucursal
+     * (o de otra empresa).
+     */
+    private function purchases(): Builder
+    {
+        return PurchaseV2::query()
+            ->where('company_id', CurrentCompany::id())
+            ->when(
+                !CurrentWorker::canAccessAllLocations(),
+                fn($q) => $q->where('location_id', CurrentLocation::id())
+            );
+    }
+
+    /**
+     * Renglón de una compra que el usuario puede tocar (ver purchases()).
+     */
+    private function findDetail($detailId): ?PurchaseDetailV2
+    {
+        return PurchaseDetailV2::query()
+            ->whereIn('purchase_id', $this->purchases()->select('id'))
+            ->find($detailId);
+    }
+
+    /**
+     * Regla "existe en la tabla y es de la empresa actual" (productos,
+     * empaques, proveedores).
+     */
+    private function companyRule(string $table): \Illuminate\Validation\Rules\Exists
+    {
+        return Rule::exists($table, 'id')->where('company_id', CurrentCompany::id());
+    }
+
+    /**
+     * 404 de una compra (o renglón) que no existe o que el usuario no puede
+     * ver: no se confirma que exista en otra sucursal.
+     */
+    private function purchaseNotFound(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Compra no encontrada',
+        ], 404);
+    }
 
     /**
      * Crear o actualizar una compra en estado draft
@@ -45,22 +97,25 @@ class PurchaseV2Controller extends Controller
             $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
         }
 
-        try {
-            $validated = $request->validate([
-                'purchase_id' => 'nullable|exists:purchases,id',
-                'supplier_id' => 'nullable|exists:suppliers,id',
-                'notes' => 'nullable|string',
-                'payment_method' => 'nullable|in:cash,card,transfer,other',
-                'paid_from_cash' => 'nullable|boolean',
-                'items' => 'nullable|array',
-                'items.*.id' => 'required_with:items|string',
-                'items.*.product_id' => 'required_with:items|integer|exists:products,id',
-                'items.*.package_id' => 'nullable|integer|exists:product_packages,id',
-                'items.*.quantity' => 'required_with:items|numeric|min:0.0001',
-                'items.*.unit_id' => 'required_with:items|integer|exists:units,id',
-                'items.*.price' => 'required_with:items|numeric|min:0',
-            ]);
+        // Fuera del try: un dato inválido es un 422 con el detalle por campo.
+        // Productos, empaques y proveedores tienen que ser de la empresa: una
+        // compra de un producto ajeno sumaba stock (y kárdex) a otra empresa.
+        $validated = $request->validate([
+            'purchase_id' => 'nullable|exists:purchases,id',
+            'supplier_id' => ['nullable', $this->companyRule('suppliers')],
+            'notes' => 'nullable|string',
+            'payment_method' => 'nullable|in:cash,card,transfer,other',
+            'paid_from_cash' => 'nullable|boolean',
+            'items' => 'nullable|array',
+            'items.*.id' => 'required_with:items|string',
+            'items.*.product_id' => ['required_with:items', 'integer', $this->companyRule('products')],
+            'items.*.package_id' => ['nullable', 'integer', $this->companyRule('product_packages')],
+            'items.*.quantity' => 'required_with:items|numeric|min:0.0001',
+            'items.*.unit_id' => 'required_with:items|integer|exists:units,id',
+            'items.*.price' => 'required_with:items|numeric|min:0',
+        ]);
 
+        try {
             DB::beginTransaction();
 
             $companyId = CurrentCompany::get()->id;
@@ -219,12 +274,8 @@ class PurchaseV2Controller extends Controller
         }
 
         try {
-            $companyId = CurrentCompany::get()->id;
-            $locationId = CurrentLocation::get()->id;
-
-            $purchase = PurchaseV2::where('id', $id)
-                ->where('company_id', $companyId)
-                ->where('location_id', $locationId)
+            $purchase = $this->purchases()
+                ->where('id', $id)
                 ->with(['details.product.mainImage', 'details.package', 'details.unit', 'supplier'])
                 ->firstOrFail();
 
@@ -301,40 +352,64 @@ class PurchaseV2Controller extends Controller
             $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
         }
 
+        // Fuera del try: un dato inválido es un 422 con el detalle por campo,
+        // no un "Error al confirmar la compra" 500.
+        $validated = $request->validate([
+            'expected_delivery_date' => 'nullable|date|after_or_equal:today',
+            'document_number' => 'nullable|string|max:255',
+            'payment_method' => 'nullable|in:cash,card,transfer,other',
+            // ¿El dinero salió de la caja? Si no, al recibir no se registra
+            // egreso en el corte.
+            'paid_from_cash' => 'nullable|boolean',
+            // El encabezado se puede editar sobre un borrador ya creado.
+            'supplier_id' => ['nullable', $this->companyRule('suppliers')],
+            'purchase_date' => 'nullable|date',
+        ]);
+
         try {
-            $validated = $request->validate([
-                'expected_delivery_date' => 'nullable|date|after_or_equal:today',
-                'document_number' => 'nullable|string|max:255',
-                'payment_method' => 'nullable|in:cash,card,transfer,other',
-                // ¿El dinero salió de la caja? Si no, al recibir no se registra
-                // egreso en el corte.
-                'paid_from_cash' => 'nullable|boolean',
-                // El encabezado se puede editar sobre un borrador ya creado.
-                'supplier_id' => 'nullable|exists:suppliers,id',
-                'purchase_date' => 'nullable|date',
-            ]);
+            $result = DB::transaction(function () use ($id, $validated) {
+                // Con la fila bloqueada: un doble envío confirmaba dos veces y
+                // le mandaba el pedido por WhatsApp dos veces al proveedor.
+                $purchase = $this->purchases()->lockForUpdate()->find($id);
 
-            $purchase = PurchaseV2::draft()->findOrFail($id);
+                if (!$purchase) {
+                    return $this->purchaseNotFound();
+                }
 
-            if ($purchase->details()->count() === 0) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No se puede confirmar una compra sin productos'
-                ], 422);
+                if ($purchase->status !== PurchaseV2::STATUS_DRAFT) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Solo se puede confirmar una compra en borrador.',
+                    ], 422);
+                }
+
+                if ($purchase->details()->count() === 0) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No se puede confirmar una compra sin productos'
+                    ], 422);
+                }
+
+                $purchase->appendStatusLog(PurchaseV2::STATUS_ORDERED, Auth::id());
+
+                $purchase->update([
+                    'status' => PurchaseV2::STATUS_ORDERED,
+                    'expected_delivery_date' => $validated['expected_delivery_date'] ?? null,
+                    'document_number' => $validated['document_number'] ?? null,
+                    'payment_method' => $validated['payment_method'] ?? $purchase->payment_method ?? 'other',
+                    'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
+                    'supplier_id' => $validated['supplier_id'] ?? $purchase->supplier_id,
+                    'purchase_date' => $validated['purchase_date'] ?? $purchase->purchase_date,
+                ]);
+
+                return $purchase;
+            });
+
+            if ($result instanceof JsonResponse) {
+                return $result;
             }
 
-            $purchase->appendStatusLog(PurchaseV2::STATUS_ORDERED, Auth::id());
-
-            $purchase->update([
-                'status' => PurchaseV2::STATUS_ORDERED,
-                'expected_delivery_date' => $validated['expected_delivery_date'] ?? null,
-                'document_number' => $validated['document_number'] ?? null,
-                'payment_method' => $validated['payment_method'] ?? $purchase->payment_method ?? 'other',
-                'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
-                'supplier_id' => $validated['supplier_id'] ?? $purchase->supplier_id,
-                'purchase_date' => $validated['purchase_date'] ?? $purchase->purchase_date,
-            ]);
-
+            $purchase = $result;
             $whatsappSent = $this->sendOrderToSupplier($purchase);
 
             return response()->json([
@@ -362,13 +437,36 @@ class PurchaseV2Controller extends Controller
         }
 
         try {
-            $purchase = PurchaseV2::ordered()->findOrFail($id);
+            $result = DB::transaction(function () use ($id) {
+                $purchase = $this->purchases()->lockForUpdate()->find($id);
 
-            $purchase->appendStatusLog(PurchaseV2::STATUS_IN_TRANSIT, Auth::id());
+                if (!$purchase) {
+                    return $this->purchaseNotFound();
+                }
 
-            $purchase->update([
-                'status' => PurchaseV2::STATUS_IN_TRANSIT,
-            ]);
+                // Puede que el proveedor ya haya contestado por WhatsApp y el
+                // webhook la haya pasado a tránsito.
+                if ($purchase->status !== PurchaseV2::STATUS_ORDERED) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Solo se puede marcar en tránsito una compra pedida.',
+                    ], 422);
+                }
+
+                $purchase->appendStatusLog(PurchaseV2::STATUS_IN_TRANSIT, Auth::id());
+
+                $purchase->update([
+                    'status' => PurchaseV2::STATUS_IN_TRANSIT,
+                ]);
+
+                return $purchase;
+            });
+
+            if ($result instanceof JsonResponse) {
+                return $result;
+            }
+
+            $purchase = $result;
 
             try {
                 $this->taskService->createFromPurchaseV2($purchase);
@@ -405,119 +503,128 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $validated = $request->validate([
+            'details' => 'required|array',
+            'details.*.id' => 'required|distinct|exists:purchase_details,id',
+            'details.*.quantity_received' => 'required|numeric|min:0',
+        ]);
+
         try {
-            $validated = $request->validate([
-                'details' => 'required|array',
-                'details.*.id' => 'required|distinct|exists:purchase_details,id',
-                'details.*.quantity_received' => 'required|numeric|min:0',
-            ]);
+            $result = DB::transaction(fn() => $this->receivePurchase($id, $validated['details']));
 
-            DB::beginTransaction();
-
-            // Bloqueo de fila + relectura del estado: sin esto, un doble envío
-            // (doble clic / dos dispositivos) recibía la compra dos veces y
-            // sumaba stock y caja por duplicado. Aislado por empresa/sucursal.
-            $purchase = PurchaseV2::where('id', $id)
-                ->where('company_id', CurrentCompany::id())
-                ->where('location_id', CurrentLocation::id())
-                ->lockForUpdate()
-                ->firstOrFail();
-
-            if ($purchase->status !== PurchaseV2::STATUS_IN_TRANSIT) {
-                DB::rollBack();
-                return response()->json([
-                    'success' => false,
-                    'message' => 'La compra ya fue recibida o no está en tránsito.',
-                ], 422);
+            if ($result instanceof JsonResponse) {
+                return $result;
             }
-
-            $movementService = new MovementService();
-
-            // Actualizar cantidades recibidas e incrementar stock
-            foreach ($validated['details'] as $detailData) {
-                $detail = $purchase->details()->findOrFail($detailData['id']);
-                $detail->update([
-                    'quantity_received' => $detailData['quantity_received'],
-                    'received_at' => now(),
-                ]);
-
-                // Incrementar stock usando MovementService
-                $movementService->increment(
-                    $purchase->location_id,
-                    $detail->product_id,
-                    $detail->unit_id,
-                    $detail->quantity_received,
-                    $detail->package_id,
-                    StockContext::for(StockLedgerReason::PURCHASE, $purchase)
-                );
-            }
-
-            $purchase->appendStatusLog(PurchaseV2::STATUS_RECEIVED, Auth::id());
-
-            $purchase->update([
-                'status' => PurchaseV2::STATUS_RECEIVED,
-                'delivery_date' => now(),
-                'received_by' => Auth::id(),
-            ]);
-
-            // Registrar egreso en caja
-            CashMovementService::fromPurchaseV2($purchase);
-
-            // Notificar recepción de compra
-            $purchase->load(['supplier', 'details.product']);
-
-            $discrepancies = $purchase->details
-                ->filter(function ($detail) {
-                    return (float) $detail->quantity_received < (float) $detail->quantity;
-                })
-                ->map(function ($detail) {
-                    return [
-                        'detail_id' => $detail->id,
-                        'product_id' => $detail->product_id,
-                        'product_name' => $detail->product?->name ?? 'Producto',
-                        'ordered_quantity' => (float) $detail->quantity,
-                        'received_quantity' => (float) $detail->quantity_received,
-                    ];
-                })
-                ->values()
-                ->toArray();
-
-            try {
-                $this->taskService->completeRelatedTask(
-                    PurchaseV2::class,
-                    (int) $purchase->id,
-                    'receive_purchase',
-                    Auth::id() ? (int) Auth::id() : null
-                );
-
-                if ($discrepancies !== []) {
-                    $this->taskService->createPurchaseDiscrepancyTask($purchase, $discrepancies);
-                }
-            } catch (Exception $taskException) {
-                Log::warning('Could not sync tasks after PurchaseV2 receive', [
-                    'purchase_id' => $purchase->id,
-                    'error' => $taskException->getMessage(),
-                ]);
-            }
-
-            // Sale al confirmar la transacción (NotificationEngine::afterCommit).
-            PurchaseUpdateTemplate::dispatchFor($purchase, 'received', Auth::id());
-
-            DB::commit();
 
             return response()->json([
                 'success' => true,
                 'message' => 'Compra recibida exitosamente',
-                'data' => $purchase->fresh(['details']),
+                'data' => $result->fresh(['details']),
             ]);
         } catch (Exception $e) {
-            DB::rollBack();
             Log::error('Error al recibir la compra', ['exception' => get_class($e), 'message' => $e->getMessage()]);
             return response()->json([
                 'success' => false,
                 'message' => 'Error al recibir la compra',
             ], 500);
         }
+    }
+
+    /**
+     * Recepción dentro de la transacción de receive(). Devuelve la compra
+     * recibida o la respuesta de error (404 / 422).
+     */
+    private function receivePurchase($id, array $lines): PurchaseV2|JsonResponse
+    {
+        // Bloqueo de fila + relectura del estado: sin esto, un doble envío
+        // (doble clic / dos dispositivos) recibía la compra dos veces y
+        // sumaba stock y caja por duplicado. Aislado por empresa/sucursal.
+        $purchase = $this->purchases()->lockForUpdate()->find($id);
+
+        if (!$purchase) {
+            return $this->purchaseNotFound();
+        }
+
+        if ($purchase->status !== PurchaseV2::STATUS_IN_TRANSIT) {
+            return response()->json([
+                'success' => false,
+                'message' => 'La compra ya fue recibida o no está en tránsito.',
+            ], 422);
+        }
+
+        $movementService = new MovementService();
+
+        // Actualizar cantidades recibidas e incrementar stock
+        foreach ($lines as $detailData) {
+            $detail = $purchase->details()->findOrFail($detailData['id']);
+            $detail->update([
+                'quantity_received' => $detailData['quantity_received'],
+                'received_at' => now(),
+            ]);
+
+            // Incrementar stock usando MovementService
+            $movementService->increment(
+                $purchase->location_id,
+                $detail->product_id,
+                $detail->unit_id,
+                $detail->quantity_received,
+                $detail->package_id,
+                StockContext::for(StockLedgerReason::PURCHASE, $purchase)
+            );
+        }
+
+        $purchase->appendStatusLog(PurchaseV2::STATUS_RECEIVED, Auth::id());
+
+        $purchase->update([
+            'status' => PurchaseV2::STATUS_RECEIVED,
+            'delivery_date' => now(),
+            'received_by' => Auth::id(),
+        ]);
+
+        // Registrar egreso en caja
+        CashMovementService::fromPurchaseV2($purchase);
+
+        // Notificar recepción de compra
+        $purchase->load(['supplier', 'details.product']);
+
+        $discrepancies = $purchase->details
+            ->filter(function ($detail) {
+                return (float) $detail->quantity_received < (float) $detail->quantity;
+            })
+            ->map(function ($detail) {
+                return [
+                    'detail_id' => $detail->id,
+                    'product_id' => $detail->product_id,
+                    'product_name' => $detail->product?->name ?? 'Producto',
+                    'ordered_quantity' => (float) $detail->quantity,
+                    'received_quantity' => (float) $detail->quantity_received,
+                ];
+            })
+            ->values()
+            ->toArray();
+
+        try {
+            $this->taskService->completeRelatedTask(
+                PurchaseV2::class,
+                (int) $purchase->id,
+                'receive_purchase',
+                Auth::id() ? (int) Auth::id() : null
+            );
+
+            if ($discrepancies !== []) {
+                $this->taskService->createPurchaseDiscrepancyTask($purchase, $discrepancies);
+            }
+        } catch (Exception $taskException) {
+            Log::warning('Could not sync tasks after PurchaseV2 receive', [
+                'purchase_id' => $purchase->id,
+                'error' => $taskException->getMessage(),
+            ]);
+        }
+
+        // Sale al confirmar la transacción (NotificationEngine::afterCommit).
+        PurchaseUpdateTemplate::dispatchFor($purchase, 'received', Auth::id());
+
+        return $purchase;
     }
 
     /**
@@ -529,17 +636,18 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        try {
-            $validated = $request->validate([
-                'purchase_id' => 'nullable|exists:purchases,id',
-                'supplier_id' => 'nullable|exists:suppliers,id',
-                'product_id' => 'required|integer|exists:products,id',
-                'package_id' => 'nullable|integer|exists:product_packages,id',
-                'quantity' => 'required|numeric|min:0.0001',
-                'unit_id' => 'required|integer|exists:units,id',
-                'price' => 'required|numeric|min:0',
-            ]);
+        // Fuera del try y de la empresa, como en upsertDraft().
+        $validated = $request->validate([
+            'purchase_id' => 'nullable|exists:purchases,id',
+            'supplier_id' => ['nullable', $this->companyRule('suppliers')],
+            'product_id' => ['required', 'integer', $this->companyRule('products')],
+            'package_id' => ['nullable', 'integer', $this->companyRule('product_packages')],
+            'quantity' => 'required|numeric|min:0.0001',
+            'unit_id' => 'required|integer|exists:units,id',
+            'price' => 'required|numeric|min:0',
+        ]);
 
+        try {
             DB::beginTransaction();
 
             $companyId = CurrentCompany::get()->id;
@@ -609,41 +717,51 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $validated = $request->validate([
+            'quantity' => 'nullable|numeric|min:0.0001',
+            'unit_id' => 'nullable|integer|exists:units,id',
+            'price' => 'nullable|numeric|min:0',
+        ]);
+
+        $detail = $this->findDetail($detailId);
+        if (!$detail) {
+            return $this->purchaseNotFound();
+        }
+
         try {
-            $validated = $request->validate([
-                'quantity' => 'nullable|numeric|min:0.0001',
-                'unit_id' => 'nullable|integer|exists:units,id',
-                'price' => 'nullable|numeric|min:0',
-            ]);
+            $purchase = DB::transaction(function () use ($detail, $validated) {
+                // Bloqueada como al confirmar: el cambio entra antes de la
+                // confirmación o se rechaza, no a medias.
+                $purchase = PurchaseV2::query()->lockForUpdate()->find($detail->purchase_id);
 
-            DB::beginTransaction();
+                // Verificar que la compra esté en draft
+                if ($purchase->status !== PurchaseV2::STATUS_DRAFT) {
+                    return null;
+                }
 
-            $detail = PurchaseDetailV2::findOrFail($detailId);
-            $purchase = $detail->purchase;
+                // Actualizar campos enviados
+                if (isset($validated['quantity'])) {
+                    $detail->quantity = $validated['quantity'];
+                }
+                if (isset($validated['unit_id'])) {
+                    $detail->unit_id = $validated['unit_id'];
+                }
+                if (isset($validated['price'])) {
+                    $detail->unit_price = $validated['price'];
+                }
 
-            // Verificar que la compra esté en draft
-            if ($purchase->status !== PurchaseV2::STATUS_DRAFT) {
+                $detail->save();
+                $purchase->updateTotal();
+
+                return $purchase;
+            });
+
+            if (!$purchase) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Solo se pueden modificar compras en borrador',
                 ], 400);
             }
-
-            // Actualizar campos enviados
-            if (isset($validated['quantity'])) {
-                $detail->quantity = $validated['quantity'];
-            }
-            if (isset($validated['unit_id'])) {
-                $detail->unit_id = $validated['unit_id'];
-            }
-            if (isset($validated['price'])) {
-                $detail->unit_price = $validated['price'];
-            }
-
-            $detail->save();
-            $purchase->updateTotal();
-
-            DB::commit();
 
             return response()->json([
                 'success' => true,
@@ -655,7 +773,6 @@ class PurchaseV2Controller extends Controller
                 ],
             ]);
         } catch (Exception $e) {
-            DB::rollBack();
             return response()->json([
                 'success' => false,
                 'message' => 'Error al actualizar producto',
@@ -673,24 +790,32 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $detail = $this->findDetail($detailId);
+        if (!$detail) {
+            return $this->purchaseNotFound();
+        }
+
         try {
-            DB::beginTransaction();
+            $purchase = DB::transaction(function () use ($detail) {
+                $purchase = PurchaseV2::query()->lockForUpdate()->find($detail->purchase_id);
 
-            $detail = PurchaseDetailV2::findOrFail($detailId);
-            $purchase = $detail->purchase;
+                // Verificar que la compra esté en draft
+                if ($purchase->status !== PurchaseV2::STATUS_DRAFT) {
+                    return null;
+                }
 
-            // Verificar que la compra esté en draft
-            if ($purchase->status !== PurchaseV2::STATUS_DRAFT) {
+                $detail->delete();
+                $purchase->updateTotal();
+
+                return $purchase;
+            });
+
+            if (!$purchase) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Solo se pueden modificar compras en borrador',
                 ], 400);
             }
-
-            $detail->delete();
-            $purchase->updateTotal();
-
-            DB::commit();
 
             return response()->json([
                 'success' => true,
@@ -700,7 +825,6 @@ class PurchaseV2Controller extends Controller
                 ],
             ]);
         } catch (Exception $e) {
-            DB::rollBack();
             return response()->json([
                 'success' => false,
                 'message' => 'Error al eliminar producto',
@@ -718,15 +842,19 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $purchase = $this->purchases()->find($id);
+        if (!$purchase) {
+            return $this->purchaseNotFound();
+        }
+
+        if (!in_array($purchase->status, [PurchaseV2::STATUS_DRAFT, PurchaseV2::STATUS_CANCELLED], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Solo se pueden eliminar compras en borrador o canceladas.',
+            ], 422);
+        }
+
         try {
-            $companyId = CurrentCompany::get()->id;
-            $locationId = CurrentLocation::get()->id;
-
-            $purchase = PurchaseV2::where('company_id', $companyId)
-                ->where('location_id', $locationId)
-                ->whereIn('status', [PurchaseV2::STATUS_DRAFT, PurchaseV2::STATUS_CANCELLED])
-                ->findOrFail($id);
-
             $purchase->details()->delete();
             $purchase->delete();
 
@@ -752,26 +880,49 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:500',
+        ]);
+
         try {
-            $validated = $request->validate([
-                'reason' => 'nullable|string|max:500',
-            ]);
+            $result = DB::transaction(function () use ($id, $validated) {
+                // Bloqueada: una compra que se está recibiendo no se cancela a
+                // la mitad (ni al revés).
+                $purchase = $this->purchases()->lockForUpdate()->find($id);
 
-            $purchase = PurchaseV2::whereIn('status', [
-                PurchaseV2::STATUS_DRAFT,
-                PurchaseV2::STATUS_ORDERED,
-                PurchaseV2::STATUS_IN_TRANSIT
-            ])->findOrFail($id);
+                if (!$purchase) {
+                    return $this->purchaseNotFound();
+                }
 
-            $purchase->appendStatusLog(
-                PurchaseV2::STATUS_CANCELLED,
-                Auth::id(),
-                $validated['reason'] ?? null
-            );
+                if (!in_array($purchase->status, [
+                    PurchaseV2::STATUS_DRAFT,
+                    PurchaseV2::STATUS_ORDERED,
+                    PurchaseV2::STATUS_IN_TRANSIT,
+                ], true)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Esta compra ya no se puede cancelar: está recibida o cancelada.',
+                    ], 422);
+                }
 
-            $purchase->update([
-                'status' => PurchaseV2::STATUS_CANCELLED,
-            ]);
+                $purchase->appendStatusLog(
+                    PurchaseV2::STATUS_CANCELLED,
+                    Auth::id(),
+                    $validated['reason'] ?? null
+                );
+
+                $purchase->update([
+                    'status' => PurchaseV2::STATUS_CANCELLED,
+                ]);
+
+                return $purchase;
+            });
+
+            if ($result instanceof JsonResponse) {
+                return $result;
+            }
+
+            $purchase = $result;
 
             try {
                 $this->taskService->cancelRelatedTasks(
@@ -819,21 +970,18 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $validated = $request->validate([
+            'resolution' => 'required|in:credit_note,adjustment,no_action,other',
+            'notes' => 'nullable|string|max:1000',
+            'adjustment_id' => 'nullable|integer|exists:movements,id',
+        ]);
+
+        $purchase = $this->purchases()->find($id);
+        if (!$purchase) {
+            return $this->purchaseNotFound();
+        }
+
         try {
-            $validated = $request->validate([
-                'resolution' => 'required|in:credit_note,adjustment,no_action,other',
-                'notes' => 'nullable|string|max:1000',
-                'adjustment_id' => 'nullable|integer|exists:movements,id',
-            ]);
-
-            $companyId = CurrentCompany::get()->id;
-            $locationId = CurrentLocation::get()->id;
-
-            $purchase = PurchaseV2::where('id', $id)
-                ->where('company_id', $companyId)
-                ->where('location_id', $locationId)
-                ->firstOrFail();
-
             // Solo tiene sentido resolver la discrepancia de una compra recibida.
             if ($purchase->status !== PurchaseV2::STATUS_RECEIVED) {
                 return response()->json([
@@ -1061,14 +1209,14 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        // Validar que la compra pertenece a la compañía actual (anti-IDOR cross-tenant).
+        $purchase = $this->purchases()->find($id);
+        if (!$purchase) {
+            return $this->purchaseNotFound();
+        }
+
         try {
             $companyId = CurrentCompany::id();
-            $locationId = CurrentLocation::get()?->id;
-
-            // Validar que la compra pertenece a la compañía actual (anti-IDOR cross-tenant).
-            $purchase = PurchaseV2::where('company_id', $companyId)
-                ->where('location_id', $locationId)
-                ->findOrFail($id);
 
             $signedUrl = URL::temporarySignedRoute(
                 'purchases-v2.pdf',
