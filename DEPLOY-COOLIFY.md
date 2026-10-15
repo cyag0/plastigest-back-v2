@@ -258,6 +258,7 @@ Cloudflare DNS:
 - [ ] `api.cocos-francisco.com` → registro **A** a la IP del VPS.
   - Ponlo en **DNS only** (nube gris) la primera vez para que Coolify/Let's Encrypt emita el cert sin interferencia.
   - Una vez emitido, puedes proxearlo (nube naranja) con SSL mode **Full (strict)** en Cloudflare.
+  - Con la nube naranja la API sigue viendo la IP real de cada usuario (límites de intentos del login, logs): confía en los rangos de Cloudflare de `config/trustedproxy.php` y lee `CF-Connecting-IP` (middleware `RestoreCloudflareClientIp`). Si Cloudflare publica rangos nuevos (https://www.cloudflare.com/ips/), actualiza esa lista.
 - [ ] `app.cocos-francisco.com` → lo crea Cloudflare Pages al añadir el *Custom domain* (Fase 9).
 - [ ] (Opcional) `coolify.cocos-francisco.com` → **A** a la IP, para el panel.
 - [ ] **Correo (Fase 7.5):** los **TXT de SPF y DKIM** del proveedor + **DMARC** en `_dmarc.cocos-francisco.com`. Van **DNS only** (no se proxean). Sin ellos los correos caen en spam.

@@ -20,7 +20,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // en la web y tráfico en claro bloqueado en Android. El contenedor solo
         // es accesible a través del proxy; si nginx da la cara directamente
         // (DEPLOY.md), nginx debe vaciar los X-Forwarded-* entrantes.
-        $middleware->trustProxies(at: '*');
+        // La lista (ese salto más los rangos de Cloudflare) está en
+        // config/trustedproxy.php, que TrustProxies lee en cada petición.
+        // Con la API detrás de Cloudflare, la IP real sale de
+        // CF-Connecting-IP (ver RestoreCloudflareClientIp).
+        $middleware->append(\App\Http\Middleware\RestoreCloudflareClientIp::class);
 
         // No hay pantalla de login web: un invitado en la API recibe 401 en
         // JSON en vez de un intento de redirigir a la ruta "login" (500).
