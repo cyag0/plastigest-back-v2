@@ -3,7 +3,7 @@
 Runbook para sacar el beta a producción montando el servidor **a mano** sobre un VPS. Stack detectado:
 
 - **Backend:** Laravel 12, PHP 8.2+, Sanctum (token Bearer), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00), PDFs con dompdf, push con Firebase (kreait).
-- **Frontend:** Expo 54 / Expo Router (web `output: "static"`). API por `EXPO_PUBLIC_API_URL`.
+- **Frontend:** Expo SDK 56 / Expo Router (web `output: "single"`, SPA). API por `EXPO_PUBLIC_API_URL`.
 - **Objetivo:** 8 sucursales, ~30 usuarios en total. Pico concurrente ~24 (3 por sucursal), realista ~8. Carga pequeña: el VPS va sobrado.
 
 > **Estado:** el VPS ya está aprovisionado → `vps3451515.trouble-free.net` (Contabo). Ya no hay que crear servidor (Fase 1.1). Falta el hardening del SO, el dominio y todo el stack. Ver **"Qué falta"** al final.
@@ -121,6 +121,7 @@ EXIT;
    APP_ENV=production
    APP_DEBUG=false
    APP_URL=https://api.cocos-francisco.com
+   APP_TIMEZONE=America/Mexico_City
 
    DB_CONNECTION=mysql
    DB_HOST=127.0.0.1
@@ -132,13 +133,22 @@ EXIT;
    QUEUE_CONNECTION=database
    CACHE_STORE=database
    SESSION_DRIVER=database
+   SESSION_SECURE_COOKIE=true
    FILESYSTEM_DISK=local
+   TELESCOPE_ENABLED=false
+   SANCTUM_TOKEN_EXPIRATION=43200
+   # NO definir SANCTUM_STATEFUL_DOMAINS (la API es solo Bearer)
 
    FRONTEND_URL=https://app.cocos-francisco.com
 
-   # Firebase (ajusta al nombre real de la var que lee tu FirebaseService)
+   # Solo para el primer seed (crea el Super Admin); mínimo 12 caracteres
+   ADMIN_EMAIL=admin@cocos-francisco.com
+   ADMIN_PASSWORD=<contraseña-larga>
+
+   # Firebase: ruta ABSOLUTA del JSON (config/services.php → services.firebase.credentials)
    FIREBASE_CREDENTIALS=/var/www/plastigest/storage/app/firebase/credentials.json
    ```
+   La plantilla completa y comentada está en `.env.production.example`.
 3. [ ] Subir el JSON de Firebase a esa ruta (con `scp` desde tu máquina):
    ```bash
    scp credentials.json deploy@IP:/var/www/plastigest/storage/app/firebase/credentials.json
@@ -147,11 +157,12 @@ EXIT;
 4. [ ] Migraciones, seeders de referencia y enlace de storage:
    ```bash
    php artisan migrate --force
-   php artisan db:seed --class=PermissionSeeder --force
-   php artisan db:seed --class=UnitsSeeder --force
-   # SOLO los seeders de referencia que necesites; NO los de datos demo
+   php artisan db:seed --class=CompaniesSeeder --force   # solo con la BD vacía: empresa + 8 sucursales reales (se niega si ya hay datos)
+   php artisan db:seed --force                           # recursos, permisos, unidades y Super Admin (requiere ADMIN_PASSWORD)
+   php artisan db:seed --class=InitialCatalogSeeder --force   # una vez: catálogo real (categorías, proveedores, productos, paquetes) con stock en 0
    php artisan storage:link
    ```
+   > En producción `db:seed` solo corre los seeders de referencia (nunca catálogos ni datos demo) y es seguro repetirlo. Córrelo **antes** del `config:cache` del paso 6: con la config cacheada, `ADMIN_PASSWORD` del `.env` ya no se lee.
 5. [ ] Permisos para que Nginx/PHP puedan escribir:
    ```bash
    sudo chown -R deploy:www-data storage bootstrap/cache
@@ -163,7 +174,7 @@ EXIT;
    php artisan route:cache
    php artisan view:cache
    ```
-7. [ ] Crear el primer usuario admin / empresa / 8 sucursales (seeder propio o `php artisan tinker`).
+7. [ ] Entrar con `ADMIN_EMAIL` / `ADMIN_PASSWORD` (creados en el paso 4 junto con la empresa y las 8 sucursales), cambiar la contraseña y quitar `ADMIN_PASSWORD` del `.env`.
 
 ---
 
@@ -178,23 +189,44 @@ EXIT;
 
        index index.php;
        charset utf-8;
+       server_tokens off;
+
+       add_header X-Frame-Options "SAMEORIGIN";
+       add_header X-Content-Type-Options "nosniff";
+
+       gzip on;
+       gzip_vary on;
+       gzip_min_length 1024;
+       gzip_types application/json application/javascript text/css text/plain;
 
        location / {
            try_files $uri $uri/ /index.php?$query_string;
        }
 
-       client_max_body_size 20M;   # subidas de imágenes de productos
+       # Fotos de 5 MB c/u, varias por petición. PHP-FPM toma sus límites de
+       # public/.user.ini (upload_max_filesize=6M, post_max_size=30M).
+       client_max_body_size 30M;
 
        location ~ \.php$ {
            fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
            fastcgi_index index.php;
            fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
            include fastcgi_params;
+           # La app confía en el proxy (bootstrap/app.php: trustProxies '*').
+           # Aquí nginx da la cara directamente: se descartan los X-Forwarded-*
+           # que mande el cliente (si no, podría falsear su IP y saltarse el
+           # rate limit del login) y se informa el esquema real.
+           fastcgi_param HTTP_X_FORWARDED_FOR "";
+           fastcgi_param HTTP_X_FORWARDED_HOST "";
+           fastcgi_param HTTP_X_FORWARDED_PORT "";
+           fastcgi_param HTTP_X_FORWARDED_PROTO $scheme;
+           fastcgi_hide_header X-Powered-By;
        }
 
        location ~ /\.(?!well-known).* { deny all; }
    }
    ```
+   > Si luego proxeas `api.` con Cloudflare (nube naranja), agrega `set_real_ip_from` con los rangos de Cloudflare y `real_ip_header CF-Connecting-IP;` para que la IP del cliente siga siendo la real.
 2. [ ] Activar y recargar:
    ```bash
    sudo ln -s /etc/nginx/sites-available/plastigest /etc/nginx/sites-enabled/
@@ -222,7 +254,7 @@ After=network.target mysql.service
 User=deploy
 Group=www-data
 Restart=always
-ExecStart=/usr/bin/php /var/www/plastigest/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+ExecStart=/usr/bin/php /var/www/plastigest/artisan queue:work --queue=notifications,default --sleep=3 --tries=3 --timeout=60 --max-time=3600
 WorkingDirectory=/var/www/plastigest
 
 [Install]
@@ -233,24 +265,20 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now plastigest-worker
 sudo systemctl status plastigest-worker     # verificar que está "active (running)"
 ```
+> `--queue=notifications,default` es obligatorio: las notificaciones (push, correo, in-app) van a la cola `notifications` y el resto (reset de contraseña, cierre de caja) a `default`; sin la primera, las notificaciones nunca salen. El worker usa el mismo `.env` y necesita el JSON de Firebase en la ruta de `FIREBASE_CREDENTIALS` (los push salen desde el worker). `--timeout` (60 s) debe quedar por debajo de `retry_after` (90 s).
 
 **Scheduler** vía cron. `crontab -e` (como `deploy`) y agregar:
 ```cron
 * * * * * cd /var/www/plastigest && php artisan schedule:run >> /dev/null 2>&1
 ```
-Esto dispara `tasks:generate-recurring` a las 06:00.
+Esto dispara `tasks:generate-recurring` a las 06:00 y las limpiezas nocturnas `queue:prune-failed` (03:30) y `sanctum:prune-expired` (03:45), definidas en `routes/console.php`.
 
 ---
 
 ## Fase 7 — CORS
 
-1. [ ] En `config/cors.php`, restringir el origen a la web:
-   ```php
-   'allowed_origins' => [env('FRONTEND_URL', 'https://app.cocos-francisco.com')],
-   'allowed_headers' => ['*'],       // cubre Authorization, X-Company-ID, X-Location-ID
-   'supports_credentials' => false,  // usamos token Bearer, no cookies
-   ```
-2. [ ] Commit + en el VPS: `git pull`, `php artisan config:cache`. (Cambios en config requieren re-cachear.)
+- [x] Resuelto en `config/cors.php`: en `production` solo se permite `FRONTEND_URL` (sin orígenes ni patrones de dev); si no está puesta, se bloquea todo.
+- [ ] Requisito: `FRONTEND_URL=https://app.cocos-francisco.com` exacto (sin `/` final) en el `.env`, y `php artisan config:cache` tras cambiarlo.
 
 ---
 
@@ -258,7 +286,7 @@ Esto dispara `tasks:generate-recurring` a las 06:00.
 
 La app **sí manda correos** y hay que configurarlos: recuperación de contraseña con OTP (`PasswordResetMail`), notificaciones (`GenericNotificationMail`) y el **cierre de caja con PDF adjunto** (`CashClosingMail`, `CashClosingController@…`).
 
-> ⚠️ **Importante:** estos correos se envían **sincrónicos** (`Mail::to(...)->send(...)`, no `->queue(...)`). Si el SMTP está mal o lento, la **petición HTTP se bloquea o falla** (p. ej. el cierre de caja). No basta con "dejarlo para después": sin `MAIL_*` válidos, esas acciones rompen en producción. (Mejora futura: pasar estos envíos a la cola con `->queue()`, ya hay worker en la Fase 6.)
+> ⚠️ **Importante:** el reset de contraseña y el cierre de caja se **encolan** (`Mail::to(...)->queue(...)`) y las notificaciones salen desde un job de la cola `notifications`: todo lo envía el **queue worker** (Fase 6). Sin worker corriendo (con `--queue=notifications,default`) o sin `MAIL_*` válidos, los correos se quedan en `jobs` o terminan en `failed_jobs`. El PDF del corte viaja en base64 dentro del job (el payload de la cola es JSON).
 
 En dev se usa **MailHog** (contenedor del `docker-compose.yml`, SMTP `1025`, UI `8025`). En producción hay que apuntar a un proveedor real.
 
@@ -284,7 +312,7 @@ En dev se usa **MailHog** (contenedor del `docker-compose.yml`, SMTP `1025`, UI 
    MAIL_MAILER=smtp
    MAIL_HOST=smtp.tu-proveedor.com
    MAIL_PORT=587
-   MAIL_SCHEME=tls            # o "ssl" para puerto 465
+   MAIL_SCHEME=smtp           # STARTTLS automático en 587; "smtps" para el 465. "tls"/"ssl" NO son válidos en Laravel 12
    MAIL_USERNAME=<usuario>
    MAIL_PASSWORD=<password / app-password>
    MAIL_FROM_ADDRESS="no-reply@mail.cocos-francisco.com"
@@ -327,13 +355,14 @@ Para el beta el disco local del VPS (80 GB) sirve. Si quieres sacar imágenes/PD
    ```env
    EXPO_PUBLIC_API_URL=https://api.cocos-francisco.com/api
    EXPO_PUBLIC_APP_ENV=production
-   EXPO_PUBLIC_APP_NAME=PlastiGest
+   EXPO_PUBLIC_APP_NAME=GCStock
    EXPO_PUBLIC_APP_VERSION=1.0.0
    EXPO_PUBLIC_FIREBASE_API_KEY=...
    EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=...
    EXPO_PUBLIC_FIREBASE_PROJECT_ID=...
    ```
-4. [ ] Deploy. Si rutas dinámicas (`sales/[id]`) dan 404 al recargar, agregar fallback SPA (servir `index.html` en 404).
+   > Son **obligatorias**: `.env` no está en el repo y, sin `EXPO_PUBLIC_API_URL`, el build apunta a `http://localhost/api`.
+4. [ ] Deploy. La web es una SPA (`output: "single"`): `public/_redirects` ya sirve `index.html` en cualquier ruta, así que recargar `sales/[id]` no da 404.
 
 ---
 
@@ -351,10 +380,14 @@ Cloudflare DNS (el dominio ya está en Cloudflare, solo creas registros):
 Script `/home/deploy/backup.sh`:
 ```bash
 #!/bin/bash
+set -e
 DATE=$(date +%F)
 mysqldump -u plastigest -p'CONTRASEÑA_FUERTE' plastigest | gzip > /home/deploy/backups/plastigest-$DATE.sql.gz
-# Subir a R2/S3 con rclone o aws-cli, y borrar locales > 14 días
-find /home/deploy/backups -name "*.sql.gz" -mtime +14 -delete
+# Archivos subidos (imágenes, evidencias, recibos) y el JSON de Firebase
+tar czf /home/deploy/backups/storage-$DATE.tar.gz -C /var/www/plastigest/storage app
+# Subir a R2/S3 (rclone configurado con el token S3 de R2), y borrar locales > 14 días
+rclone copy /home/deploy/backups r2:plastigest-backups/ --include "*-$DATE.*"
+find /home/deploy/backups -name "*.gz" -mtime +14 -delete
 ```
 ```bash
 mkdir -p /home/deploy/backups
@@ -449,10 +482,10 @@ Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez
 - [ ] Crear BD `plastigest` + usuario.
 - [ ] Clonar repo, `composer install --no-dev`, `.env` de producción, `key:generate`.
 - [ ] Subir el **JSON de Firebase** por `scp` (nunca al repo) y apuntar `FIREBASE_CREDENTIALS`.
-- [ ] `migrate --force` + seeders de **referencia** (Permission, Units), `storage:link`, permisos `www-data`, `config/route/view:cache`.
-- [ ] Crear admin + empresa + 8 sucursales.
-- [ ] Nginx server block + Certbot SSL.
-- [ ] systemd `plastigest-worker` (cola) + cron del scheduler.
+- [ ] `migrate --force` + `db:seed --class=CompaniesSeeder --force` + `db:seed --force` (con `ADMIN_PASSWORD`), `storage:link`, permisos `www-data`, `config/route/view:cache`.
+- [ ] Entrar como Super Admin y cambiar la contraseña; quitar `ADMIN_PASSWORD` del `.env`.
+- [ ] Nginx server block (con `client_max_body_size 30M` y los `X-Forwarded-*` vaciados) + Certbot SSL.
+- [ ] systemd `plastigest-worker` (cola, `--queue=notifications,default`) + cron del scheduler.
 
 **Frontend / DNS (Fases 9-10)**
 - [ ] Cloudflare Pages conectado a `plastigest-app-v3` con `EXPO_PUBLIC_*` de producción.
@@ -464,11 +497,11 @@ Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez
 - [ ] Prueba real: reset de contraseña (OTP) y cierre de caja con PDF adjunto llegan a la bandeja.
 
 **Operación / go-live (Fases 11-14)**
-- [ ] Backups con `mysqldump` + subida a R2/S3 y **restauración probada**.
+- [ ] Backups con `mysqldump` + `storage/app` + subida a R2/S3 y **restauración probada**.
 - [ ] `APP_DEBUG=false`, CORS restringido al dominio real (no `*`).
 - [ ] Verificar **fix de doble-venta** desplegado y `console.log` de debug limpiados.
 - [ ] Prueba de humo completa (Fase 13).
 
 **Decisiones resueltas**
 - ✅ **Dominio:** `cocos-francisco.com` (comprado en Cloudflare). Ya aplicado a `APP_URL`, `FRONTEND_URL`, CORS, certs y vars del frontend en todo el plan.
-- ✅ **Correo:** sí requiere proveedor en producción (los envíos son síncronos; ver Fase 7.5). Recomendado **Resend**; falta solo crear la cuenta, la API key y los DNS.
+- ✅ **Correo:** sí requiere proveedor en producción (los envíos van por la cola y los manda el worker; ver Fase 7.5). Recomendado **Resend**; falta solo crear la cuenta, la API key y los DNS.
