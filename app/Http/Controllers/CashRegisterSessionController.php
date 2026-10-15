@@ -11,6 +11,7 @@ use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 
 /**
@@ -47,11 +48,14 @@ class CashRegisterSessionController extends Controller
                 $query->where($filter, $request->input($filter));
             }
         }
+        // Rangos sobre opened_at (índice sucursal + apertura); whereDate() lo
+        // envolvía en DATE() y no lo usaba.
+        $request->validate(['date_from' => 'nullable|date', 'date_to' => 'nullable|date']);
         if ($request->filled('date_from')) {
-            $query->whereDate('opened_at', '>=', $request->date_from);
+            $query->where('opened_at', '>=', Carbon::parse($request->date_from)->startOfDay());
         }
         if ($request->filled('date_to')) {
-            $query->whereDate('opened_at', '<=', $request->date_to);
+            $query->where('opened_at', '<', Carbon::parse($request->date_to)->startOfDay()->addDay());
         }
 
         $page = $query->paginate((int) $request->input('per_page', 20));
@@ -154,7 +158,13 @@ class CashRegisterSessionController extends Controller
             return response()->json(['message' => 'Turno no encontrado.'], 404);
         }
 
+        // El propio turno, o el de otro cajero con cash_registers_update en esa
+        // sucursal (o con acceso a todas). Antes un encargado podía cerrar el
+        // turno de cualquier sucursal de la empresa.
         $own = $session->user_id === Auth::id() && CurrentWorker::hasPermission('sales_pos');
+        if (!$own && !$this->isInMyBranch($session)) {
+            return response()->json(['message' => 'Turno no encontrado.'], 404);
+        }
         if (!$own && !CurrentWorker::hasPermission('cash_registers_update')) {
             return response()->json(['message' => 'Solo el cajero del turno o un administrador pueden cerrarlo.'], 403);
         }
@@ -168,7 +178,11 @@ class CashRegisterSessionController extends Controller
         ]);
     }
 
-    /** El propio turno, o cualquiera de la compañía para quien tiene permiso de consulta. */
+    /**
+     * El propio turno, o uno de la sucursal actual (de cualquiera, con acceso
+     * a todas las sucursales) para quien tiene permiso de consulta. Antes se
+     * podía ver el turno de cualquier sucursal de la empresa.
+     */
     private function findForViewing(int $id): ?CashRegisterSession
     {
         $session = CashRegisterSession::with(self::RELATIONS)
@@ -180,10 +194,16 @@ class CashRegisterSessionController extends Controller
         }
 
         $own = $session->user_id === Auth::id();
-        if (!$own && !CurrentWorker::hasPermission('cash_register_sessions_read')) {
+        if (!$own && (!CurrentWorker::hasPermission('cash_register_sessions_read') || !$this->isInMyBranch($session))) {
             return null;
         }
 
         return $session;
+    }
+
+    /** ¿El turno es de la sucursal actual (o el usuario ve todas)? */
+    private function isInMyBranch(CashRegisterSession $session): bool
+    {
+        return CurrentWorker::canAccessAllLocations() || (int) $session->location_id === (int) CurrentLocation::id();
     }
 }

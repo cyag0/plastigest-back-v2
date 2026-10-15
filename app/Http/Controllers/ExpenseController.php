@@ -3,19 +3,24 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Support\Facades\DB;
+use App\Exceptions\BusinessRuleException;
 use App\Services\CashMovementService;
 use App\Http\Resources\ExpenseResource;
 use App\Models\Expense;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
+use App\Support\Money;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 
 class ExpenseController extends Controller
 {
+    private const MONEY_EDIT = 'cambiar el monto, el método de pago, la fecha ni "pagado con caja"';
+
     /**
      * Display a listing of expenses.
      */
@@ -36,9 +41,11 @@ class ExpenseController extends Controller
             $query->where('location_id', $locationId);
         }
 
-        // Filtrar por fecha
-        if ($request->has('expense_date')) {
-            $query->whereDate('expense_date', $request->expense_date);
+        // Filtrar por fecha (expense_date es DATE: comparación directa, que
+        // usa el índice; whereDate() lo envolvía en DATE() y no lo usaba).
+        $request->validate(['expense_date' => 'nullable|date']);
+        if ($request->filled('expense_date')) {
+            $query->where('expense_date', Carbon::parse($request->expense_date)->toDateString());
         }
 
         // Filtrar por rango de fechas (acepta ambas nomenclaturas)
@@ -49,18 +56,19 @@ class ExpenseController extends Controller
             $query->whereBetween('expense_date', [$startDate, $endDate]);
         }
 
-        // Filtrar por categoría
-        if ($request->has('category')) {
+        // Filtros con valor: "Todas" llega vacío (?category=) y con has() se
+        // filtraba por categoría NULL, así que la lista salía vacía.
+        if ($request->filled('category')) {
             $query->where('category', $request->category);
         }
 
         // Filtrar por método de pago
-        if ($request->has('payment_method')) {
+        if ($request->filled('payment_method')) {
             $query->where('payment_method', $request->payment_method);
         }
 
         // Búsqueda por descripción
-        if ($request->has('search')) {
+        if ($request->filled('search')) {
             $query->where('description', 'like', '%' . $request->search . '%');
         }
 
@@ -149,11 +157,7 @@ class ExpenseController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $companyId = CurrentCompany::id();
-
-        $expense = Expense::with(['user', 'location', 'company'])
-            ->where('company_id', $companyId)
-            ->findOrFail($id);
+        $expense = $this->branchQuery()->with(['user', 'location', 'company'])->findOrFail($id);
 
         return new ExpenseResource($expense);
     }
@@ -167,9 +171,7 @@ class ExpenseController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $companyId = CurrentCompany::id();
-
-        $expense = Expense::where('company_id', $companyId)->findOrFail($id);
+        $expense = $this->branchQuery()->findOrFail($id);
 
         // Llega como "true"/"false" (FormData) o 1/0; boolean() acepta todos.
         if ($request->filled('paid_from_cash')) {
@@ -198,6 +200,14 @@ class ExpenseController extends Controller
             unset($data['paid_from_cash']);
         }
 
+        // Solo el monto, el método, la fecha o "pagado con caja" mueven la caja.
+        // La app manda el formulario completo: lo que llega igual a lo guardado
+        // no cuenta como cambio.
+        $moneyChanged = $this->moneyFieldsChanged($expense, $data);
+        if ($moneyChanged && CashMovementService::expenseInClosedShift($expense)) {
+            return $this->closedShiftException(self::MONEY_EDIT)->render();
+        }
+
         // Manejar nueva imagen de recibo
         if ($request->hasFile('receipt_image')) {
             // Eliminar imagen anterior si existe
@@ -208,9 +218,20 @@ class ExpenseController extends Controller
                 ->store('expenses/receipts', 'public');
         }
 
-        DB::transaction(function () use ($expense, $data) {
+        DB::transaction(function () use ($expense, $data, $moneyChanged) {
+            // Se vuelve a revisar con el turno bloqueado: un cierre simultáneo
+            // espera, o el cambio ve el turno ya cerrado y se rechaza.
+            if ($moneyChanged && CashMovementService::expenseInClosedShift($expense, true)) {
+                throw $this->closedShiftException(self::MONEY_EDIT);
+            }
+
             $expense->update($data);
-            CashMovementService::syncExpense($expense->fresh());
+
+            // Antes se borraba y recreaba el egreso en cada edición, aunque solo
+            // cambiara la descripción (y aunque su turno ya estuviera cerrado).
+            if ($moneyChanged) {
+                CashMovementService::syncExpense($expense->fresh());
+            }
         });
         $expense->load(['user', 'location']);
 
@@ -226,23 +247,75 @@ class ExpenseController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $companyId = CurrentCompany::id();
+        $expense = $this->branchQuery()->findOrFail($id);
 
-        $expense = Expense::where('company_id', $companyId)->findOrFail($id);
-
-        // Eliminar imagen de recibo si existe
-        if ($expense->receipt_image) {
-            Storage::disk('public')->delete($expense->receipt_image);
+        if (CashMovementService::expenseInClosedShift($expense)) {
+            return $this->closedShiftException('eliminarlo')->render();
         }
 
         DB::transaction(function () use ($expense) {
+            if (CashMovementService::expenseInClosedShift($expense, true)) {
+                throw $this->closedShiftException('eliminarlo');
+            }
+
             CashMovementService::removeExpense($expense);
             $expense->delete();
         });
 
+        // La imagen se borra hasta que el gasto ya no existe.
+        if ($expense->receipt_image) {
+            Storage::disk('public')->delete($expense->receipt_image);
+        }
+
         return response()->json([
             'message' => 'Gasto eliminado correctamente'
         ]);
+    }
+
+    /**
+     * Gastos de la empresa y de la sucursal actual (todas, para quien tiene
+     * acceso a todas las sucursales). Antes ver, editar o borrar un gasto solo
+     * revisaba la empresa: se podía cambiar el de otra sucursal (y su caja).
+     */
+    private function branchQuery()
+    {
+        return Expense::query()
+            ->where('company_id', CurrentCompany::id())
+            ->when(!CurrentWorker::canAccessAllLocations(), fn($query) => $query->where('location_id', CurrentLocation::id()));
+    }
+
+    /**
+     * ¿La edición cambia algo que mueve la caja? Compara con lo guardado: el
+     * monto en centavos, el método, la fecha y "pagado con caja".
+     */
+    private function moneyFieldsChanged(Expense $expense, array $data): bool
+    {
+        if (array_key_exists('amount', $data) && Money::toCents($data['amount']) !== Money::toCents($expense->amount)) {
+            return true;
+        }
+
+        if (array_key_exists('payment_method', $data) && $data['payment_method'] !== $expense->payment_method) {
+            return true;
+        }
+
+        if (array_key_exists('expense_date', $data)
+            && Carbon::parse($data['expense_date'])->toDateString() !== $expense->expense_date?->toDateString()) {
+            return true;
+        }
+
+        return array_key_exists('paid_from_cash', $data) && (bool) $data['paid_from_cash'] !== (bool) $expense->paid_from_cash;
+    }
+
+    /**
+     * C15: el egreso del gasto está en un turno de caja ya cerrado. Ese corte
+     * ya se contó; la categoría y la descripción sí se pueden corregir.
+     */
+    private function closedShiftException(string $action): BusinessRuleException
+    {
+        return new BusinessRuleException(
+            "Este gasto ya está en un turno de caja cerrado: no se puede {$action}. Puedes editar la categoría y la descripción.",
+            'closed_session',
+        );
     }
 
     /**

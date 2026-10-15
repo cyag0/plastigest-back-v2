@@ -41,6 +41,18 @@ class CashClosingController extends CrudController
         return $this->closedByShifts();
     }
 
+    /**
+     * Los cierres anteriores son historial: no se eliminan. Antes se heredaba
+     * el destroy de CrudController y un corte cerrado se podía borrar por id.
+     */
+    public function destroy($id)
+    {
+        return response()->json([
+            'message' => 'Los cortes de caja son historial y no se pueden eliminar.',
+            'code' => 'closing_read_only',
+        ], 405, ['Allow' => 'GET, HEAD']);
+    }
+
     private function closedByShifts()
     {
         return response()->json([
@@ -82,12 +94,14 @@ class CashClosingController extends CrudController
             $query->where('location_id', $params['location_id']);
         }
 
+        // closing_date es DATE: comparación directa (whereDate() la envolvía en
+        // DATE() y no usaba índices).
         if (!empty($params['date_from'])) {
-            $query->whereDate('closing_date', '>=', $params['date_from']);
+            $query->where('closing_date', '>=', substr((string) $params['date_from'], 0, 10));
         }
 
         if (!empty($params['date_to'])) {
-            $query->whereDate('closing_date', '<=', $params['date_to']);
+            $query->where('closing_date', '<=', substr((string) $params['date_to'], 0, 10));
         }
 
         $query->orderBy('closing_date', 'desc');
@@ -258,9 +272,9 @@ class CashClosingController extends CrudController
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        $company = CurrentCompany::get();
-
-        $closing = CashClosing::where('company_id', $company?->id)->findOrFail($id);
+        // De la empresa actual y, salvo acceso a todas las sucursales, de la
+        // sucursal actual (como el listado y el detalle).
+        $closing = $this->scopedQuery()->findOrFail($id);
 
         $signedUrl = URL::temporarySignedRoute(
             'cash-closings.pdf',

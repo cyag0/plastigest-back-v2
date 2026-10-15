@@ -4,18 +4,21 @@ namespace App\Services;
 
 use App\Enums\SaleStatus;
 use App\Enums\SalesOrderStatus;
-use App\Models\CashRegisterSession;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\SalePayment;
 use App\Models\SalesOrder;
+use App\Support\Money;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class SalesOrderStockService
 {
+    /** Inicio del motivo de validateDraftDetails cuando no alcanza el stock. */
+    public const INSUFFICIENT_STOCK_PREFIX = 'Stock insuficiente para ';
+
     public function __construct(
         private readonly MovementService $movementService = new MovementService(),
     ) {
@@ -80,7 +83,7 @@ class SalesOrderStockService
 
             $errors[$errorKeysByProduct[$productId]] = [
                 sprintf(
-                    'Stock insuficiente para %s. Disponible: %s %s, solicitado: %s %s.',
+                    self::INSUFFICIENT_STOCK_PREFIX . '%s. Disponible: %s %s, solicitado: %s %s.',
                     $productName,
                     number_format($availableQuantity, 3, '.', ''),
                     $unitLabel,
@@ -245,7 +248,11 @@ class SalesOrderStockService
      * ingreso (y su pago) en el turno abierto de quien cobra en la sucursal
      * del pedido, si lo tiene.
      *
-     * @param  array{payment_method?: string, paid_amount?: float|int, notes?: string|null}  $payment
+     * Con client_request_id (la llave del intento de cobro) es idempotente: si
+     * el pedido ya se cobró con esa llave se devuelve esa venta y no se cobra
+     * otra vez.
+     *
+     * @param  array{payment_method?: string, paid_amount?: float|int, notes?: string|null, client_request_id?: string|null}  $payment
      */
     public function checkoutOrder(SalesOrder $order, array $payment = []): Sale
     {
@@ -253,6 +260,16 @@ class SalesOrderStockService
             // Se decide con el pedido bloqueado: dos cobros simultáneos (doble
             // toque, reintento) creaban dos ventas y descontaban el stock dos veces.
             $order = $this->lockOrder($order);
+
+            // Reintento de un cobro que ya entró (misma llave): con el pedido
+            // bloqueado el segundo envío espera al primero y aquí ve su venta.
+            $requestId = $payment['client_request_id'] ?? null;
+            if ($requestId && $order->sale_id) {
+                $previous = Sale::whereKey($order->sale_id)->where('client_request_id', $requestId)->first();
+                if ($previous) {
+                    return $previous->fresh('details');
+                }
+            }
 
             if ($order->status === SalesOrderStatus::CANCELLED || $order->status === SalesOrderStatus::DELIVERED) {
                 throw ValidationException::withMessages([
@@ -272,33 +289,55 @@ class SalesOrderStockService
                 ]);
             }
 
-            // El folio se pide antes de tocar stock: su contador queda bloqueado
-            // hasta el commit y una venta del POS lo toma en ese mismo orden
-            // (contador → stock). Al revés podían bloquearse mutuamente.
-            $saleNumber = Sale::generateSaleNumber((int) $order->company_id);
-
-            // 1. Release any pending reservation so the sale's decrement
-            //    operates on the same baseline as the previously available stock.
-            $this->releaseOrder($order);
-
-            // 2. Build a fresh Sale linked to the order.
-            $subtotal = round((float) $order->details->sum('line_subtotal'), 2);
-            $total = round((float) ($order->total_amount ?? $subtotal), 2);
+            // 1. Importes en centavos enteros (App\Support\Money): el total es
+            //    la suma exacta de los renglones, como en el punto de venta.
+            $subtotalCents = (int) $order->details->sum(fn($detail) => Money::toCents($detail->line_subtotal));
+            $totalCents = $order->total_amount !== null ? Money::toCents($order->total_amount) : $subtotalCents;
+            $subtotal = Money::fromCents($subtotalCents);
+            $total = Money::fromCents($totalCents);
             $paymentMethod = $payment['payment_method'] ?? 'cash';
-            $paidAmount = isset($payment['paid_amount']) ? round((float) $payment['paid_amount'], 2) : $total;
+
+            // Crédito, igual que en SaleService: sin monto no se cobra nada
+            // (antes tomaba el total, marcaba la venta como pagada y metía un
+            // ingreso "otro" a caja: la cuenta por cobrar desaparecía). Un
+            // anticipo va con su forma de pago real, nunca como "crédito".
+            if ($paymentMethod === 'credit') {
+                if (isset($payment['paid_amount']) && Money::toCents($payment['paid_amount']) > 0) {
+                    throw SaleService::creditWithPayment();
+                }
+                $payment['paid_amount'] = 0;
+            }
+
+            $paidCents = isset($payment['paid_amount']) ? Money::toCents($payment['paid_amount']) : $totalCents;
 
             // Lo que excede el total es cambio, no dinero que se queda: en
             // efectivo se guarda como recibido/cambio, igual que en el POS.
-            $appliedAmount = min($paidAmount, $total);
-            $paymentStatus = $appliedAmount >= $total
+            $appliedCents = min($paidCents, $totalCents);
+            $appliedAmount = Money::fromCents($appliedCents);
+            $paymentStatus = $appliedCents >= $totalCents
                 ? 'paid'
-                : ($appliedAmount > 0 ? 'partial' : 'pending');
+                : ($appliedCents > 0 ? 'partial' : 'pending');
 
-            $sessionId = CashMovementService::openSessionIdFor(Auth::id(), (int) $order->location_id);
-            $session = $sessionId ? CashRegisterSession::find($sessionId) : null;
+            // 2. Turno de quien cobra en la sucursal del pedido, bloqueado (un
+            //    cierre simultáneo espera o el cobro ve el turno cerrado). El
+            //    efectivo exige turno (C14): sin él no lo esperaría ninguna caja.
+            $session = app(CashRegisterSessionService::class)->lockOpenForUser(Auth::id(), (int) $order->location_id);
+            if ($paymentMethod === 'cash' && $appliedCents > 0 && !$session) {
+                throw CashRegisterSessionService::cashNeedsOpenShift();
+            }
+
+            // El folio se pide antes de tocar stock: su contador queda bloqueado
+            // hasta el commit y una venta del POS lo toma en ese mismo orden
+            // (turno → contador → stock). Al revés podían bloquearse mutuamente.
+            $saleNumber = Sale::generateSaleNumber((int) $order->company_id);
+
+            // 3. Release any pending reservation so the sale's decrement
+            //    operates on the same baseline as the previously available stock.
+            $this->releaseOrder($order);
 
             $sale = Sale::create([
                 'sale_number' => $saleNumber,
+                'client_request_id' => $requestId,
                 'company_id' => $order->company_id,
                 'location_id' => $order->location_id,
                 'cash_register_id' => $session?->cash_register_id,
@@ -352,11 +391,11 @@ class SalesOrderStockService
                 ]);
             }
 
-            // 3. Decrement real stock via MovementService.
+            // 4. Decrement real stock via MovementService.
             $sale->load('details');
             $sale->validateAndUpdateStock();
 
-            // 4. Register the payment in cash, like any other sale. Antes el
+            // 5. Register the payment in cash, like any other sale. Antes el
             //    cobro de un pedido no generaba movimiento de caja: el efectivo
             //    no aparecía en el corte ni en el efectivo esperado del turno.
             if ($appliedAmount > 0) {
@@ -365,15 +404,15 @@ class SalesOrderStockService
                     $sale->payments()->create([
                         'method' => $paymentMethod,
                         'amount' => $appliedAmount,
-                        'tendered' => $isCash ? max($paidAmount, $appliedAmount) : null,
-                        'change' => $isCash ? round(max($paidAmount - $appliedAmount, 0), 2) : null,
+                        'tendered' => $isCash ? Money::fromCents(max($paidCents, $appliedCents)) : null,
+                        'change' => $isCash ? Money::fromCents(max($paidCents - $appliedCents, 0)) : null,
                     ]);
                 }
 
                 CashMovementService::fromSale($sale, $appliedAmount, $paymentMethod, null, $session?->id);
             }
 
-            // 5. Link the sale and mark the order as delivered.
+            // 6. Link the sale and mark the order as delivered.
             $order->forceFill([
                 'sale_id' => $sale->id,
                 'status' => SalesOrderStatus::DELIVERED,

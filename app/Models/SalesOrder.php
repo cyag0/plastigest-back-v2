@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\SalesOrderChannel;
 use App\Enums\SalesOrderServiceMode;
 use App\Enums\SalesOrderStatus;
+use App\Exceptions\BusinessRuleException;
 use App\Models\Admin\Company;
 use App\Models\Admin\Customer;
 use App\Models\Admin\Location;
@@ -18,7 +19,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
-use InvalidArgumentException;
 
 class SalesOrder extends Model
 {
@@ -33,6 +33,7 @@ class SalesOrder extends Model
         'created_by',
         'updated_by',
         'order_number',
+        'client_request_id',
         'order_date',
         'channel',
         'service_mode',
@@ -157,9 +158,11 @@ class SalesOrder extends Model
 
     public function transitionTo(SalesOrderStatus $nextStatus): bool
     {
+        // Regla de negocio (422 {message, code}): el motivo llega tal cual a la app.
         if (!$this->status->canTransitionTo($nextStatus, $this->service_mode)) {
-            throw new InvalidArgumentException(
-                "No se puede transicionar de '{$this->status->label()}' a '{$nextStatus->label()}'"
+            throw new BusinessRuleException(
+                "El pedido está «{$this->status->label()}» y no puede pasar a «{$nextStatus->label()}».",
+                'invalid_order_transition',
             );
         }
 

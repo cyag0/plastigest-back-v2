@@ -23,6 +23,13 @@ class CashFlowsTest extends TestCase
     {
         parent::setUp();
         $this->createTenant();
+
+        // Cobrar en efectivo fuera del punto de venta exige turno de caja abierto.
+        $register = \App\Models\CashRegister::create([
+            'company_id' => $this->company->id, 'location_id' => $this->location->id,
+            'name' => 'Caja 1', 'code' => 'C1', 'is_active' => true,
+        ]);
+        app(\App\Services\CashRegisterSessionService::class)->open($register, 0, $this->user->fresh());
     }
 
     private function sell(int $productId, float $qty, float $price, string $method = 'cash', ?float $paid = null): int

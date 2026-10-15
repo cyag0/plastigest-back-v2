@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\CashRegisterSession;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleDetail;
 use App\Models\SalePayment;
+use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -21,7 +23,8 @@ class SaleService
      * @param array $data {
      *   company_id, location_id, user_id, sale_date?, customer_id?,
      *   customer_name?, customer_phone?, customer_email?, notes?, comments?,
-     *   document_number?,
+     *   document_number?, client_request_id? (llave de idempotencia: el índice
+     *   único hace fallar el alta si otra petición ya la usó),
      *   details: [{product_id, package_id?, unit_id, quantity, unit_price, discount?}],
      *   payments?: [{method: cash|card|transfer, amount, tendered?}],
      *   payment_method?, paid_amount?   (formato anterior, si no hay payments)
@@ -30,21 +33,53 @@ class SaleService
     public function create(array $data, ?CashRegisterSession $session = null): Sale
     {
         return DB::transaction(function () use ($data, $session) {
-            $lines = array_map(function ($d) {
-                $quantity = (float) $d['quantity'];
-                $unitPrice = (float) $d['unit_price'];
-                $subtotal = round($quantity * $unitPrice, 2);
-                $discount = min(round((float) ($d['discount'] ?? 0), 2), $subtotal);
+            // El turno se relee bloqueado: si se cerró mientras tanto la venta
+            // se rechaza en lugar de caer en un corte ya cerrado (y un cierre
+            // simultáneo espera a que esta venta termine). Va antes del folio y
+            // del stock: mismo orden de bloqueos en todos los cobros.
+            if ($session) {
+                $session = app(CashRegisterSessionService::class)->lockOpen($session->id, (int) $data['location_id']);
+            }
 
-                return $d + ['subtotal' => $subtotal, 'discount' => $discount, 'total' => round($subtotal - $discount, 2)];
+            // Importes en centavos enteros (App\Support\Money), igual que la app
+            // y que PosController: cada renglón se redondea mitad hacia arriba y
+            // los totales son la suma exacta de los renglones.
+            $lines = array_map(function ($d) {
+                $amounts = Money::line($d['quantity'], $d['unit_price']);
+                $subtotalCents = $amounts['subtotal'];
+                $discountCents = min(Money::toCents($d['discount'] ?? 0), $subtotalCents);
+
+                return array_merge($d, [
+                    'quantity' => Money::roundQuantity($d['quantity']),
+                    'unit_price' => Money::round($d['unit_price']),
+                    'subtotal_cents' => $subtotalCents,
+                    'discount_cents' => $discountCents,
+                    'subtotal' => Money::fromCents($subtotalCents),
+                    'discount' => Money::fromCents($discountCents),
+                    'total' => Money::fromCents($subtotalCents - $discountCents),
+                ]);
             }, $data['details']);
 
-            $subtotal = round(array_sum(array_column($lines, 'subtotal')), 2);
-            $discount = round(array_sum(array_column($lines, 'discount')), 2);
-            $total = round($subtotal - $discount, 2);
+            $subtotalCents = array_sum(array_column($lines, 'subtotal_cents'));
+            $discountCents = array_sum(array_column($lines, 'discount_cents'));
+            $totalCents = $subtotalCents - $discountCents;
+            $subtotal = Money::fromCents($subtotalCents);
+            $discount = Money::fromCents($discountCents);
+            $total = Money::fromCents($totalCents);
 
             $payments = $this->normalizePayments($data, $total);
-            $paid = round(array_sum(array_column($payments, 'amount')), 2);
+            $paidCents = array_sum(array_map(fn($p) => Money::toCents($p['amount']), $payments));
+            $paid = Money::fromCents($paidCents);
+
+            // Efectivo sin turno (pantalla de ventas anterior): no lo esperaría
+            // ninguna caja y podía perderse sin faltante en ningún corte.
+            $cashCents = array_sum(array_map(
+                fn($p) => $p['method'] === 'cash' ? Money::toCents($p['amount']) : 0,
+                $payments
+            ));
+            if ($cashCents > 0 && !$session) {
+                throw CashRegisterSessionService::cashNeedsOpenShift();
+            }
 
             $paymentMethod = count($payments) > 1
                 ? 'mixed'
@@ -55,6 +90,7 @@ class SaleService
                 'location_id' => $data['location_id'],
                 'cash_register_id' => $session?->cash_register_id,
                 'cash_register_session_id' => $session?->id,
+                'client_request_id' => $data['client_request_id'] ?? null,
                 'user_id' => $data['user_id'],
                 'customer_id' => $data['customer_id'] ?? null,
                 'sale_date' => $data['sale_date'] ?? now()->toDateString(),
@@ -64,7 +100,7 @@ class SaleService
                 'total' => $total,
                 'payment_method' => $paymentMethod,
                 'paid_amount' => $paid,
-                'payment_status' => $paid >= $total ? 'paid' : ($paid > 0 ? 'partial' : 'pending'),
+                'payment_status' => $paidCents >= $totalCents ? 'paid' : ($paidCents > 0 ? 'partial' : 'pending'),
                 'payment_history' => $paid > 0 ? [[
                     'amount' => $paid,
                     'payment_method' => $paymentMethod,
@@ -121,14 +157,16 @@ class SaleService
     {
         if (!empty($data['payments'])) {
             return array_map(function ($p) {
-                $amount = round((float) $p['amount'], 2);
-                $tendered = isset($p['tendered']) ? round((float) $p['tendered'], 2) : null;
+                $amount = Money::round($p['amount']);
+                $tendered = isset($p['tendered']) ? Money::round($p['tendered']) : null;
 
                 return [
                     'method' => $p['method'],
                     'amount' => $amount,
                     'tendered' => $p['method'] === 'cash' ? ($tendered ?? $amount) : null,
-                    'change' => $p['method'] === 'cash' ? round(max(($tendered ?? $amount) - $amount, 0), 2) : null,
+                    'change' => $p['method'] === 'cash'
+                        ? Money::fromCents(max(Money::toCents($tendered ?? $amount) - Money::toCents($amount), 0))
+                        : null,
                 ];
             }, $data['payments']);
         }
@@ -138,7 +176,13 @@ class SaleService
         // Crédito sin anticipo: si no se indica monto, no se registra pago (antes
         // tomaba el total por defecto y marcaba la venta como pagada).
         $default = $method === 'credit' ? 0.0 : $total;
-        $paid = round((float) ($data['paid_amount'] ?? $default), 2);
+        $paid = Money::round($data['paid_amount'] ?? $default);
+
+        // "Crédito" no es una forma de pago: un anticipo con ese método entraba
+        // a caja como "otro" sin saber si fue efectivo, tarjeta o transferencia.
+        if ($method === 'credit' && $paid > 0) {
+            throw self::creditWithPayment();
+        }
 
         // Nunca registrar como ingreso más que el total de la venta: pagar de
         // más (500 en una venta de 380) no debe asentar 500 en caja; el cambio
@@ -150,5 +194,19 @@ class SaleService
         }
 
         return [['method' => $method, 'amount' => $paid]];
+    }
+
+    /**
+     * Venta o pedido a crédito con un monto pagado. El anticipo se registra con
+     * su forma de pago real (efectivo, tarjeta o transferencia) y un monto
+     * menor al total: la venta queda parcial y el resto pendiente.
+     */
+    public static function creditWithPayment(): BusinessRuleException
+    {
+        return new BusinessRuleException(
+            'Una venta a crédito no registra pago. Si el cliente deja un anticipo, elige con qué pagó '
+            . '(efectivo, tarjeta o transferencia) y captura el monto: el resto queda pendiente.',
+            'credit_with_payment',
+        );
     }
 }

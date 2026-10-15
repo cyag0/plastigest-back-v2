@@ -3,16 +3,19 @@
 namespace App\Http\Controllers;
 
 use App\Models\Product;
-use App\Models\ProductPackage;
+use App\Models\Sale;
 use App\Services\CashRegisterSessionService;
 use App\Services\SaleService;
+use App\Support\ClientRequest;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
+use App\Support\Money;
+use App\Support\SalePricing;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -32,6 +35,12 @@ class PosController extends Controller
 
     /**
      * GET pos/catalog — productos vendibles de la sucursal y sus paquetes.
+     *
+     * Entran los productos a la venta y también los paquetes con precio de un
+     * producto que no se vende suelto (for_sale = false): de esas piezas base
+     * solo sale el paquete, no la pieza. Antes se filtraba solo por for_sale y
+     * paquetes como "PAQ GALLETAS 16 PZA" no se podían vender en el punto de
+     * venta.
      */
     public function catalog(): JsonResponse
     {
@@ -43,31 +52,39 @@ class PosController extends Controller
 
         $products = Product::query()
             ->where('products.company_id', CurrentCompany::id())
-            ->where('products.for_sale', true)
+            ->where(fn($q) => $q->where('products.for_sale', true)->orWhereHas('activePackages'))
             ->join('product_location as pl', fn($j) => $j->on('pl.product_id', '=', 'products.id')
                 ->where('pl.location_id', $locationId)
                 ->where('pl.active', true))
             ->with(['unit:id,name,abbreviation,unit_type', 'activePackages'])
             ->orderBy('products.name')
-            ->get(['products.id', 'products.name', 'products.code', 'products.sale_price', 'products.unit_id', 'pl.current_stock']);
+            ->get(['products.id', 'products.name', 'products.code', 'products.sale_price', 'products.unit_id', 'products.for_sale', 'pl.current_stock', 'pl.reserved_stock']);
 
         $items = [];
         foreach ($products as $product) {
-            $stock = (float) $product->current_stock;
+            // Disponible para vender: lo apartado para pedidos en preparación
+            // no se vende (Sale::validateAndUpdateStock lo rechaza).
+            $stock = max(0.0, (float) $product->current_stock - (float) $product->reserved_stock);
             $unit = $product->unit ? ['id' => $product->unit->id, 'abbreviation' => $product->unit->abbreviation, 'type' => $product->unit->unit_type] : null;
 
-            $items[] = [
-                'key' => "p{$product->id}",
-                'product_id' => $product->id,
-                'package_id' => null,
-                'name' => $product->name,
-                'code' => $product->code,
-                'price' => (float) $product->sale_price,
-                'unit' => $unit,
-                'stock' => $stock,
-            ];
+            if ($product->for_sale) {
+                $items[] = [
+                    'key' => "p{$product->id}",
+                    'product_id' => $product->id,
+                    'package_id' => null,
+                    'name' => $product->name,
+                    'code' => $product->code,
+                    'price' => SalePricing::catalogPrice($product),
+                    'unit' => $unit,
+                    'stock' => $stock,
+                ];
+            }
 
             foreach ($product->activePackages as $package) {
+                if (!SalePricing::isSellable($product, $package)) {
+                    continue;
+                }
+
                 $perPackage = (float) $package->quantity_per_package;
                 $items[] = [
                     'key' => "k{$package->id}",
@@ -75,7 +92,7 @@ class PosController extends Controller
                     'package_id' => $package->id,
                     'name' => "{$product->name} ({$package->package_name})",
                     'code' => $package->barcode,
-                    'price' => $this->packagePrice($package, (float) $product->sale_price),
+                    'price' => SalePricing::catalogPrice($product, $package),
                     'unit' => $unit,
                     // Paquetes completos que alcanzan con la existencia actual.
                     'stock' => $perPackage > 0 ? floor($stock / $perPackage) : 0,
@@ -89,11 +106,20 @@ class PosController extends Controller
 
     /**
      * POST pos/sales — cobra una venta en el turno abierto del cajero.
+     *
+     * Con client_request_id (la llave del intento de cobro) es idempotente: si
+     * ya hay una venta con esa llave responde 200 con la misma forma que el
+     * alta (201) y no cobra otra vez, aunque el turno ya se haya cerrado.
      */
     public function store(Request $request): JsonResponse
     {
         if (!CurrentWorker::hasPermission('sales_pos')) {
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $requestId = $request->validate(['client_request_id' => ClientRequest::rules()])['client_request_id'] ?? null;
+        if ($requestId && ($existing = $this->saleForRequest($requestId))) {
+            return $this->saleResponse($existing, 200);
         }
 
         $session = $this->sessions->current(Auth::user());
@@ -124,12 +150,20 @@ class PosController extends Controller
         ]);
 
         $details = $this->priceDetails($validated['details']);
-        $total = round(array_sum(array_map(
-            fn($d) => round($d['quantity'] * $d['unit_price'], 2) - $d['discount'],
-            $details
-        )), 2);
 
-        $paid = round(array_sum(array_column($validated['payments'], 'amount')), 2);
+        // En centavos enteros, igual que la app (utils/money.ts): cada renglón
+        // se redondea mitad hacia arriba y luego se suman. Con flotantes un
+        // producto pesado (2.489 kg × $25) salía distinto aquí y en la app, y
+        // la venta se rechazaba por un centavo.
+        $total = Money::fromCents(array_sum(array_map(
+            fn($d) => Money::line($d['quantity'], $d['unit_price'], $d['discount'])['total'],
+            $details
+        )));
+
+        $paid = Money::fromCents(array_sum(array_map(
+            fn($p) => Money::toCents($p['amount']),
+            $validated['payments']
+        )));
         if (abs($paid - $total) > 0.009) {
             throw ValidationException::withMessages([
                 'payments' => [sprintf('Los pagos suman $%s y el total es $%s.', number_format($paid, 2), number_format($total, 2))],
@@ -141,17 +175,76 @@ class PosController extends Controller
             }
         }
 
-        $sale = $this->sales->create([
-            'company_id' => $companyId,
-            'location_id' => $session->location_id,
-            'user_id' => Auth::id(),
-            'customer_id' => $validated['customer_id'] ?? null,
-            'notes' => $validated['notes'] ?? null,
-            'details' => $details,
-            'payments' => $validated['payments'],
-        ], $session);
+        try {
+            $sale = $this->sales->create([
+                'company_id' => $companyId,
+                'location_id' => $session->location_id,
+                'user_id' => Auth::id(),
+                'customer_id' => $validated['customer_id'] ?? null,
+                'notes' => $validated['notes'] ?? null,
+                'client_request_id' => $requestId,
+                'details' => $details,
+                'payments' => $validated['payments'],
+            ], $session);
+        } catch (QueryException $e) {
+            // Otra petición con la misma llave se registró primero (doble envío
+            // simultáneo): esta se revirtió completa y se responde con aquella.
+            if ($requestId && ClientRequest::isDuplicate($e) && ($existing = $this->saleForRequest($requestId))) {
+                return $this->saleResponse($existing, 200);
+            }
 
-        $sale->load('payments');
+            throw $e;
+        }
+
+        return $this->saleResponse($sale, 201);
+    }
+
+    /**
+     * GET pos/sales/request/{clientRequestId} — la venta registrada con esa
+     * llave, con la misma forma que el alta. La app la consulta cuando un
+     * cobro se quedó sin respuesta, antes de dejar cobrar otra vez.
+     */
+    public function findByRequest(string $clientRequestId): JsonResponse
+    {
+        if (!CurrentWorker::hasPermission('sales_pos')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $sale = Sale::query()
+            ->where('company_id', CurrentCompany::id())
+            ->where('location_id', CurrentLocation::id())
+            ->where('client_request_id', $clientRequestId)
+            ->first();
+
+        if (!$sale) {
+            return response()->json(['message' => 'No hay una venta registrada con esa llave de cobro.'], 404);
+        }
+
+        return $this->saleResponse($sale, 200);
+    }
+
+    /**
+     * Venta ya registrada con la llave en la empresa. Si es de otra sucursal
+     * no se devuelve (ni se cobra de nuevo): 422 client_request_conflict.
+     */
+    private function saleForRequest(string $requestId): ?Sale
+    {
+        $sale = Sale::query()
+            ->where('company_id', CurrentCompany::id())
+            ->where('client_request_id', $requestId)
+            ->first();
+
+        if ($sale && (int) $sale->location_id !== (int) CurrentLocation::id()) {
+            throw ClientRequest::conflict();
+        }
+
+        return $sale;
+    }
+
+    /** Respuesta del alta: la misma en el cobro, el reintento y la consulta por llave. */
+    private function saleResponse(Sale $sale, int $status): JsonResponse
+    {
+        $sale->loadMissing('payments');
 
         return response()->json([
             'message' => 'Venta registrada',
@@ -169,60 +262,27 @@ class PosController extends Controller
                 ])->values(),
                 'change' => (float) $sale->payments->sum('change'),
             ],
-        ], 201);
+        ], $status);
     }
 
     /**
-     * Precio de cada renglón. Sin el permiso sales_discount se cobra el precio
-     * del catálogo y no se aceptan descuentos: el precio nunca se toma de la
-     * app para un cajero sin permiso.
+     * Precio de cada renglón (SalePricing): sin el permiso sales_discount se
+     * cobra el precio del catálogo y no se aceptan descuentos; el precio nunca
+     * se toma de la app para un cajero sin permiso.
      */
     private function priceDetails(array $details): array
     {
-        $canDiscount = CurrentWorker::hasPermission('sales_discount');
+        $priced = SalePricing::priceLines($details, CurrentWorker::hasPermission('sales_discount'));
 
-        $products = Product::whereIn('id', array_column($details, 'product_id'))->get()->keyBy('id');
-        $packageIds = array_filter(array_column($details, 'package_id'));
-        $packages = ProductPackage::whereIn('id', $packageIds)->get()->keyBy('id');
-
-        return array_map(function ($d, $i) use ($canDiscount, $products, $packages) {
-            $product = $products[$d['product_id']];
-            $package = !empty($d['package_id']) ? ($packages[$d['package_id']] ?? null) : null;
-
-            if (!empty($d['package_id']) && (!$package || $package->product_id !== $product->id)) {
-                throw ValidationException::withMessages(["details.{$i}.package_id" => ['El paquete no corresponde al producto.']]);
-            }
-
-            $catalogPrice = $package
-                ? $this->packagePrice($package, (float) $product->sale_price)
-                : (float) $product->sale_price;
-
-            $price = isset($d['unit_price']) ? round((float) $d['unit_price'], 2) : $catalogPrice;
-            $discount = round((float) ($d['discount'] ?? 0), 2);
-
-            if (!$canDiscount && (abs($price - $catalogPrice) > 0.009 || $discount > 0)) {
-                throw ValidationException::withMessages([
-                    "details.{$i}.unit_price" => ['No tienes permiso para cambiar el precio o aplicar descuentos.'],
-                ]);
-            }
-
-            return [
-                'product_id' => $product->id,
-                'package_id' => $package?->id,
-                // Los paquetes se venden en la unidad del producto; MovementService
-                // multiplica por quantity_per_package al descontar stock.
-                'unit_id' => $product->unit_id,
-                'quantity' => (float) $d['quantity'],
-                'unit_price' => $price,
-                'discount' => $discount,
-            ];
-        }, $details, array_keys($details));
-    }
-
-    private function packagePrice(ProductPackage $package, float $unitPrice): float
-    {
-        return $package->sale_price !== null && (float) $package->sale_price > 0
-            ? (float) $package->sale_price
-            : round($unitPrice * (float) $package->quantity_per_package, 2);
+        return array_map(fn($d) => [
+            'product_id' => $d['product_id'],
+            'package_id' => $d['package_id'],
+            // Los paquetes se venden en la unidad del producto; MovementService
+            // multiplica por quantity_per_package al descontar stock.
+            'unit_id' => $d['unit_id'],
+            'quantity' => Money::roundQuantity($d['quantity']),
+            'unit_price' => $d['unit_price'],
+            'discount' => $d['discount'],
+        ], $priced);
     }
 }

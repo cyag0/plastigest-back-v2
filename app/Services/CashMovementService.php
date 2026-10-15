@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\CashMovement;
 use App\Models\CashRegisterSession;
 use App\Models\Expense;
@@ -9,7 +10,6 @@ use App\Models\PurchaseV2;
 use App\Models\Sale;
 use App\Support\CurrentLocation;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
 
 class CashMovementService
 {
@@ -39,6 +39,12 @@ class CashMovementService
     /**
      * Crea un movimiento de caja de tipo ingreso a partir de una venta.
      *
+     * Sin try/catch, igual que reverseSale(): se llama dentro de la
+     * transacción de la venta, del cobro del pedido o del abono, y si el
+     * movimiento no se puede registrar la operación completa se revierte.
+     * Antes el error solo se registraba en el log: la venta, su stock y sus
+     * pagos quedaban sin el ingreso y el turno esperaba menos efectivo.
+     *
      * @param Sale   $sale          Venta de la cual proviene el ingreso
      * @param float  $amount        Monto del pago
      * @param string $paymentMethod Método de pago usado
@@ -50,41 +56,105 @@ class CashMovementService
             return;
         }
 
-        try {
-            $concept = 'Venta ' . self::documentLabel($sale->sale_number, $sale->id);
+        $concept = 'Venta ' . self::documentLabel($sale->sale_number, $sale->id);
 
-            // El turno indicado solo vale si está abierto y es de la sucursal de
-            // la venta. Sin turno indicado (p. ej. un abono posterior) entra al
-            // turno abierto de quien cobra en esa sucursal; nunca al de otra
-            // sucursal ni a un turno ya cerrado.
-            $sessionId = $sessionId !== null
-                ? self::openSessionAtLocation($sessionId, $sale->location_id)
-                : self::sessionForSale($sale);
+        // El turno indicado solo vale si está abierto y es de la sucursal de
+        // la venta. Sin turno indicado (p. ej. un abono posterior) entra al
+        // turno abierto de quien cobra en esa sucursal; nunca al de otra
+        // sucursal ni a un turno ya cerrado.
+        $sessionId = $sessionId !== null
+            ? self::openSessionAtLocation($sessionId, $sale->location_id)
+            : self::sessionForSale($sale);
 
-            CashMovement::create([
-                'company_id'     => $sale->company_id,
-                'location_id'    => $sale->location_id,
-                'cash_register_session_id' => $sessionId,
-                'user_id'        => Auth::id() ?? $sale->user_id,
-                'type'           => 'income',
-                'amount'         => $amount,
-                'concept'        => $concept,
-                'payment_method' => self::mapPaymentMethod($paymentMethod),
-                'source_type'    => 'sale',
-                'source_id'      => $sale->id,
-                'source_url'     => '/(tabs)/home/sales/' . $sale->id,
-                'notes'          => $notes,
-                'movement_date'  => $sale->sale_date
-                    ? (is_string($sale->sale_date) ? $sale->sale_date : $sale->sale_date->toDateString())
-                    : now()->toDateString(),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('CashMovementService: error al crear movimiento de venta', [
-                'sale_id' => $sale->id,
-                'amount'  => $amount,
-                'error'   => $e->getMessage(),
-            ]);
+        CashMovement::create([
+            'company_id'     => $sale->company_id,
+            'location_id'    => $sale->location_id,
+            'cash_register_session_id' => $sessionId,
+            'user_id'        => Auth::id() ?? $sale->user_id,
+            'type'           => 'income',
+            'amount'         => $amount,
+            'concept'        => $concept,
+            'payment_method' => self::mapPaymentMethod($paymentMethod),
+            'source_type'    => 'sale',
+            'source_id'      => $sale->id,
+            'source_url'     => '/(tabs)/home/sales/' . $sale->id,
+            'notes'          => $notes,
+            'movement_date'  => $sale->sale_date
+                ? (is_string($sale->sale_date) ? $sale->sale_date : $sale->sale_date->toDateString())
+                : now()->toDateString(),
+        ]);
+    }
+
+    /**
+     * Ingreso de un abono (pago posterior de una venta a crédito o parcial).
+     *
+     * Va fechado el día en que entra el dinero y en el turno de quien lo
+     * cobra (el que le pasa quien llama, ya bloqueado); sin turno queda fuera
+     * de turno, y solo se permite así cuando no es efectivo. Antes el abono se
+     * fechaba con el día de la venta: lo cobrado hoy aparecía en el día de la
+     * venta y no en el de hoy.
+     */
+    public static function fromSalePayment(Sale $sale, float $amount, string $paymentMethod, ?string $notes, ?int $sessionId): void
+    {
+        if ($amount <= 0) {
+            return;
         }
+
+        CashMovement::create([
+            'company_id'     => $sale->company_id,
+            'location_id'    => $sale->location_id,
+            'cash_register_session_id' => self::openSessionAtLocation($sessionId, $sale->location_id),
+            'user_id'        => Auth::id() ?? $sale->user_id,
+            'type'           => 'income',
+            'amount'         => $amount,
+            'concept'        => 'Abono de venta ' . self::documentLabel($sale->sale_number, $sale->id),
+            'payment_method' => self::mapPaymentMethod($paymentMethod),
+            // Mismo origen que el cobro inicial: al cancelar la venta,
+            // reverseSale() devuelve también los abonos.
+            'source_type'    => 'sale',
+            'source_id'      => $sale->id,
+            'source_url'     => '/(tabs)/home/sales/' . $sale->id,
+            'notes'          => $notes,
+            'movement_date'  => now()->toDateString(),
+        ]);
+    }
+
+    /**
+     * Turno que recibe la devolución de una venta que se cancela, con su fila
+     * bloqueada: el turno abierto de quien cancela en la sucursal de la venta
+     * o, si no tiene, el turno de la venta si sigue abierto.
+     *
+     * Si la venta cobró efectivo, la devolución exige uno de esos turnos
+     * (no_open_session): antes, si ninguno estaba abierto, el efectivo salía
+     * de la caja sin quedar en ningún turno y el cajero aparecía con faltante.
+     * Tarjeta y transferencia no salen de la caja y pueden quedar fuera de
+     * turno.
+     *
+     * Se llama antes de devolver el stock (orden de bloqueos: turno → stock,
+     * como en una venta).
+     *
+     * @throws BusinessRuleException
+     */
+    public static function refundSessionFor(Sale $sale): ?int
+    {
+        $sessions = app(CashRegisterSessionService::class);
+        $locationId = (int) $sale->location_id;
+
+        $session = $sessions->lockOpenForUser(Auth::id(), $locationId);
+
+        if (!$session && $sale->cash_register_session_id) {
+            $candidate = CashRegisterSession::query()->lockForUpdate()->find($sale->cash_register_session_id);
+            $session = $candidate && $candidate->isOpen() && (int) $candidate->location_id === $locationId ? $candidate : null;
+        }
+
+        if (!$session && self::collectedCash($sale) > 0) {
+            throw new BusinessRuleException(
+                'Para devolver el efectivo de esta venta abre un turno de caja en esta sucursal.',
+                'no_open_session',
+            );
+        }
+
+        return $session?->id;
     }
 
     /**
@@ -94,8 +164,11 @@ class CashMovementService
      * fechado el día de la cancelación: así el corte de ese día refleja la
      * devolución y los cortes ya cerrados no cambian. Antes la venta se
      * cancelaba y su ingreso seguía contando en caja.
+     *
+     * @param int|null $sessionId El turno que resolvió refundSessionFor(). Sin
+     *   turno no se devuelve efectivo (no_open_session).
      */
-    public static function reverseSale(Sale $sale): void
+    public static function reverseSale(Sale $sale, ?int $sessionId = null): void
     {
         $collected = CashMovement::query()
             ->where('source_type', 'sale')
@@ -105,13 +178,20 @@ class CashMovementService
             ->groupBy('payment_method')
             ->get();
 
-        $sessionId = self::sessionForSale($sale);
+        $sessionId = self::openSessionAtLocation($sessionId, $sale->location_id);
 
         $concept = 'Cancelación de venta ' . self::documentLabel($sale->sale_number, $sale->id);
 
         foreach ($collected as $row) {
             if ((float) $row->total <= 0) {
                 continue;
+            }
+
+            if ($row->payment_method === 'cash' && !$sessionId) {
+                throw new BusinessRuleException(
+                    'Para devolver el efectivo de esta venta abre un turno de caja en esta sucursal.',
+                    'no_open_session',
+                );
             }
 
             CashMovement::create([
@@ -132,14 +212,31 @@ class CashMovementService
         }
     }
 
+    /** Efectivo que entró a caja por una venta (cobro inicial y abonos). */
+    private static function collectedCash(Sale $sale): float
+    {
+        return (float) CashMovement::query()
+            ->where('source_type', 'sale')
+            ->where('source_id', $sale->id)
+            ->where('type', 'income')
+            ->where('payment_method', 'cash')
+            ->sum('amount');
+    }
+
     /**
      * Crea un movimiento de caja de tipo egreso a partir de una compra V2 recibida.
      *
+     * Sin try/catch, como fromSale(): si el egreso no se puede registrar, la
+     * recepción se revierte en lugar de quedar sin su salida de caja.
+     *
      * @param PurchaseV2 $purchase Compra recibida
+     * @param float|null $amount   Lo que salió de la caja; por defecto el total de
+     *                             la compra (con recepción parcial, quien llama
+     *                             manda lo recibido × costo).
      */
-    public static function fromPurchaseV2(PurchaseV2 $purchase): void
+    public static function fromPurchaseV2(PurchaseV2 $purchase, ?float $amount = null): void
     {
-        $total = (float) ($purchase->total ?? 0);
+        $total = $amount ?? (float) ($purchase->total ?? 0);
 
         // Si la compra no se pagó con dinero de la caja (la pagó el dueño o se
         // hizo desde el banco) no debe salir del corte.
@@ -147,36 +244,28 @@ class CashMovementService
             return;
         }
 
-        try {
-            $concept = 'Compra ' . self::documentLabel($purchase->purchase_number, $purchase->id);
+        $concept = 'Compra ' . self::documentLabel($purchase->purchase_number, $purchase->id);
 
-            CashMovement::create([
-                'company_id'     => $purchase->company_id,
-                'location_id'    => $purchase->location_id,
-                // El dinero sale de la caja de quien recibe, si tiene turno
-                // abierto en esa sucursal. Antes la compra no quedaba en ningún
-                // turno y el efectivo esperado del cajero no la descontaba.
-                'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $purchase->location_id),
-                'user_id'        => Auth::id() ?? $purchase->user_id,
-                'type'           => 'expense',
-                'amount'         => $total,
-                'concept'        => $concept,
-                'payment_method' => self::mapPaymentMethod($purchase->payment_method ?? null),
-                'source_type'    => 'purchase_v2',
-                'source_id'      => $purchase->id,
-                'source_url'     => '/(tabs)/home/purchases/' . $purchase->id,
-                'notes'          => null,
-                'movement_date'  => $purchase->purchase_date
-                    ? (is_string($purchase->purchase_date) ? $purchase->purchase_date : $purchase->purchase_date->toDateString())
-                    : now()->toDateString(),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('CashMovementService: error al crear movimiento de compra V2', [
-                'purchase_id' => $purchase->id,
-                'total'       => $total,
-                'error'       => $e->getMessage(),
-            ]);
-        }
+        CashMovement::create([
+            'company_id'     => $purchase->company_id,
+            'location_id'    => $purchase->location_id,
+            // El dinero sale de la caja de quien recibe, si tiene turno
+            // abierto en esa sucursal. Antes la compra no quedaba en ningún
+            // turno y el efectivo esperado del cajero no la descontaba.
+            'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $purchase->location_id),
+            'user_id'        => Auth::id() ?? $purchase->user_id,
+            'type'           => 'expense',
+            'amount'         => $total,
+            'concept'        => $concept,
+            'payment_method' => self::mapPaymentMethod($purchase->payment_method ?? null),
+            'source_type'    => 'purchase_v2',
+            'source_id'      => $purchase->id,
+            'source_url'     => '/(tabs)/home/purchases/' . $purchase->id,
+            'notes'          => null,
+            'movement_date'  => $purchase->purchase_date
+                ? (is_string($purchase->purchase_date) ? $purchase->purchase_date : $purchase->purchase_date->toDateString())
+                : now()->toDateString(),
+        ]);
     }
 
     /**
@@ -214,6 +303,32 @@ class CashMovementService
                 ? $expense->expense_date->toDateString()
                 : now()->toDateString(),
         ]);
+    }
+
+    /**
+     * ¿El egreso de caja del gasto pertenece a un turno ya cerrado? Ese corte
+     * ya se contó: el monto, el método, la fecha y "pagado con caja" del gasto
+     * no se cambian ni el gasto se borra (C15). Con $lock la fila del turno
+     * queda bloqueada hasta el final de la transacción: un cierre simultáneo
+     * espera, o el cambio ve el turno ya cerrado.
+     */
+    public static function expenseInClosedShift(Expense $expense, bool $lock = false): bool
+    {
+        $sessionIds = CashMovement::where('source_type', 'expense')
+            ->where('source_id', $expense->id)
+            ->whereNotNull('cash_register_session_id')
+            ->pluck('cash_register_session_id')
+            ->unique()
+            ->all();
+
+        if ($sessionIds === []) {
+            return false;
+        }
+
+        return CashRegisterSession::whereKey($sessionIds)
+            ->when($lock, fn($query) => $query->lockForUpdate())
+            ->get(['id', 'status'])
+            ->contains(fn(CashRegisterSession $session) => $session->status !== CashRegisterSession::STATUS_OPEN);
     }
 
     /**

@@ -5,16 +5,20 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\SaleResource;
 use App\Models\Sale;
-use App\Models\SaleDetail;
 use App\Models\Product;
-use App\Models\ProductPackage;
-use Illuminate\Validation\ValidationException;
 use App\Models\Expense;
 use App\Enums\SaleStatus;
+use App\Exceptions\BusinessRuleException;
 use App\Services\CashMovementService;
+use App\Services\CashRegisterSessionService;
+use App\Support\ClientRequest;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
+use App\Support\Money;
+use App\Support\SalePricing;
+use Illuminate\Database\QueryException;
+use Illuminate\Validation\Rule;
 use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
 use Illuminate\Http\Request;
@@ -99,13 +103,24 @@ class SaleController extends CrudController
         $dateFrom = $params['date_from'] ?? $params['start_date'] ?? null;
         $dateTo = $params['date_to'] ?? $params['end_date'] ?? null;
 
+        // sale_date es DATE: se compara directo para que use el índice
+        // (whereDate() lo envolvía en DATE() y recorría toda la sucursal).
         if (!empty($dateFrom)) {
-            $query->whereDate($this->dateColumn, '>=', $dateFrom);
+            $query->where($this->dateColumn, '>=', self::dateOnly($dateFrom));
         }
 
         if (!empty($dateTo)) {
-            $query->whereDate($this->dateColumn, '<=', $dateTo);
+            $query->where($this->dateColumn, '<=', self::dateOnly($dateTo));
         }
+    }
+
+    /**
+     * La parte de fecha (Y-m-d) de un filtro: "2026-10-15" o
+     * "2026-10-15T08:00:00". Para comparar directo columnas DATE.
+     */
+    private static function dateOnly(string $value): string
+    {
+        return preg_match('/^\d{4}-\d{2}-\d{2}/', $value) ? substr($value, 0, 10) : $value;
     }
 
     /**
@@ -146,10 +161,12 @@ class SaleController extends CrudController
             'notes' => 'nullable|string',
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
+            // Llave del intento de cobro: el reintento con la misma no duplica la venta.
+            'client_request_id' => ClientRequest::rules(),
 
-            // Detalles de la venta
+            // Detalles de la venta (productos de la empresa del contexto)
             'details' => 'required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
+            'details.*.product_id' => ['required', Rule::exists('products', 'id')->where('company_id', CurrentCompany::id())],
             'details.*.package_id' => 'nullable|exists:product_packages,id',
             'details.*.unit_id' => 'required|exists:units,id',
             'details.*.quantity' => 'required|numeric|min:0.01',
@@ -158,221 +175,106 @@ class SaleController extends CrudController
     }
 
     /**
-     * Validación para update
+     * Las ventas no se editan (ver update()): no hay datos de edición que validar.
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        return $request->validate([
-            // Información del cliente (opcional)
-            'customer_name' => 'nullable|string|max:255',
-            'customer_phone' => 'nullable|string|max:20',
-            'customer_email' => 'nullable|email|max:255',
-
-            // Método de pago
-            'payment_method' => 'sometimes|required|in:cash,card,transfer,credit',
-            'paid_amount' => 'nullable|numeric|min:0',
-            'notes' => 'nullable|string',
-            'document_number' => 'nullable|string|max:255',
-            'comments' => 'nullable|string',
-
-            // Detalles de la venta
-            'details' => 'sometimes|required|array|min:1',
-            'details.*.product_id' => 'required|exists:products,id',
-            'details.*.package_id' => 'nullable|exists:product_packages,id',
-            'details.*.unit_id' => 'required|exists:units,id',
-            'details.*.quantity' => 'required|numeric|min:0.01',
-            'details.*.unit_price' => 'required|numeric|min:0',
-        ]);
+        return [];
     }
 
     /**
-     * Manejo unificado del proceso de creación/actualización
+     * PUT/PATCH sales/{id}: las ventas no se editan.
+     *
+     * Antes reescribía la venta desde la petición (renglones, precios, total,
+     * cobrado, fecha, cajero y sucursal) sin tocar el stock, los pagos ni la
+     * caja, aun cerrada o cancelada: editar 10 piezas a 100 y cancelar
+     * devolvía al inventario 90 piezas que nunca existieron. Ninguna pantalla
+     * la usa; una corrección es cancelar la venta y registrar otra.
+     */
+    public function update(Request $request, $id)
+    {
+        return response()->json([
+            'message' => 'Las ventas no se editan. Para corregir una venta, cancélala y registra una nueva.',
+            'code' => 'sale_update_not_allowed',
+        ], 405, ['Allow' => 'GET, HEAD, DELETE']);
+    }
+
+    /**
+     * Alta de la venta (las ventas no se editan: ver update()).
+     *
+     * Con client_request_id es idempotente: si ya hay una venta con esa llave
+     * se devuelve esa (200, misma forma que el alta) y no se cobra otra vez.
      */
     protected function process($callback, array $data, $method = 'create'): Model
     {
+        if ($method !== 'create') {
+            throw new \LogicException('Las ventas no se editan.');
+        }
+
+        $requestId = $data['client_request_id'] ?? null;
+        if ($requestId && ($existing = $this->saleForRequest($requestId))) {
+            return $existing->load($this->getShowRelations());
+        }
+
         // El alta vive en SaleService (la comparte el punto de venta). Si quien
         // vende tiene turno de caja abierto, la venta entra en ese turno.
-        if ($method === 'create') {
-            $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
+        $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
 
-            // Solo se adjunta el turno si es de la sucursal actual: si no, la
-            // venta quedaría apuntando al turno de otra sucursal e inflaría su
-            // total de ventas.
-            if ($session && $session->location_id !== CurrentLocation::id()) {
-                $session = null;
-            }
+        // Solo se adjunta el turno si es de la sucursal actual: si no, la
+        // venta quedaría apuntando al turno de otra sucursal e inflaría su
+        // total de ventas.
+        if ($session && $session->location_id !== CurrentLocation::id()) {
+            $session = null;
+        }
 
-            // Sin permiso sales_discount, el precio sale del catálogo: la
-            // pantalla anterior no debe poder cobrar a un precio arbitrario.
-            $data['details'] = $this->enforceCatalogPricing($data['details']);
+        // Sin permiso sales_discount, el precio sale del catálogo: la
+        // pantalla anterior no debe poder cobrar a un precio arbitrario.
+        $data['details'] = $this->enforceCatalogPricing($data['details']);
 
+        try {
             return app(\App\Services\SaleService::class)->create([
                 'company_id' => CurrentCompany::get()->id,
                 'location_id' => CurrentLocation::get()->id,
                 'user_id' => Auth::id(),
             ] + $data, $session)->load($this->getShowRelations());
-        }
-
-        try {
-            DB::beginTransaction();
-
-            $user = Auth::user();
-
-            // Obtener company y location del contexto
-            $company = CurrentCompany::get();
-            $location = CurrentLocation::get();
-
-            // Preparar datos del content
-            $content = [
-                'payment_method' => $data['payment_method'],
-                'customer_name' => $data['customer_name'] ?? null,
-                'customer_phone' => $data['customer_phone'] ?? null,
-                'customer_email' => $data['customer_email'] ?? null,
-                'notes' => $data['notes'] ?? null,
-            ];
-
-            // Agregar document_number y comments a content
-            if (isset($data['document_number'])) {
-                $content['document_number'] = $data['document_number'];
-            }
-            if (isset($data['comments'])) {
-                $content['comments'] = $data['comments'];
+        } catch (QueryException $e) {
+            // Otra petición con la misma llave se registró primero: esta se
+            // revirtió completa y se responde con aquella.
+            if ($requestId && ClientRequest::isDuplicate($e) && ($existing = $this->saleForRequest($requestId))) {
+                return $existing->load($this->getShowRelations());
             }
 
-
-            // Preparar datos de la venta
-            $saleData = [
-                'location_id' => $location->id,
-                'sale_date' => $data['sale_date'] ?? now()->toDateString(),
-                'content' => $content,
-                'company_id' => $company->id,
-                'user_id' => $user->id,
-                'payment_method' => $data['payment_method'],
-            ];
-
-            // Calcular total
-            $totalCost = 0;
-            foreach ($data['details'] as $detail) {
-                $totalCost += $detail['quantity'] * $detail['unit_price'];
-            }
-            $saleData['total'] = $totalCost;
-            $saleData['subtotal'] = $totalCost;
-            $saleData['tax'] = 0;
-            $saleData['discount'] = 0;
-
-            // Manejar pago inicial
-            $paidAmount = $data['paid_amount'] ?? $totalCost;
-            $saleData['paid_amount'] = $paidAmount;
-
-            // Determinar payment_status
-            if ($paidAmount >= $totalCost) {
-                $saleData['payment_status'] = 'paid';
-            } elseif ($paidAmount > 0) {
-                $saleData['payment_status'] = 'partial';
-            } else {
-                $saleData['payment_status'] = 'pending';
-            }
-
-            // Inicializar payment_history
-            $paymentHistory = [];
-            if ($paidAmount > 0) {
-                $paymentHistory[] = [
-                    'amount' => $paidAmount,
-                    'payment_method' => $data['payment_method'],
-                    'date' => now()->toDateTimeString(),
-                    'notes' => $data['notes'] ?? null,
-                ];
-            }
-            $saleData['payment_history'] = $paymentHistory;
-
-            // Crear o actualizar venta
-            /** @var Sale $sale */
-            $sale = $callback($saleData);
-
-            // Manejar detalles
-            if (isset($data['details'])) {
-                // Si es actualización, eliminar detalles existentes
-                if ($method === 'update') {
-                    $sale->details()->delete();
-                }
-
-                // Crear nuevos detalles
-                foreach ($data['details'] as $detail) {
-                    $unitPrice = $detail['unit_price'];
-                    $quantity = $detail['quantity'];
-                    $subtotal = $quantity * $unitPrice;
-
-                    SaleDetail::create([
-                        'sale_id' => $sale->id,
-                        'product_id' => $detail['product_id'],
-                        'package_id' => $detail['package_id'] ?? null,
-                        'unit_id' => $detail['unit_id'],
-                        'quantity' => $quantity,
-                        'unit_price' => $unitPrice,
-                        'subtotal' => $subtotal,
-                        'tax' => 0,
-                        'discount' => 0,
-                        'total' => $subtotal,
-                    ]);
-                }
-            }
-
-            // Recargar relaciones
-            $sale->load($this->getShowRelations());
-
-            DB::commit();
-            return $sale;
-        } catch (\Exception $e) {
-            DB::rollBack();
             throw $e;
         }
     }
 
     /**
-     * Precio de catálogo obligatorio salvo permiso sales_discount. Espeja la
-     * lógica del punto de venta (PosController::priceDetails) para que la
-     * pantalla de ventas anterior tampoco pueda cobrar a un precio arbitrario.
+     * Venta ya registrada con la llave en la empresa. Si es de otra sucursal
+     * no se devuelve (ni se cobra de nuevo): 422 client_request_conflict.
+     */
+    private function saleForRequest(string $requestId): ?Sale
+    {
+        $sale = Sale::where('company_id', CurrentCompany::id())
+            ->where('client_request_id', $requestId)
+            ->first();
+
+        if ($sale && (int) $sale->location_id !== (int) CurrentLocation::id()) {
+            throw ClientRequest::conflict();
+        }
+
+        return $sale;
+    }
+
+    /**
+     * Precio de catálogo obligatorio salvo permiso sales_discount, con las
+     * mismas reglas que el punto de venta y los pedidos (SalePricing): la
+     * pantalla anterior tampoco puede cobrar a un precio arbitrario, vender un
+     * paquete con otro producto ni la pieza suelta de un producto que solo se
+     * vende en paquete.
      */
     private function enforceCatalogPricing(array $details): array
     {
-        if (CurrentWorker::hasPermission('sales_discount')) {
-            return $details; // puede fijar precio y aplicar descuentos
-        }
-
-        $companyId = CurrentCompany::id();
-        $products = Product::whereIn('id', array_column($details, 'product_id'))
-            ->where('company_id', $companyId)
-            ->get()->keyBy('id');
-        $packages = ProductPackage::whereIn('id', array_filter(array_column($details, 'package_id')))
-            ->get()->keyBy('id');
-
-        foreach ($details as $i => $d) {
-            $product = $products[$d['product_id']] ?? null;
-            if (!$product) {
-                throw ValidationException::withMessages(["details.{$i}.product_id" => ['Producto inválido.']]);
-            }
-
-            $package = !empty($d['package_id']) ? ($packages[$d['package_id']] ?? null) : null;
-            $catalog = $package
-                ? ((float) $package->sale_price > 0
-                    ? (float) $package->sale_price
-                    : round((float) $product->sale_price * (float) $package->quantity_per_package, 2))
-                : (float) $product->sale_price;
-
-            $sent = round((float) ($d['unit_price'] ?? $catalog), 2);
-            $discount = round((float) ($d['discount'] ?? 0), 2);
-
-            if (abs($sent - $catalog) > 0.009 || $discount > 0) {
-                throw ValidationException::withMessages([
-                    "details.{$i}.unit_price" => ['No tienes permiso para cambiar el precio o aplicar descuentos.'],
-                ]);
-            }
-
-            $details[$i]['unit_price'] = $catalog;
-            $details[$i]['discount'] = 0;
-        }
-
-        return $details;
+        return SalePricing::priceLines($details, CurrentWorker::hasPermission('sales_discount'));
     }
 
     /**
@@ -403,6 +305,9 @@ class SaleController extends CrudController
             ], 400);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
+        } catch (BusinessRuleException $e) {
+            // Devolver efectivo sin turno abierto en la sucursal: 422 {message, code}.
+            return $e->render();
         } catch (\Exception $e) {
             Log::error('Error al cancelar venta', ['exception' => get_class($e), 'message' => $e->getMessage()]);
             // Mensaje de negocio seguro; los detalles internos no se exponen.
@@ -434,15 +339,30 @@ class SaleController extends CrudController
             return $this->forbiddenResponse('ver estadísticas de ventas');
         }
 
+        // Sucursal: la actual por defecto; otra (o todas, "all") solo para
+        // quien tiene acceso a todas las sucursales. Antes cualquiera veía las
+        // estadísticas de otra sucursal con ?location_id=. Fuera del try: el
+        // 403/404 no debe volverse un 500.
+        $locationId = CurrentWorker::locationScope($request->input('location_id', CurrentLocation::id()));
+
         try {
             $companyId = CurrentCompany::id();
-            $locationId = $request->input('location_id') ?? current_location_id();
-            $startDate = $request->input('start_date');
-            $endDate = $request->input('end_date');
+            $startDate = $request->filled('start_date') ? self::dateOnly($request->input('start_date')) : null;
+            $endDate = $request->filled('end_date') ? self::dateOnly($request->input('end_date')) : null;
 
-            // Query base, aislada por empresa (y sucursal del contexto).
-            $query = Sale::where('company_id', $companyId)
-                ->where('location_id', $locationId);
+            // Sin rango: los últimos 30 días (el mismo divisor que ya usaba el
+            // promedio diario). Antes se agregaba todo el historial de la
+            // sucursal cada vez que se abría Ventas.
+            if (!$startDate && !$endDate) {
+                $startDate = now()->subDays(29)->toDateString();
+                $endDate = now()->toDateString();
+                $defaultRange = true;
+            }
+
+            // Query base, aislada por empresa y sucursal.
+            $baseQuery = Sale::where('company_id', $companyId)
+                ->when($locationId, fn($q) => $q->where('location_id', $locationId));
+            $query = clone $baseQuery;
 
             if ($startDate) {
                 $query->where('sale_date', '>=', $startDate);
@@ -462,12 +382,12 @@ class SaleController extends CrudController
             $totalAmount = (clone $query)->sum('total');
             $averageAmount = $totalSales > 0 ? $totalAmount / $totalSales : 0;
 
-            // Ventas del día
+            // Ventas del día (sale_date es DATE: comparación directa, con índice)
             $todaySales = (clone $query)
-                ->whereDate('sale_date', now()->toDateString())
+                ->where('sale_date', now()->toDateString())
                 ->count();
             $todayAmount = (clone $query)
-                ->whereDate('sale_date', now()->toDateString())
+                ->where('sale_date', now()->toDateString())
                 ->sum('total');
 
             // Ventas por estado
@@ -520,7 +440,7 @@ class SaleController extends CrudController
                 ->join('sales', 'sales_details.sale_id', '=', 'sales.id')
                 ->join('products', 'sales_details.product_id', '=', 'products.id')
                 ->where('sales.company_id', $companyId)
-                ->where('sales.location_id', $locationId)
+                ->when($locationId, fn($q) => $q->where('sales.location_id', $locationId))
                 // Los productos más vendidos no deben contar ventas canceladas.
                 ->where('sales.status', '!=', SaleStatus::CANCELLED->value)
                 ->when($startDate, function ($q) use ($startDate) {
@@ -548,9 +468,13 @@ class SaleController extends CrudController
                     ];
                 });
 
-            // Tendencia de ventas (últimos 6 meses)
-            $sixMonthsAgo = now()->subMonths(6)->startOfMonth();
-            $salesTrend = (clone $query)
+            // Tendencia de ventas (últimos 6 meses): no se recorta a los 30 días
+            // por defecto, solo a un rango que se haya pedido.
+            $sixMonthsAgo = now()->subMonths(6)->startOfMonth()->toDateString();
+            $salesTrend = (clone $baseQuery)
+                ->where('status', '!=', SaleStatus::CANCELLED->value)
+                ->when(empty($defaultRange) && $startDate, fn($q) => $q->where('sale_date', '>=', $startDate))
+                ->when(empty($defaultRange) && $endDate, fn($q) => $q->where('sale_date', '<=', $endDate))
                 ->where('sale_date', '>=', $sixMonthsAgo)
                 ->select(
                     DB::raw('DATE_FORMAT(sale_date, "%Y-%m") as month'),
@@ -581,7 +505,7 @@ class SaleController extends CrudController
             // el valor absoluto para no obtener un divisor negativo/incorrecto.
             $daysInRange = $startDate && $endDate
                 ? max(1, (int) abs(now()->parse($startDate)->diffInDays(now()->parse($endDate))) + 1)
-                : 30; // Default 30 días si no hay rango
+                : 30; // Rango abierto de un lado: 30 días
 
             $averagePerDay = $totalAmount / $daysInRange;
 
@@ -602,6 +526,11 @@ class SaleController extends CrudController
                     'by_payment_method' => $byPaymentMethod,
                     'top_products' => $topProducts,
                     'sales_trend' => $salesTrend,
+                    // Periodo de los totales (sin rango pedido: últimos 30 días).
+                    'period' => [
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                    ],
                 ]
             ]);
         } catch (\Exception $e) {
@@ -625,17 +554,21 @@ class SaleController extends CrudController
             return $this->forbiddenResponse('ver el corte de caja');
         }
 
-        try {
-            $validated = $request->validate([
-                'date' => 'required|date',
-                'location_id' => 'nullable|exists:locations,id',
-                // company_id se ignora: el corte siempre es de la empresa del
-                // contexto (X-Company-ID validado). Se mantiene por compatibilidad.
-                'company_id' => 'nullable|exists:companies,id',
-            ]);
+        // Fuera del try: una fecha inválida es un 422, no un 500.
+        $validated = $request->validate([
+            'date' => 'required|date',
+            // company_id se ignora: el corte siempre es de la empresa del
+            // contexto (X-Company-ID validado). Se mantiene por compatibilidad.
+            'company_id' => 'nullable|exists:companies,id',
+        ]);
 
+        // Sucursal: la actual por defecto; otra (o todas, "all") solo para
+        // quien tiene acceso a todas las sucursales. Antes cualquiera pedía el
+        // corte de otra sucursal con ?location_id=.
+        $locationId = CurrentWorker::locationScope($request->input('location_id', CurrentLocation::id()));
+
+        try {
             $date = $validated['date'];
-            $locationId = $validated['location_id'] ?? CurrentLocation::get()?->id;
 
             // Empresa SIEMPRE del contexto: no se toma del parámetro para que
             // nadie pueda pedir el corte de otra empresa con company_id.
@@ -646,7 +579,7 @@ class SaleController extends CrudController
                 ->when($locationId, function ($q) use ($locationId) {
                     $q->where('location_id', $locationId);
                 })
-                ->whereDate('sale_date', $date)
+                ->where('sale_date', self::dateOnly($date))
                 ->whereIn('status', ['closed', 'processed'])
                 ->with(['details.product'])
                 ->get();
@@ -654,6 +587,9 @@ class SaleController extends CrudController
             // Totales por método de pago a partir de sale_payments: así cuentan
             // las ventas con pago mixto (su payment_method es 'mixed' y antes no
             // entraba en ningún método) y refleja el dinero realmente cobrado.
+            // Por el día en que entró el dinero (created_at del pago): los
+            // abonos de hoy a ventas de otros días cuentan hoy, no en el día de
+            // la venta.
             $paymentMethods = [
                 'cash' => 0,
                 'card' => 0,
@@ -661,11 +597,13 @@ class SaleController extends CrudController
                 'credit' => 0,
             ];
 
+            $dayStart = \Illuminate\Support\Carbon::parse($date)->startOfDay();
             $paymentTotals = DB::table('sale_payments')
                 ->join('sales', 'sale_payments.sale_id', '=', 'sales.id')
                 ->where('sales.company_id', $companyId)
                 ->when($locationId, fn($q) => $q->where('sales.location_id', $locationId))
-                ->whereDate('sales.sale_date', $date)
+                ->where('sale_payments.created_at', '>=', $dayStart)
+                ->where('sale_payments.created_at', '<', $dayStart->copy()->addDay())
                 ->whereIn('sales.status', ['closed', 'processed'])
                 ->groupBy('sale_payments.method')
                 ->selectRaw('sale_payments.method, SUM(sale_payments.amount) as total')
@@ -740,7 +678,7 @@ class SaleController extends CrudController
                 ->when($locationId, function ($q) use ($locationId) {
                     $q->where('location_id', $locationId);
                 })
-                ->whereDate('expense_date', $date)
+                ->where('expense_date', self::dateOnly($date))
                 ->with(['user'])
                 ->get();
 
@@ -904,9 +842,12 @@ class SaleController extends CrudController
                 ], 422);
             }
 
-            // Cargar productos activos para venta con sus paquetes
+            // Productos a la venta con sus paquetes, y también los productos que
+            // no se venden sueltos pero tienen paquetes con precio (de ellos solo
+            // se vende el paquete: for_sale le dice a la app que no ofrezca la
+            // pieza). Antes esos paquetes no aparecían en ninguna pantalla.
             $products = Product::where('company_id', $companyId)
-                ->where('for_sale', true)
+                ->where(fn($q) => $q->where('for_sale', true)->orWhereHas('activePackages'))
                 ->whereHas('locations', function ($query) use ($locationId) {
                     $query->where('location_id', $locationId)
                         ->where('active', true);
@@ -920,11 +861,16 @@ class SaleController extends CrudController
                         $query->where('location_id', $locationId);
                     }
                 ])
-                ->get();
+                ->get()
+                ->filter(fn($product) => SalePricing::onlySellablePackages($product))
+                ->values();
 
             // Formatear las imágenes de los productos manualmente
             $productsWithImages = $products->map(function ($product) {
                 $productArray = $product->toArray();
+
+                // Precio de catálogo de cada paquete (el que valida el servidor).
+                $productArray['active_packages'] = SalePricing::packagesWithPrice($product, $productArray['active_packages'] ?? []);
 
                 // Formatear imagen principal si existe
                 if ($product->relationLoaded('mainImage') && $product->mainImage) {
@@ -979,46 +925,72 @@ class SaleController extends CrudController
             return $this->forbiddenResponse('registrar pagos de ventas');
         }
 
-        try {
-            $validated = $request->validate([
-                'amount' => 'required|numeric|min:0.01',
-                'payment_method' => 'required|in:cash,card,transfer,credit',
-                'notes' => 'nullable|string',
-            ]);
+        // Fuera del try: un error de validación es un 422, no "Error al
+        // registrar pago" (500). "Crédito" no es una forma de pago: un abono
+        // "a crédito" marcaba como cobrado un dinero que no entró y lo
+        // asentaba en caja como "otro". Un abono es efectivo, tarjeta o
+        // transferencia.
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'payment_method' => 'required|in:cash,card,transfer',
+            'notes' => 'nullable|string|max:500',
+            // Llave del abono: el reintento con la misma no lo registra dos veces.
+            'client_request_id' => ClientRequest::rules(),
+        ], [
+            'payment_method.in' => 'Un abono se registra en efectivo, tarjeta o transferencia.',
+        ]);
 
+        try {
             // La venta debe ser de la empresa/sucursal del contexto.
             $scopedId = $this->scopedQuery()->whereKey($id)->value('id');
             if (!$scopedId) {
                 return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
             }
 
-            // Turno de caja abierto del cajero en la sucursal actual: el pago
-            // entra a ESE turno, no al turno (posiblemente ya cerrado) en el que
-            // se creó la venta.
-            $session = app(\App\Services\CashRegisterSessionService::class)->current(Auth::user());
+            $requestId = $validated['client_request_id'] ?? null;
 
-            $result = DB::transaction(function () use ($scopedId, $validated, $session) {
+            $result = DB::transaction(function () use ($scopedId, $validated, $requestId) {
                 // Bloqueo de fila: evita que dos pagos simultáneos sobrepasen el total.
                 $sale = Sale::whereKey($scopedId)->lockForUpdate()->firstOrFail();
+
+                // Reintento de un abono ya registrado (misma llave): se responde
+                // igual que la primera vez, antes de validar el saldo (que ya
+                // incluye ese abono) o el turno. Con la venta bloqueada, dos
+                // envíos simultáneos se forman y el segundo ya ve el primero.
+                if ($requestId && $sale->payments()->where('client_request_id', $requestId)->exists()) {
+                    return ['sale' => $sale];
+                }
 
                 if ($sale->status === SaleStatus::CANCELLED) {
                     return ['error' => 'No se puede registrar un pago en una venta cancelada', 'status' => 400];
                 }
 
-                $totalPaid = (float) ($sale->paid_amount ?? 0);
-                $newAmount = round((float) $validated['amount'], 2);
-                $total = (float) $sale->total;
-                $totalAfterPayment = round($totalPaid + $newAmount, 2);
+                // En centavos enteros: pagar el saldo exacto en parcialidades
+                // (50.10 + 50.20 vs 100.30) no se rechaza por el error de punto
+                // flotante.
+                $paidCents = Money::toCents($sale->paid_amount ?? 0);
+                $newCents = Money::toCents($validated['amount']);
+                $totalCents = Money::toCents($sale->total);
+                $afterCents = $paidCents + $newCents;
+                $newAmount = Money::fromCents($newCents);
+                $totalAfterPayment = Money::fromCents($afterCents);
 
-                // Comparación con tolerancia de centavo: pagar el saldo exacto en
-                // parcialidades (50.10 + 50.20 vs 100.30) ya no se rechaza por el
-                // error de punto flotante.
-                if ($totalAfterPayment > $total + 0.009) {
+                if ($afterCents > $totalCents) {
                     return [
                         'error' => 'El monto ingresado excede el saldo pendiente',
                         'status' => 400,
-                        'pending_amount' => round($total - $totalPaid, 2),
+                        'pending_amount' => Money::fromCents($totalCents - $paidCents),
                     ];
+                }
+
+                // Turno de caja de quien cobra en la sucursal de la venta, con su
+                // fila bloqueada (venta → turno): el abono entra a ESE turno, no
+                // al turno (quizá ya cerrado) en el que se creó la venta. El
+                // efectivo exige turno abierto (C14).
+                $session = app(CashRegisterSessionService::class)->lockOpenForUser(Auth::id(), (int) $sale->location_id);
+                $isCash = $validated['payment_method'] === 'cash';
+                if ($isCash && !$session) {
+                    throw CashRegisterSessionService::cashNeedsOpenShift();
                 }
 
                 $paymentHistory = $sale->payment_history ?? [];
@@ -1031,12 +1003,24 @@ class SaleController extends CrudController
 
                 $sale->paid_amount = $totalAfterPayment;
                 $sale->payment_history = $paymentHistory;
-                $sale->payment_status = $totalAfterPayment >= $total - 0.009
+                $sale->payment_status = $afterCents >= $totalCents
                     ? 'paid'
-                    : ($totalAfterPayment > 0 ? 'partial' : 'pending');
+                    : ($afterCents > 0 ? 'partial' : 'pending');
                 $sale->save();
 
-                CashMovementService::fromSale(
+                // El abono también queda en sale_payments, donde los reportes y
+                // el corte leen lo cobrado por método (antes solo estaba el
+                // cobro inicial). Su created_at es el momento del abono.
+                $sale->payments()->create([
+                    'client_request_id' => $requestId,
+                    'method' => $validated['payment_method'],
+                    'amount' => $newAmount,
+                    'tendered' => $isCash ? $newAmount : null,
+                    'change' => $isCash ? 0 : null,
+                ]);
+
+                // Fechado hoy, en el turno de quien cobra.
+                CashMovementService::fromSalePayment(
                     $sale,
                     $newAmount,
                     $validated['payment_method'],
@@ -1062,7 +1046,20 @@ class SaleController extends CrudController
                 'message' => 'Pago registrado correctamente',
                 'data' => new $this->resource($sale),
             ]);
+        } catch (BusinessRuleException $e) {
+            // Sin turno para cobrar en efectivo, turno recién cerrado…: 422 {message, code}.
+            return $e->render();
         } catch (\Exception $e) {
+            // Respaldo del índice único (venta + llave): el abono ya quedó
+            // registrado por otra petición con la misma llave.
+            if (($requestId ?? null) && ClientRequest::isDuplicate($e)) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Pago registrado correctamente',
+                    'data' => new $this->resource(Sale::findOrFail($id)->load($this->getShowRelations())),
+                ]);
+            }
+
             Log::error('Error al registrar pago', ['exception' => get_class($e), 'message' => $e->getMessage()]);
 
             return response()->json([

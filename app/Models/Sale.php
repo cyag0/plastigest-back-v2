@@ -48,6 +48,7 @@ class Sale extends Model
         'user_id',
         'customer_id',
         'sale_number',
+        'client_request_id',
         'sale_date',
         'status',
         'subtotal',
@@ -285,13 +286,18 @@ class Sale extends Model
                 return false;
             }
 
+            // Turno que recibe la devolución, bloqueado antes de tocar el stock
+            // (mismo orden que una venta: turno → stock). Si la venta cobró
+            // efectivo y no hay turno abierto en su sucursal, no se cancela.
+            $refundSessionId = CashMovementService::refundSessionFor($this);
+
             // Solo revertir stock si la venta estaba CLOSED (la única forma de existir)
             if ($this->status === SaleStatus::CLOSED) {
                 $this->revertStock();
             }
             // Devolver en caja lo cobrado. Va dentro de la transacción: si no
             // se puede registrar, la venta no se cancela a medias.
-            CashMovementService::reverseSale($this);
+            CashMovementService::reverseSale($this, $refundSessionId);
             $this->status = $newStatus;
             $this->save();
 
@@ -306,6 +312,8 @@ class Sale extends Model
     {
         $movementService = new MovementService();
         $locationId = $this->location_id;
+
+        $this->assertStockNotReserved($movementService);
 
         foreach ($this->details as $detail) {
             // Cargar producto para obtener su unit_id
@@ -340,6 +348,60 @@ class Sale extends Model
                 throw new Exception(
                     "Stock insuficiente para '{$product->name}'. " . $e->getMessage()
                 );
+            }
+        }
+    }
+
+    /**
+     * Lo apartado para pedidos (product_location.reserved_stock, al pasar un
+     * pedido a "preparando") no se vende: cada producto se valida contra
+     * existencia − apartado, sumando paquetes y piezas sueltas del mismo
+     * producto. Antes el punto de venta y la pantalla anterior solo veían la
+     * existencia y podían vender lo que ya estaba apartado para un pedido.
+     *
+     * Al cobrar un pedido su propio apartado ya se liberó (checkoutOrder):
+     * aquí solo cuenta lo apartado para otros pedidos. Las filas se bloquean
+     * en orden de producto, antes de que MovementService las vuelva a tomar.
+     */
+    private function assertStockNotReserved(MovementService $movementService): void
+    {
+        $requested = [];
+        foreach ($this->details as $detail) {
+            $requested[$detail->product_id] = ($requested[$detail->product_id] ?? 0)
+                + $movementService->quantityInProductUnit(
+                    (int) $detail->product_id,
+                    (int) $detail->unit_id,
+                    (float) $detail->quantity,
+                    $detail->package_id ? (int) $detail->package_id : null,
+                );
+        }
+
+        if ($requested === []) {
+            return;
+        }
+
+        ksort($requested);
+
+        $stockRows = DB::table('product_location')
+            ->where('location_id', $this->location_id)
+            ->whereIn('product_id', array_keys($requested))
+            ->orderBy('product_id')
+            ->lockForUpdate()
+            ->get(['product_id', 'current_stock', 'reserved_stock'])
+            ->keyBy('product_id');
+
+        foreach ($requested as $productId => $quantity) {
+            $row = $stockRows->get($productId);
+            $reserved = (float) ($row->reserved_stock ?? 0);
+
+            // Sin apartado, MovementService valida contra la existencia.
+            if ($reserved <= 0) {
+                continue;
+            }
+
+            $available = max(0.0, (float) ($row->current_stock ?? 0) - $reserved);
+            if ($quantity > $available + 0.000001) {
+                throw InsufficientStockException::forProduct((int) $productId, $available, $quantity, (int) $this->location_id);
             }
         }
     }
