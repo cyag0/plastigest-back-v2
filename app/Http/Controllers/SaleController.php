@@ -11,11 +11,13 @@ use App\Enums\SaleStatus;
 use App\Exceptions\BusinessRuleException;
 use App\Services\CashMovementService;
 use App\Services\CashRegisterSessionService;
+use App\Support\ClientRequest;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use App\Support\Money;
 use App\Support\SalePricing;
+use Illuminate\Database\QueryException;
 use Illuminate\Validation\Rule;
 use App\Models\Admin\Location;
 use Illuminate\Container\Attributes\CurrentUser;
@@ -148,6 +150,8 @@ class SaleController extends CrudController
             'notes' => 'nullable|string',
             'document_number' => 'nullable|string|max:255',
             'comments' => 'nullable|string',
+            // Llave del intento de cobro: el reintento con la misma no duplica la venta.
+            'client_request_id' => ClientRequest::rules(),
 
             // Detalles de la venta (productos de la empresa del contexto)
             'details' => 'required|array|min:1',
@@ -186,11 +190,19 @@ class SaleController extends CrudController
 
     /**
      * Alta de la venta (las ventas no se editan: ver update()).
+     *
+     * Con client_request_id es idempotente: si ya hay una venta con esa llave
+     * se devuelve esa (200, misma forma que el alta) y no se cobra otra vez.
      */
     protected function process($callback, array $data, $method = 'create'): Model
     {
         if ($method !== 'create') {
             throw new \LogicException('Las ventas no se editan.');
+        }
+
+        $requestId = $data['client_request_id'] ?? null;
+        if ($requestId && ($existing = $this->saleForRequest($requestId))) {
+            return $existing->load($this->getShowRelations());
         }
 
         // El alta vive en SaleService (la comparte el punto de venta). Si quien
@@ -208,11 +220,38 @@ class SaleController extends CrudController
         // pantalla anterior no debe poder cobrar a un precio arbitrario.
         $data['details'] = $this->enforceCatalogPricing($data['details']);
 
-        return app(\App\Services\SaleService::class)->create([
-            'company_id' => CurrentCompany::get()->id,
-            'location_id' => CurrentLocation::get()->id,
-            'user_id' => Auth::id(),
-        ] + $data, $session)->load($this->getShowRelations());
+        try {
+            return app(\App\Services\SaleService::class)->create([
+                'company_id' => CurrentCompany::get()->id,
+                'location_id' => CurrentLocation::get()->id,
+                'user_id' => Auth::id(),
+            ] + $data, $session)->load($this->getShowRelations());
+        } catch (QueryException $e) {
+            // Otra petición con la misma llave se registró primero: esta se
+            // revirtió completa y se responde con aquella.
+            if ($requestId && ClientRequest::isDuplicate($e) && ($existing = $this->saleForRequest($requestId))) {
+                return $existing->load($this->getShowRelations());
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Venta ya registrada con la llave en la empresa. Si es de otra sucursal
+     * no se devuelve (ni se cobra de nuevo): 422 client_request_conflict.
+     */
+    private function saleForRequest(string $requestId): ?Sale
+    {
+        $sale = Sale::where('company_id', CurrentCompany::id())
+            ->where('client_request_id', $requestId)
+            ->first();
+
+        if ($sale && (int) $sale->location_id !== (int) CurrentLocation::id()) {
+            throw ClientRequest::conflict();
+        }
+
+        return $sale;
     }
 
     /**
@@ -856,6 +895,8 @@ class SaleController extends CrudController
             'amount' => 'required|numeric|min:0.01',
             'payment_method' => 'required|in:cash,card,transfer',
             'notes' => 'nullable|string|max:500',
+            // Llave del abono: el reintento con la misma no lo registra dos veces.
+            'client_request_id' => ClientRequest::rules(),
         ], [
             'payment_method.in' => 'Un abono se registra en efectivo, tarjeta o transferencia.',
         ]);
@@ -867,9 +908,19 @@ class SaleController extends CrudController
                 return response()->json(['success' => false, 'message' => 'Venta no encontrada'], 404);
             }
 
-            $result = DB::transaction(function () use ($scopedId, $validated) {
+            $requestId = $validated['client_request_id'] ?? null;
+
+            $result = DB::transaction(function () use ($scopedId, $validated, $requestId) {
                 // Bloqueo de fila: evita que dos pagos simultáneos sobrepasen el total.
                 $sale = Sale::whereKey($scopedId)->lockForUpdate()->firstOrFail();
+
+                // Reintento de un abono ya registrado (misma llave): se responde
+                // igual que la primera vez, antes de validar el saldo (que ya
+                // incluye ese abono) o el turno. Con la venta bloqueada, dos
+                // envíos simultáneos se forman y el segundo ya ve el primero.
+                if ($requestId && $sale->payments()->where('client_request_id', $requestId)->exists()) {
+                    return ['sale' => $sale];
+                }
 
                 if ($sale->status === SaleStatus::CANCELLED) {
                     return ['error' => 'No se puede registrar un pago en una venta cancelada', 'status' => 400];
@@ -922,6 +973,7 @@ class SaleController extends CrudController
                 // el corte leen lo cobrado por método (antes solo estaba el
                 // cobro inicial). Su created_at es el momento del abono.
                 $sale->payments()->create([
+                    'client_request_id' => $requestId,
                     'method' => $validated['payment_method'],
                     'amount' => $newAmount,
                     'tendered' => $isCash ? $newAmount : null,
@@ -959,6 +1011,16 @@ class SaleController extends CrudController
             // Sin turno para cobrar en efectivo, turno recién cerrado…: 422 {message, code}.
             return $e->render();
         } catch (\Exception $e) {
+            // Respaldo del índice único (venta + llave): el abono ya quedó
+            // registrado por otra petición con la misma llave.
+            if (($requestId ?? null) && ClientRequest::isDuplicate($e)) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Pago registrado correctamente',
+                    'data' => new $this->resource(Sale::findOrFail($id)->load($this->getShowRelations())),
+                ]);
+            }
+
             Log::error('Error al registrar pago', ['exception' => get_class($e), 'message' => $e->getMessage()]);
 
             return response()->json([

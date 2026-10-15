@@ -275,6 +275,8 @@ Route::middleware('auth:sanctum')->group(function () {
             // Punto de venta para cajeros
             Route::get('pos/catalog', [\App\Http\Controllers\PosController::class, 'catalog']);
             Route::post('pos/sales', [\App\Http\Controllers\PosController::class, 'store']);
+            Route::get('pos/sales/request/{clientRequestId}', [\App\Http\Controllers\PosController::class, 'findByRequest'])
+                ->where('clientRequestId', '[A-Za-z0-9_-]{1,64}');
             Route::prefix('cash-register-sessions')->controller(\App\Http\Controllers\CashRegisterSessionController::class)->group(function () {
                 Route::get('/', 'index');
                 Route::get('current', 'current');

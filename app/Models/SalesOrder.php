@@ -33,6 +33,7 @@ class SalesOrder extends Model
         'created_by',
         'updated_by',
         'order_number',
+        'client_request_id',
         'order_date',
         'channel',
         'service_mode',

@@ -23,7 +23,8 @@ class SaleService
      * @param array $data {
      *   company_id, location_id, user_id, sale_date?, customer_id?,
      *   customer_name?, customer_phone?, customer_email?, notes?, comments?,
-     *   document_number?,
+     *   document_number?, client_request_id? (llave de idempotencia: el índice
+     *   único hace fallar el alta si otra petición ya la usó),
      *   details: [{product_id, package_id?, unit_id, quantity, unit_price, discount?}],
      *   payments?: [{method: cash|card|transfer, amount, tendered?}],
      *   payment_method?, paid_amount?   (formato anterior, si no hay payments)
@@ -89,6 +90,7 @@ class SaleService
                 'location_id' => $data['location_id'],
                 'cash_register_id' => $session?->cash_register_id,
                 'cash_register_session_id' => $session?->id,
+                'client_request_id' => $data['client_request_id'] ?? null,
                 'user_id' => $data['user_id'],
                 'customer_id' => $data['customer_id'] ?? null,
                 'sale_date' => $data['sale_date'] ?? now()->toDateString(),

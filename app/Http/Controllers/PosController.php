@@ -3,13 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\Product;
+use App\Models\Sale;
 use App\Services\CashRegisterSessionService;
 use App\Services\SaleService;
+use App\Support\ClientRequest;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use App\Support\Money;
 use App\Support\SalePricing;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -103,11 +106,20 @@ class PosController extends Controller
 
     /**
      * POST pos/sales — cobra una venta en el turno abierto del cajero.
+     *
+     * Con client_request_id (la llave del intento de cobro) es idempotente: si
+     * ya hay una venta con esa llave responde 200 con la misma forma que el
+     * alta (201) y no cobra otra vez, aunque el turno ya se haya cerrado.
      */
     public function store(Request $request): JsonResponse
     {
         if (!CurrentWorker::hasPermission('sales_pos')) {
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $requestId = $request->validate(['client_request_id' => ClientRequest::rules()])['client_request_id'] ?? null;
+        if ($requestId && ($existing = $this->saleForRequest($requestId))) {
+            return $this->saleResponse($existing, 200);
         }
 
         $session = $this->sessions->current(Auth::user());
@@ -163,17 +175,76 @@ class PosController extends Controller
             }
         }
 
-        $sale = $this->sales->create([
-            'company_id' => $companyId,
-            'location_id' => $session->location_id,
-            'user_id' => Auth::id(),
-            'customer_id' => $validated['customer_id'] ?? null,
-            'notes' => $validated['notes'] ?? null,
-            'details' => $details,
-            'payments' => $validated['payments'],
-        ], $session);
+        try {
+            $sale = $this->sales->create([
+                'company_id' => $companyId,
+                'location_id' => $session->location_id,
+                'user_id' => Auth::id(),
+                'customer_id' => $validated['customer_id'] ?? null,
+                'notes' => $validated['notes'] ?? null,
+                'client_request_id' => $requestId,
+                'details' => $details,
+                'payments' => $validated['payments'],
+            ], $session);
+        } catch (QueryException $e) {
+            // Otra petición con la misma llave se registró primero (doble envío
+            // simultáneo): esta se revirtió completa y se responde con aquella.
+            if ($requestId && ClientRequest::isDuplicate($e) && ($existing = $this->saleForRequest($requestId))) {
+                return $this->saleResponse($existing, 200);
+            }
 
-        $sale->load('payments');
+            throw $e;
+        }
+
+        return $this->saleResponse($sale, 201);
+    }
+
+    /**
+     * GET pos/sales/request/{clientRequestId} — la venta registrada con esa
+     * llave, con la misma forma que el alta. La app la consulta cuando un
+     * cobro se quedó sin respuesta, antes de dejar cobrar otra vez.
+     */
+    public function findByRequest(string $clientRequestId): JsonResponse
+    {
+        if (!CurrentWorker::hasPermission('sales_pos')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $sale = Sale::query()
+            ->where('company_id', CurrentCompany::id())
+            ->where('location_id', CurrentLocation::id())
+            ->where('client_request_id', $clientRequestId)
+            ->first();
+
+        if (!$sale) {
+            return response()->json(['message' => 'No hay una venta registrada con esa llave de cobro.'], 404);
+        }
+
+        return $this->saleResponse($sale, 200);
+    }
+
+    /**
+     * Venta ya registrada con la llave en la empresa. Si es de otra sucursal
+     * no se devuelve (ni se cobra de nuevo): 422 client_request_conflict.
+     */
+    private function saleForRequest(string $requestId): ?Sale
+    {
+        $sale = Sale::query()
+            ->where('company_id', CurrentCompany::id())
+            ->where('client_request_id', $requestId)
+            ->first();
+
+        if ($sale && (int) $sale->location_id !== (int) CurrentLocation::id()) {
+            throw ClientRequest::conflict();
+        }
+
+        return $sale;
+    }
+
+    /** Respuesta del alta: la misma en el cobro, el reintento y la consulta por llave. */
+    private function saleResponse(Sale $sale, int $status): JsonResponse
+    {
+        $sale->loadMissing('payments');
 
         return response()->json([
             'message' => 'Venta registrada',
@@ -191,7 +262,7 @@ class PosController extends Controller
                 ])->values(),
                 'change' => (float) $sale->payments->sum('change'),
             ],
-        ], 201);
+        ], $status);
     }
 
     /**

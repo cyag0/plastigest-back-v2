@@ -245,7 +245,11 @@ class SalesOrderStockService
      * ingreso (y su pago) en el turno abierto de quien cobra en la sucursal
      * del pedido, si lo tiene.
      *
-     * @param  array{payment_method?: string, paid_amount?: float|int, notes?: string|null}  $payment
+     * Con client_request_id (la llave del intento de cobro) es idempotente: si
+     * el pedido ya se cobró con esa llave se devuelve esa venta y no se cobra
+     * otra vez.
+     *
+     * @param  array{payment_method?: string, paid_amount?: float|int, notes?: string|null, client_request_id?: string|null}  $payment
      */
     public function checkoutOrder(SalesOrder $order, array $payment = []): Sale
     {
@@ -253,6 +257,16 @@ class SalesOrderStockService
             // Se decide con el pedido bloqueado: dos cobros simultáneos (doble
             // toque, reintento) creaban dos ventas y descontaban el stock dos veces.
             $order = $this->lockOrder($order);
+
+            // Reintento de un cobro que ya entró (misma llave): con el pedido
+            // bloqueado el segundo envío espera al primero y aquí ve su venta.
+            $requestId = $payment['client_request_id'] ?? null;
+            if ($requestId && $order->sale_id) {
+                $previous = Sale::whereKey($order->sale_id)->where('client_request_id', $requestId)->first();
+                if ($previous) {
+                    return $previous->fresh('details');
+                }
+            }
 
             if ($order->status === SalesOrderStatus::CANCELLED || $order->status === SalesOrderStatus::DELIVERED) {
                 throw ValidationException::withMessages([
@@ -320,6 +334,7 @@ class SalesOrderStockService
 
             $sale = Sale::create([
                 'sale_number' => $saleNumber,
+                'client_request_id' => $requestId,
                 'company_id' => $order->company_id,
                 'location_id' => $order->location_id,
                 'cash_register_id' => $session?->cash_register_id,

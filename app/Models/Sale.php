@@ -48,6 +48,7 @@ class Sale extends Model
         'user_id',
         'customer_id',
         'sale_number',
+        'client_request_id',
         'sale_date',
         'status',
         'subtotal',

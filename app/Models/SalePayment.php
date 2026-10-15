@@ -14,6 +14,7 @@ class SalePayment extends Model
 
     protected $fillable = [
         'sale_id',
+        'client_request_id',
         'method',
         'amount',
         'tendered',

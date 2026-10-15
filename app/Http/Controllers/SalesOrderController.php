@@ -11,14 +11,17 @@ use App\Http\Resources\ProductResource;
 use App\Http\Resources\SalesOrderResource;
 use App\Models\Admin\Customer;
 use App\Models\Product;
+use App\Models\Sale;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderDetail;
+use App\Support\ClientRequest;
 use App\Support\CurrentWorker;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\Money;
 use App\Support\SalePricing;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -34,6 +37,9 @@ class SalesOrderController extends CrudController
 
     protected ?string $permissionPrefix = 'sales_orders';
     protected ?string $locationColumn = 'location_id';
+
+    /** El alta corre dentro del cobro rápido (quickCheckout): ver process(). */
+    private bool $inQuickCheckout = false;
 
     protected function indexRelations(): array
     {
@@ -116,6 +122,8 @@ class SalesOrderController extends CrudController
             'details.*.unit_id' => 'required|exists:units,id',
             'details.*.requested_quantity' => 'required|numeric|min:0.001',
             'details.*.unit_price' => 'required|numeric|min:0',
+            // Llave del alta: el reintento con la misma no crea otro pedido.
+            'client_request_id' => ClientRequest::rules(),
         ];
     }
 
@@ -162,7 +170,49 @@ class SalesOrderController extends CrudController
 
     protected function process($callback, array $data, $method): Model
     {
-        return DB::transaction(function () use ($callback, $data, $method): Model {
+        $requestId = $method === 'create' ? ($data['client_request_id'] ?? null) : null;
+        unset($data['client_request_id']);
+
+        // Alta con llave ya registrada (reintento): el mismo pedido, sin crear otro.
+        if ($requestId && ($existing = $this->orderForRequest($requestId))) {
+            return $existing->fresh($this->getShowRelations());
+        }
+
+        try {
+            return $this->persistOrder($callback, $data, $method, $requestId);
+        } catch (QueryException $e) {
+            // Otra petición con la misma llave se registró primero: esta se
+            // revirtió y se responde con aquel pedido. En el cobro rápido no:
+            // ahí la transacción de afuera decide (también falta la venta).
+            if (!$this->inQuickCheckout && $requestId && ClientRequest::isDuplicate($e)
+                && ($existing = $this->orderForRequest($requestId))) {
+                return $existing->fresh($this->getShowRelations());
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Pedido ya registrado con la llave en la empresa. Si es de otra sucursal
+     * no se devuelve ni se crea otro: 422 client_request_conflict.
+     */
+    private function orderForRequest(string $requestId): ?SalesOrder
+    {
+        $order = SalesOrder::where('company_id', CurrentCompany::id())
+            ->where('client_request_id', $requestId)
+            ->first();
+
+        if ($order && (int) $order->location_id !== (int) CurrentLocation::id()) {
+            throw ClientRequest::conflict();
+        }
+
+        return $order;
+    }
+
+    private function persistOrder($callback, array $data, string $method, ?string $requestId): Model
+    {
+        return DB::transaction(function () use ($callback, $data, $method, $requestId): Model {
             $company = CurrentCompany::get();
             $location = CurrentLocation::get();
             $user = Auth::user();
@@ -184,6 +234,7 @@ class SalesOrderController extends CrudController
                 $payload['location_id'] = $location->id;
                 $payload['created_by'] = $user->id;
                 $payload['status'] = SalesOrderStatus::PENDING;
+                $payload['client_request_id'] = $requestId;
             } else {
                 // Al editar no se tocan empresa, sucursal ni quién lo creó (antes
                 // se pasaba el pedido a la sucursal de quien editaba y se borraba
@@ -412,6 +463,8 @@ class SalesOrderController extends CrudController
             'payment_method' => 'sometimes|in:cash,card,transfer,credit',
             'paid_amount' => 'sometimes|numeric|min:0',
             'notes' => 'nullable|string',
+            // Llave del cobro: el reintento con la misma no cobra dos veces.
+            'client_request_id' => ClientRequest::rules(),
         ]);
 
         // Aislado por empresa/sucursal.
@@ -420,23 +473,21 @@ class SalesOrderController extends CrudController
         }
 
         try {
+            // Reintento de un cobro que ya entró: la misma respuesta, sin cobrar.
+            $requestId = $validated['client_request_id'] ?? null;
+            if ($requestId && ($previous = $this->saleForRequest($requestId))) {
+                if ((int) SalesOrder::whereKey($id)->value('sale_id') !== (int) $previous->id) {
+                    throw ClientRequest::conflict();
+                }
+
+                return $this->checkoutResponse(SalesOrder::findOrFail($id), $previous);
+            }
+
             $order = SalesOrder::with($this->getShowRelations())->findOrFail($id);
             $stockService = app()->make('App\\Services\\SalesOrderStockService');
             $sale = $stockService->checkoutOrder($order, $validated);
 
-            $order->refresh();
-            $order->load($this->getShowRelations());
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Pedido cobrado y convertido a venta',
-                'data' => new $this->resource($order, ['editing' => true]),
-                'sale' => [
-                    'id' => $sale->id,
-                    'sale_number' => $sale->sale_number,
-                    'total' => $sale->total,
-                ],
-            ]);
+            return $this->checkoutResponse($order, $sale);
         } catch (\Illuminate\Validation\ValidationException $exception) {
             return $this->validationFailure($exception, 'No se pudo cobrar el pedido');
         } catch (\Throwable $exception) {
@@ -446,6 +497,38 @@ class SalesOrderController extends CrudController
             // responde un mensaje genérico.
             return $this->errorResponse($exception, 'Error al cobrar el pedido', $this->isInternalError($exception) ? 500 : 422);
         }
+    }
+
+    /**
+     * Venta registrada con la llave en la empresa (el cobro de un pedido o el
+     * cobro rápido del kiosco guardan la llave en la venta).
+     */
+    private function saleForRequest(string $requestId): ?Sale
+    {
+        return Sale::where('company_id', CurrentCompany::id())
+            ->where('client_request_id', $requestId)
+            ->first();
+    }
+
+    /**
+     * Respuesta del cobro: el pedido (ya entregado, con su venta) y el resumen
+     * de la venta. La misma en el cobro, su reintento y el cobro rápido.
+     */
+    private function checkoutResponse(SalesOrder $order, Sale $sale, int $status = 200)
+    {
+        $order->refresh();
+        $order->load($this->getShowRelations());
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Pedido cobrado y convertido a venta',
+            'data' => new $this->resource($order, ['editing' => true]),
+            'sale' => [
+                'id' => $sale->id,
+                'sale_number' => $sale->sale_number,
+                'total' => $sale->total,
+            ],
+        ], $status);
     }
 
     /**
