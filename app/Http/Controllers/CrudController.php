@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -61,6 +62,30 @@ abstract class CrudController extends Controller
      * sucursal (catálogos de empresa como productos, clientes, etc.).
      */
     protected ?string $locationColumn = null;
+
+    /**
+     * Tope de per_page en las listas paginadas. Sin tope, per_page=100000
+     * traía la tabla completa en una sola respuesta.
+     */
+    protected int $maxPerPage = 100;
+
+    /**
+     * Tope de renglones de las listas sin paginar: all=true (selects) y las
+     * peticiones sin paginated ni per_page, que varias pantallas usan para
+     * traer la lista completa (productos de un conteo, sucursales, roles…).
+     * Antes no había tope y una tabla que crece se devolvía completa.
+     */
+    protected int $maxUnpaginated = 1000;
+
+    /**
+     * Columnas por las que se puede ordenar (sort_by), además de id, name,
+     * created_at, updated_at y $dateColumn cuando la tabla las tiene. Antes
+     * sort_by iba directo a orderBy: una columna inexistente respondía 500 y
+     * se podía ordenar por cualquier columna (sin índice o privada).
+     *
+     * @var string[]
+     */
+    protected array $sortable = [];
 
     /**
      * Cache de existencia de columnas por tabla, para no consultar el esquema
@@ -352,15 +377,33 @@ abstract class CrudController extends Controller
      */
     protected function applyOrdering($query, array $params)
     {
+        // Solo columnas permitidas; cualquier otra ordena por id.
         $sortBy = $params['sort_by'] ?? 'id';
+        if (!is_string($sortBy) || !in_array($sortBy, $this->sortableColumns(), true)) {
+            $sortBy = 'id';
+        }
+
         $sortDirection = $params['sort_direction'] ?? 'desc';
 
         // Validar dirección del ordenamiento
-        if (!in_array(strtolower($sortDirection), ['asc', 'desc'])) {
+        if (!is_string($sortDirection) || !in_array(strtolower($sortDirection), ['asc', 'desc'])) {
             $sortDirection = 'desc';
         }
 
-        $query->orderBy($sortBy, $sortDirection);
+        // Con la tabla: una consulta con joins no se vuelve ambigua.
+        $query->orderBy($query->getModel()->getTable() . '.' . $sortBy, $sortDirection);
+    }
+
+    /**
+     * Columnas válidas para sort_by (ver $sortable).
+     *
+     * @return string[]
+     */
+    protected function sortableColumns(): array
+    {
+        $columns = array_unique(['id', 'name', 'created_at', 'updated_at', $this->dateColumn, ...$this->sortable]);
+
+        return array_values(array_filter($columns, fn($column) => $this->modelHasColumn($column)));
     }
 
     /**
@@ -368,19 +411,26 @@ abstract class CrudController extends Controller
      */
     protected function getResults($query, array $params)
     {
-        // Si se especifica explícitamente que se quiere paginación
-        if (isset($params['paginated']) && $params['paginated'] == true) {
-            $perPage = $params['per_page'] ?? 15;
-            return $query->paginate($perPage);
+        $paginated = filter_var($params['paginated'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $perPage = is_numeric($params['per_page'] ?? null) ? (int) $params['per_page'] : 0;
+
+        // paginated=true (15 por página si no manda per_page) o per_page sin
+        // paginated (compatibilidad); siempre con tope.
+        if ($paginated || $perPage > 0) {
+            return $query->paginate(min($perPage > 0 ? $perPage : 15, $this->maxPerPage));
         }
 
-        // Si se especifica per_page sin paginated=true, también paginar (compatibilidad)
-        if (isset($params['per_page']) && $params['per_page'] > 0) {
-            return $query->paginate($params['per_page']);
+        // Sin paginar (all=true o sin per_page): la lista completa, con tope.
+        $results = $query->limit($this->maxUnpaginated)->get();
+
+        if ($results->count() >= $this->maxUnpaginated) {
+            Log::warning('Lista sin paginar recortada al tope', [
+                'controller' => static::class,
+                'max' => $this->maxUnpaginated,
+            ]);
         }
 
-        // Por defecto, retornar todos los resultados sin paginación
-        return $query->get();
+        return $results;
     }
 
     /**
