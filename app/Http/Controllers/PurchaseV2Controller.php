@@ -583,6 +583,14 @@ class PurchaseV2Controller extends Controller
             ], 422);
         }
 
+        // El turno de quien recibe (de donde sale el pago) se bloquea antes que
+        // las existencias: mismo orden que una venta (turno → stock), para que
+        // una venta simultánea en ese turno no se cruce con esta recepción.
+        // fromPurchaseV2 vuelve a leerlo, ya bloqueado.
+        if ($purchase->paid_from_cash !== false) {
+            CashMovementService::lockedOpenSessionIdFor(Auth::id(), $purchase->location_id);
+        }
+
         $movementService = new MovementService();
 
         // Actualizar cantidades recibidas e incrementar stock

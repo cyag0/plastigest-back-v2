@@ -8,7 +8,6 @@ use App\Models\CashRegisterSession;
 use App\Models\Expense;
 use App\Models\PurchaseV2;
 use App\Models\Sale;
-use App\Support\CurrentLocation;
 use Illuminate\Support\Facades\Auth;
 
 class CashMovementService
@@ -252,7 +251,7 @@ class CashMovementService
             // El dinero sale de la caja de quien recibe, si tiene turno
             // abierto en esa sucursal. Antes la compra no quedaba en ningún
             // turno y el efectivo esperado del cajero no la descontaba.
-            'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $purchase->location_id),
+            'cash_register_session_id' => self::lockedOpenSessionIdFor(Auth::id(), $purchase->location_id),
             'user_id'        => Auth::id() ?? $purchase->user_id,
             'type'           => 'expense',
             'amount'         => $total,
@@ -277,18 +276,23 @@ class CashMovementService
      */
     public static function syncExpense(Expense $expense): void
     {
+        $paidFromCash = $expense->paid_from_cash && (float) $expense->amount > 0;
+
+        // Si quien lo registra tiene turno abierto en la sucursal del gasto, el
+        // gasto sale de esa caja (nunca de la caja de otra sucursal). El turno
+        // se bloquea antes de escribir, como en una venta.
+        $sessionId = $paidFromCash ? self::lockedOpenSessionIdFor(Auth::id(), $expense->location_id) : null;
+
         self::removeExpense($expense);
 
-        if (!$expense->paid_from_cash || (float) $expense->amount <= 0) {
+        if (!$paidFromCash) {
             return;
         }
 
         CashMovement::create([
             'company_id'     => $expense->company_id,
             'location_id'    => $expense->location_id,
-            // Si quien lo registra tiene turno abierto en la sucursal del gasto,
-            // el gasto sale de esa caja (nunca de la caja de otra sucursal).
-            'cash_register_session_id' => self::openSessionIdFor(Auth::id(), $expense->location_id),
+            'cash_register_session_id' => $sessionId,
             'user_id'        => Auth::id() ?? $expense->user_id,
             'type'           => 'expense',
             'amount'         => (float) $expense->amount,
@@ -393,12 +397,22 @@ class CashMovementService
     }
 
     /**
-     * Id del turno abierto de un usuario en la sucursal indicada o, si no se
-     * indica, en la sucursal actual (header X-Location-ID). Lo usan los
-     * movimientos manuales, que se registran en la sucursal actual.
+     * Como openSessionIdFor(), pero con la fila del turno bloqueada hasta el
+     * final de la transacción y releído que siga abierto
+     * (CashRegisterSessionService::lockOpenForUser). Para los egresos e
+     * ingresos que entran a un turno (gastos, compras, movimientos manuales):
+     * un cierre simultáneo espera a que el movimiento termine y lo cuenta en
+     * su corte, o el movimiento ve el turno ya cerrado y queda fuera de turno.
+     * Antes se leía sin bloqueo y el movimiento podía caer en un turno recién
+     * cerrado sin aparecer en su efectivo esperado. Llamar dentro de una
+     * transacción.
      */
-    public static function openSessionIdOf(?int $userId, ?int $locationId = null): ?int
+    public static function lockedOpenSessionIdFor(?int $userId, ?int $locationId): ?int
     {
-        return self::openSessionIdFor($userId, $locationId ?? CurrentLocation::id());
+        if (!$userId || !$locationId) {
+            return null;
+        }
+
+        return app(CashRegisterSessionService::class)->lockOpenForUser($userId, (int) $locationId)?->id;
     }
 }

@@ -116,10 +116,31 @@ class CashMovementController extends CrudController
         $validatedData['company_id']  = CurrentCompany::id();
         $validatedData['location_id'] = CurrentLocation::id();
         $validatedData['user_id']     = Auth::id();
-        // Movimiento manual de quien tiene turno abierto: entra en ese corte.
-        $validatedData['cash_register_session_id'] = \App\Services\CashMovementService::openSessionIdOf(Auth::id());
 
         return $validatedData;
+    }
+
+    /**
+     * Movimiento manual de quien tiene turno abierto: entra en ese corte. El
+     * turno se bloquea dentro de la transacción del alta, como en una venta:
+     * un cierre simultáneo espera a que el movimiento entre y lo cuenta, o el
+     * movimiento ve el turno ya cerrado y queda fuera de turno. Antes se leía
+     * sin bloqueo y podía caer en un turno recién cerrado.
+     */
+    protected function process($callback, array $data, $method): Model
+    {
+        if ($method !== 'create') {
+            return $callback($data);
+        }
+
+        return DB::transaction(function () use ($callback, $data) {
+            $data['cash_register_session_id'] = \App\Services\CashMovementService::lockedOpenSessionIdFor(
+                Auth::id(),
+                $data['location_id'] ?? null,
+            );
+
+            return $callback($data);
+        });
     }
 
     // -------------------------------------------------------------------------
