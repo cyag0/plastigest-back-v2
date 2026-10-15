@@ -38,6 +38,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Salida de las tareas programadas
+    |--------------------------------------------------------------------------
+    |
+    | Laravel manda la salida de cada tarea del scheduler a /dev/null. En
+    | Coolify `schedule:run` corre con docker exec, así que ni la salida ni
+    | los errores (Log a stderr) de los comandos llegaban a los logs del
+    | contenedor. routes/console.php la agrega a este archivo cuando se puede
+    | escribir en él: por defecto el stdout del proceso 1 del contenedor (lo
+    | que muestra Coolify). En local con Sail no se puede (otro usuario) y se
+    | queda en /dev/null.
+    |
+    */
+
+    'schedule_output' => env('LOG_SCHEDULE_OUTPUT', '/proc/1/fd/1'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Log Channels
     |--------------------------------------------------------------------------
     |
