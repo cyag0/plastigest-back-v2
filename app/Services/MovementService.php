@@ -43,13 +43,17 @@ class MovementService
                 $unitId = $product->unit_id;
             }
 
-            // Convertir la cantidad a la unidad base del producto
-            $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
+            // Convertir la cantidad a la unidad base del producto, a la escala
+            // de la existencia (ver roundToStockScale)
+            $quantityInProductUnit = $this->roundToStockScale(
+                $this->convertToProductUnit($productId, $unitId, $quantity, $packageId)
+            );
 
             // Se lee bloqueando la fila: el asiento del libro mayor tiene que
             // registrar el stock exacto de antes y después de ESTE cambio, y sin
-            // el bloqueo dos movimientos simultáneos se pisarían los saldos.
-            $previousStock = $this->lockCurrentStock($locationId, $productId);
+            // el bloqueo dos movimientos simultáneos se pisarían los saldos. Si
+            // el producto aún no tiene fila en la sucursal, se crea aquí.
+            $previousStock = $this->lockOrCreateStockRow($locationId, $productId);
 
             // Incrementar el stock
             $this->incrementStock($locationId, $productId, $quantityInProductUnit);
@@ -94,8 +98,11 @@ class MovementService
                 $unitId = $product->unit_id;
             }
 
-            // Convertir la cantidad a la unidad base del producto
-            $quantityInProductUnit = $this->convertToProductUnit($productId, $unitId, $quantity, $packageId);
+            // Convertir la cantidad a la unidad base del producto, a la escala
+            // de la existencia (ver roundToStockScale)
+            $quantityInProductUnit = $this->roundToStockScale(
+                $this->convertToProductUnit($productId, $unitId, $quantity, $packageId)
+            );
 
             // Mismo motivo que en increment(): se bloquea la fila antes de leer
             // el saldo para que el asiento no mienta bajo concurrencia.
@@ -184,6 +191,70 @@ class MovementService
             ->value('current_stock');
 
         return (float) ($stock ?? 0);
+    }
+
+    /**
+     * Como lockCurrentStock(), pero si el producto todavía no tiene fila en la
+     * sucursal la crea en 0 y la bloquea.
+     *
+     * Antes incrementStock() preguntaba si existía la fila y luego la insertaba:
+     * dos entradas simultáneas del primer stock (dos recepciones, una compra y
+     * una transferencia) creaban dos filas y desde ahí cada consulta leía una
+     * distinta. Ahora la fila se crea con INSERT ... ON DUPLICATE KEY sobre la
+     * llave única (producto, sucursal): si otra transacción la acaba de crear,
+     * se espera a que termine y se usa esa. La consulta previa es una lectura
+     * sin bloqueo, para no tomar bloqueos de hueco que harían chocar (deadlock)
+     * a las dos transacciones al insertar.
+     */
+    protected function lockOrCreateStockRow(int $locationId, int $productId): float
+    {
+        $exists = DB::table('product_location')
+            ->where('location_id', $locationId)
+            ->where('product_id', $productId)
+            ->exists();
+
+        if (!$exists) {
+            $now = now();
+            DB::table('product_location')->upsert(
+                [[
+                    'product_id' => $productId,
+                    'location_id' => $locationId,
+                    'current_stock' => 0,
+                    'minimum_stock' => 0,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]],
+                ['product_id', 'location_id'],
+                // Si ya existe no se toca nada (solo se bloquea).
+                ['id' => DB::raw('id')]
+            );
+        }
+
+        $stock = DB::table('product_location')
+            ->where('location_id', $locationId)
+            ->where('product_id', $productId)
+            ->lockForUpdate()
+            ->value('current_stock');
+
+        if ($stock === null) {
+            throw new Exception("No se pudo registrar la existencia del producto ID {$productId} en la sucursal ID {$locationId}");
+        }
+
+        return (float) $stock;
+    }
+
+    /**
+     * Cantidades a la escala de product_location.current_stock (3 decimales).
+     *
+     * La conversión de unidades y los paquetes dan más decimales (0.1234 kg)
+     * que los que guarda la existencia: MySQL redondeaba la existencia en cada
+     * movimiento pero el libro mayor guardaba la cantidad completa, y con el
+     * tiempo la suma del libro mayor dejaba de cuadrar con la existencia. Se
+     * redondea una sola vez, antes de mover, y las dos guardan lo mismo.
+     */
+    protected function roundToStockScale(float $quantity): float
+    {
+        return round($quantity, 3);
     }
 
     /**
@@ -346,8 +417,6 @@ class MovementService
      */
     protected function decrementStock(int $locationId, int $productId, float $quantity): void
     {
-        Log::info("Intentando decrementar stock para producto ID {$productId} en ubicación ID {$locationId} por cantidad {$quantity}");
-
         $updated = DB::table('product_location')
             ->where('location_id', $locationId)
             ->where('product_id', $productId)
@@ -382,25 +451,11 @@ class MovementService
      */
     protected function incrementStock(int $locationId, int $productId, float $quantity): void
     {
-        $exists = DB::table('product_location')
+        // increment() ya creó (si faltaba) y bloqueó la fila con
+        // lockOrCreateStockRow(): aquí solo se suma.
+        DB::table('product_location')
             ->where('location_id', $locationId)
             ->where('product_id', $productId)
-            ->exists();
-
-        if ($exists) {
-            DB::table('product_location')
-                ->where('location_id', $locationId)
-                ->where('product_id', $productId)
-                ->increment('current_stock', $quantity);
-        } else {
-            DB::table('product_location')->insert([
-                'location_id' => $locationId,
-                'product_id' => $productId,
-                'current_stock' => $quantity,
-                'minimum_stock' => 0,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
+            ->increment('current_stock', $quantity);
     }
 }

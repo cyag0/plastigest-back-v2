@@ -25,6 +25,9 @@ Schedule::command('notifications:scheduled')->hourly()->between('7:00', '21:00')
 Schedule::command('queue:prune-failed --hours=168')->dailyAt('03:30');
 // Tokens de Sanctum vencidos hace más de 24 h (con SANCTUM_TOKEN_EXPIRATION).
 Schedule::command('sanctum:prune-expired --hours=24')->dailyAt('03:45');
+// Cuadre del libro mayor contra la existencia (solo lee; si no cuadra: log de
+// error y código 1).
+Schedule::command('inventory:reconcile')->dailyAt('04:00');
 
 // Telescope solo existe en local (OperationsServiceProvider): si está
 // encendido, que no crezca sin límite.
