@@ -2,12 +2,17 @@
 
 namespace App\Providers;
 
+use App\Support\SystemAlerts;
+use Illuminate\Console\Events\ScheduledTaskFailed;
+use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 
 /**
  * Operación en producción: lo que no es del negocio pero decide si el
  * servidor se puede mantener (herramientas de desarrollo fuera de producción,
- * etc.).
+ * avisos cuando falla un trabajo de la cola o una tarea programada, etc.).
  */
 class OperationsServiceProvider extends ServiceProvider
 {
@@ -35,5 +40,17 @@ class OperationsServiceProvider extends ServiceProvider
                 }
             }
         }
+    }
+
+    public function boot(): void
+    {
+        // Un job que agotó sus intentos (correo del corte de caja, push, OTP)
+        // o una tarea programada que falló: log critical y aviso a los
+        // administradores del sistema (campana y correo), sin inundarlos.
+        Queue::failing(fn(JobFailed $event) => $this->app->make(SystemAlerts::class)->jobFailed($event));
+        Event::listen(
+            ScheduledTaskFailed::class,
+            fn(ScheduledTaskFailed $event) => $this->app->make(SystemAlerts::class)->scheduledTaskFailed($event)
+        );
     }
 }
