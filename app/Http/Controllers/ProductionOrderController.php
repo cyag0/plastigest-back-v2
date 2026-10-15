@@ -132,8 +132,7 @@ class ProductionOrderController extends CrudController
         return $request->validate($this->rules([
             //'location_id' => 'nullable|exists:locations,id',
             'production_date' => 'required|date',
-            'responsible_user_id' => 'required|exists:users,id',
-        ]));
+        ], $request), $this->messages());
     }
 
     protected function validateUpdateData(Request $request, Model $model): array
@@ -141,8 +140,7 @@ class ProductionOrderController extends CrudController
         return $request->validate($this->rules([
             //'location_id' => 'sometimes|exists:locations,id',
             'production_date' => 'sometimes|date',
-            'responsible_user_id' => 'sometimes|exists:users,id',
-        ]));
+        ], $request), $this->messages());
     }
 
     /**
@@ -150,14 +148,21 @@ class ProductionOrderController extends CrudController
      *
      * Productos y fórmula tienen que ser de la empresa: una orden con un
      * producto ajeno movía el stock (y el kárdex) de otra empresa desde esta
-     * sucursal.
+     * sucursal. El responsable, un usuario de la empresa; si no viene (o
+     * viene en 0, el valor inicial del formulario) se queda quien registra la
+     * orden (ver ProductionOrderService::createDraft()).
      */
-    private function rules(array $rules): array
+    private function rules(array $rules, Request $request): array
     {
+        if ($request->has('responsible_user_id') && !(int) $request->input('responsible_user_id')) {
+            $request->merge(['responsible_user_id' => null]);
+        }
+
         $companyId = CurrentCompany::id();
         $product = [Rule::exists('products', 'id')->where('company_id', $companyId)];
 
         return $rules + [
+            'responsible_user_id' => ['nullable', 'integer', Rule::exists('user_company', 'user_id')->where('company_id', $companyId)],
             'formula_id' => [
                 'nullable',
                 Rule::exists('formulas', 'id')->where(fn($q) => $q->where('company_id', $companyId)->orWhereNull('company_id')),
@@ -181,6 +186,13 @@ class ProductionOrderController extends CrudController
             'wastes.*.quantity' => 'required_with:wastes|numeric|min:0.0001',
             'wastes.*.reason' => 'required_with:wastes|in:damage,quality,expired,process_loss,spill,other',
             'wastes.*.notes' => 'nullable|string',
+        ];
+    }
+
+    private function messages(): array
+    {
+        return [
+            'responsible_user_id.exists' => 'El responsable tiene que ser un usuario de la empresa.',
         ];
     }
 
@@ -359,22 +371,40 @@ class ProductionOrderController extends CrudController
             return $this->forbiddenResponse('consultar KPIs de producción');
         }
         $companyId = CurrentCompany::get()?->id;
-        $locationId = $request->input('location_id') ?? CurrentLocation::id();
+        $locationId = $this->requestedLocation($request);
         $stats = $this->service->getTodayStats($companyId, $locationId);
         return response()->json(['success' => true, 'data' => $stats]);
     }
 
     /**
      * GET /production-orders/initial-data
+     *
+     * Catálogos del formulario de producción, entre ellos los responsables
+     * que se pueden elegir. Basta con poder registrar producción (o
+     * consultarla): el formulario los pedía a la lista de usuarios, que exige
+     * users_list, y un rol de producción sin ese permiso no podía registrar.
      */
     public function getInitialData(Request $request)
     {
-        if (!CurrentWorker::hasPermission('production_orders_list')) {
+        if (!CurrentWorker::hasPermission('production_orders_create')
+            && !CurrentWorker::hasPermission('production_orders_list')) {
             return $this->forbiddenResponse('consultar datos iniciales');
         }
-        $locationId = $request->input('location_id') ?? CurrentLocation::id();
+        $locationId = $this->requestedLocation($request);
         $data = $this->service->getInitialData($locationId);
         return response()->json(['success' => true, 'data' => $data]);
+    }
+
+    /**
+     * Sucursal de una consulta con location_id opcional: la del filtro para
+     * quien ve todas las sucursales ('all' = todas) y, si no lo manda, la
+     * actual. Un usuario de una sola sucursal siempre consulta la suya.
+     */
+    private function requestedLocation(Request $request): ?int
+    {
+        return CurrentWorker::locationScope(
+            $request->filled('location_id') ? $request->input('location_id') : CurrentLocation::id()
+        );
     }
 
     /**

@@ -19,7 +19,8 @@ use Tests\TestCase;
 
 /**
  * Producción: las acciones sobre una orden se limitan a la empresa y a la
- * sucursal de quien las hace, y los errores dicen el motivo en `message`.
+ * sucursal de quien las hace, los errores dicen el motivo en `message` y el
+ * formulario obtiene sus responsables sin pedir la lista de usuarios.
  */
 class ComprasProduccionProductionTest extends TestCase
 {
@@ -289,5 +290,81 @@ class ComprasProduccionProductionTest extends TestCase
 
         $this->assertStringNotContainsString('secret', $response->getContent());
         $this->assertStringNotContainsString('SQLSTATE', $response->getContent());
+    }
+
+    // ─── Responsables del formulario ────────────────────────────────────────
+
+    public function test_a_production_role_without_users_list_gets_its_responsibles(): void
+    {
+        $producer = $this->producer($this->location, ['production_orders_create']);
+        $sameBranch = $this->producer();
+        $otherBranch = $this->producer($this->pitillal);
+        $inactive = $this->producer();
+        $inactive->update(['is_active' => false]);
+        [, $foreignBranch] = $this->createCompanyWithBranch();
+        $foreign = $this->createUserWithRole($foreignBranch);
+
+        $responsibles = $this->actingInBranch($producer)
+            ->getJson('/api/auth/admin/production-orders/initial-data')
+            ->assertOk()
+            ->json('data.responsibles');
+
+        $ids = array_column($responsibles, 'id');
+        sort($ids);
+        // Los de la sucursal y el administrador de la empresa (ve todas).
+        $expected = [$this->user->id, $producer->id, $sameBranch->id];
+        sort($expected);
+        $this->assertSame($expected, $ids);
+        $this->assertNotContains($otherBranch->id, $ids);
+        $this->assertNotContains($inactive->id, $ids);
+        $this->assertNotContains($foreign->id, $ids);
+        $this->assertSame(['id', 'name'], array_keys($responsibles[0]), 'sin correo');
+
+        // Sin permiso de producción, nada.
+        $this->actingInBranch($this->producer($this->location, ['sales_list']))
+            ->getJson('/api/auth/admin/production-orders/initial-data')
+            ->assertForbidden();
+    }
+
+    public function test_the_responsible_defaults_to_who_registers_and_must_be_of_the_company(): void
+    {
+        $producer = $this->producer($this->location, ['production_orders_create', 'production_orders_read']);
+
+        // Sin responsable (o en 0, el valor inicial del formulario): quien registra.
+        foreach ([['responsible_user_id' => 0], []] as $overrides) {
+            $payload = array_merge($this->payload(), $overrides);
+            if ($overrides === []) {
+                unset($payload['responsible_user_id']);
+            }
+
+            $id = $this->actingInBranch($producer)
+                ->postJson('/api/auth/admin/production-orders', $payload)
+                ->assertCreated()
+                ->json('data.id');
+            $this->assertSame($producer->id, ProductionOrder::findOrFail($id)->responsible_user_id);
+        }
+
+        [, $foreignBranch] = $this->createCompanyWithBranch();
+        $foreign = $this->createUserWithRole($foreignBranch);
+        $this->actingInBranch($producer)
+            ->postJson('/api/auth/admin/production-orders', $this->payload(['responsible_user_id' => $foreign->id]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('responsible_user_id');
+    }
+
+    public function test_a_branch_producer_only_sees_the_kpis_of_their_branch(): void
+    {
+        $this->completed($this->pitillal);
+        $producer = $this->producer();
+
+        $this->actingInBranch($producer)
+            ->getJson("/api/auth/admin/production-orders/today-stats?location_id={$this->pitillal->id}")
+            ->assertOk()
+            ->assertJsonPath('data.productions_count_today', 0);
+
+        $this->actingInBranch($this->user)
+            ->getJson("/api/auth/admin/production-orders/today-stats?location_id={$this->pitillal->id}")
+            ->assertOk()
+            ->assertJsonPath('data.productions_count_today', 1);
     }
 }

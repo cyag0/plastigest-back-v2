@@ -17,6 +17,7 @@ use App\Models\Unit;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -440,14 +441,13 @@ class ProductionOrderService
             ->orderBy('name')
             ->get(['id', 'name', 'version']);
 
+        // Unidades globales y las de la empresa (no las de otras empresas).
         $units = Unit::query()
+            ->where(fn($q) => $q->whereNull('company_id')->when($companyId, fn($w) => $w->orWhere('company_id', $companyId)))
             ->orderBy('name')
             ->get(['id', 'name', 'unit_type', 'factor_to_base']);
 
-        $responsibles = User::query()
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get(['id', 'name', 'email']);
+        $responsibles = $this->responsibles($companyId, $locationId);
 
         $wasteReasons = array_map(
             fn($value, $label) => ['value' => $value, 'label' => $label],
@@ -463,6 +463,44 @@ class ProductionOrderService
             'units' => $units,
             'responsibles' => $responsibles,
         ];
+    }
+
+    /**
+     * Responsables que se pueden elegir en una orden de la sucursal: usuarios
+     * activos de la empresa que pueden entrar a ella (asignados, o con acceso
+     * a todas las sucursales). Sin sucursal, todos los de la empresa.
+     *
+     * Antes salían todos los usuarios activos de todas las empresas, con su
+     * correo.
+     *
+     * @return array<int, array{id: int, name: string}>
+     */
+    public function responsibles(?int $companyId, ?int $locationId): array
+    {
+        if (!$companyId) {
+            return [];
+        }
+
+        $users = User::query()
+            ->where('is_active', true)
+            ->whereIn('id', DB::table('user_company')->where('company_id', $companyId)->select('user_id'))
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        if ($locationId) {
+            $assigned = DB::table('user_location_roles')
+                ->where('location_id', $locationId)
+                ->pluck('user_id')
+                ->map(fn($id) => (int) $id)
+                ->all();
+
+            $users = $users->filter(
+                fn(User $user) => in_array((int) $user->id, $assigned, true)
+                    || CurrentWorker::canAccessLocation($locationId, $user)
+            );
+        }
+
+        return $users->map(fn(User $user) => ['id' => (int) $user->id, 'name' => $user->name])->values()->all();
     }
 
     // -----------------------------------------------------------------
