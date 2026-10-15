@@ -134,8 +134,8 @@ class RolesController extends CrudController
      * permisos). Salvo el administrador del sistema:
      * - nadie quita permisos que él no tiene;
      * - nadie edita un rol que tiene un usuario con permisos que él no tiene
-     *   (la misma regla que UserController::guardTarget, en todas sus
-     *   sucursales; un administrador del sistema siempre tiene system_admin).
+     *   (CurrentWorker::canManageUser, la misma regla que
+     *   UserController::guardTarget, en todas sus sucursales).
      */
     private function guardRoleChanges(Request $request, Role $role): void
     {
@@ -158,8 +158,9 @@ class RolesController extends CrudController
             ->merge(DB::table('users_roles')->where('role_id', $role->id)->pluck('user_id'))
             ->unique();
 
+        CurrentWorker::preloadRoles($holderIds->all());
         foreach (User::whereIn('id', $holderIds)->get() as $holder) {
-            if (array_diff(CurrentWorker::allPermissionNames($holder), $actorPermissions)) {
+            if (!CurrentWorker::canManageUser($holder)) {
                 abort(response()->json([
                     'message' => 'No puedes editar un rol que tiene un usuario con permisos que tú no tienes.',
                 ], 403));

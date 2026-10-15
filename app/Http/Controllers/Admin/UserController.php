@@ -476,12 +476,40 @@ class UserController extends CrudController
             return null;
         }
 
-        $extra = array_diff(CurrentWorker::allPermissionNames($target), $this->actorPermissionNames());
-        if ($extra) {
+        if (!CurrentWorker::canManageUser($target, $actor)) {
             return $this->forbiddenResponse('modificar a un usuario con permisos que tú no tienes');
         }
 
         return null;
+    }
+
+    /**
+     * La lista y el detalle traen can_manage por usuario: si el actor puede
+     * cambiarle contraseña, correo, estado y roles (la misma regla de
+     * guardTarget, CurrentWorker::canManageUser). Así la app oculta esos
+     * controles en vez de esperar el 403 al guardar.
+     */
+    protected function getResults($query, array $params)
+    {
+        $results = parent::getResults($query, $params);
+
+        $users = $results instanceof \Illuminate\Pagination\AbstractPaginator ? $results->getCollection() : $results;
+        CurrentWorker::preloadRoles($users->pluck('id')->all());
+        $users->each(fn(User $user) => $this->markManageable($user));
+
+        return $results;
+    }
+
+    protected function afterShow(Model $model): void
+    {
+        parent::afterShow($model);
+
+        $this->markManageable($model);
+    }
+
+    private function markManageable(Model $user): void
+    {
+        $user->setAttribute('can_manage', CurrentWorker::canManageUser($user));
     }
 
     /**
@@ -864,6 +892,7 @@ class UserController extends CrudController
         if (!empty($relations)) {
             $user->load($relations);
         }
+        $this->markManageable($user);
     }
 
     /**
@@ -902,6 +931,7 @@ class UserController extends CrudController
         if (!empty($relations)) {
             $user->load($relations);
         }
+        $this->markManageable($user);
     }
 
     /**

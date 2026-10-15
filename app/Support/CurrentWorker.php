@@ -218,6 +218,76 @@ class CurrentWorker
     }
 
     /**
+     * ¿$actor (por defecto el usuario actual) puede cambiarle a $target lo que
+     * define su acceso: contraseña, correo, estado, roles, sucursales?
+     * - El administrador del sistema, a cualquiera.
+     * - A un administrador del sistema, solo otro.
+     * - A los demás, quien tiene todos sus permisos (los de todos sus roles,
+     *   en todas sus sucursales: allPermissionNames()).
+     *
+     * Una sola regla para UserController::guardTarget, la marca can_manage de
+     * la lista y el detalle de usuarios, y editar un rol que alguien tiene
+     * (RolesController).
+     */
+    public static function canManageUser(Authenticatable $target, ?Authenticatable $actor = null): bool
+    {
+        $actor ??= Auth::user();
+        if (!$actor) {
+            return false;
+        }
+
+        if (self::isSystemAdmin($actor)) {
+            return true;
+        }
+
+        if (self::isSystemAdmin($target)) {
+            return false;
+        }
+
+        return array_diff(self::allPermissionNames($target), self::allPermissionNames($actor)) === [];
+    }
+
+    /**
+     * Carga en la caché de la petición los roles (directos y por sucursal) de
+     * varios usuarios con dos consultas, para las listas que comparan permisos
+     * usuario por usuario (can_manage). Sin petición en curso no hace nada.
+     *
+     * @param int[] $userIds
+     */
+    public static function preloadRoles(array $userIds): void
+    {
+        if (self::$cache === null) {
+            return;
+        }
+
+        $userIds = array_values(array_filter(
+            array_unique(array_map('intval', $userIds)),
+            fn(int $id) => !array_key_exists("location-roles:{$id}", self::$cache)
+                || !array_key_exists("direct-roles:{$id}", self::$cache),
+        ));
+        if ($userIds === []) {
+            return;
+        }
+
+        $locationRoles = DB::table('user_location_roles')->whereIn('user_id', $userIds)
+            ->get(['user_id', 'location_id', 'role_id'])->groupBy('user_id');
+        $directRoles = DB::table('users_roles')->whereIn('user_id', $userIds)
+            ->get(['user_id', 'role_id'])->groupBy('user_id');
+
+        foreach ($userIds as $userId) {
+            // Mismo formato que locationRoleIds() y directRoleIds().
+            self::$cache["location-roles:{$userId}"] ??= collect($locationRoles->get($userId, []))
+                ->mapWithKeys(fn($row) => [(int) $row->location_id => $row->role_id === null ? null : (int) $row->role_id])
+                ->all();
+            self::$cache["direct-roles:{$userId}"] ??= collect($directRoles->get($userId, []))
+                ->map(fn($row) => (int) $row->role_id)
+                ->unique()
+                ->values()
+                ->all();
+        }
+    }
+
+    /**
      * ¿El usuario puede operar en la empresa indicada? Pertenece a ella
      * (user_company) o es administrador del sistema (puede elegir cualquiera).
      */

@@ -41,6 +41,13 @@ class UserResource extends Resources
                 : CurrentWorker::isSystemAdmin($resource),
         ];
 
+        // ¿Quien consulta puede cambiarle contraseña, correo, estado y roles?
+        // Lo calculan la lista y el detalle de usuarios (UserController, con
+        // CurrentWorker::canManageUser); no viene donde el usuario va anidado.
+        if (array_key_exists('can_manage', $resource->getAttributes())) {
+            $item['can_manage'] = (bool) $resource->getAttributes()['can_manage'];
+        }
+
         // Campos adicionales según el contexto
         if ($editing) {
             // Datos completos para show/edit
