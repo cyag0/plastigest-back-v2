@@ -42,13 +42,15 @@ class ProductMovementController extends Controller
             return response()->json(['message' => 'Producto no encontrado'], 404);
         }
 
+        // Quien no ve todas las sucursales solo ve la suya, diga lo que diga
+        // el filtro. Antes location_id del cliente mostraba cualquier sucursal
+        // y, sin filtro, el historial de todas.
+        $locationId = CurrentWorker::locationScope($request->input('location_id'));
+
         $query = StockLedgerEntry::with(['location', 'counterpartLocation', 'user'])
             ->where('company_id', $companyId)
-            ->forProduct($productId);
-
-        if ($request->filled('location_id')) {
-            $query->where('location_id', (int) $request->input('location_id'));
-        }
+            ->forProduct($productId)
+            ->forLocation($locationId);
 
         if ($request->filled('direction')) {
             $query->where('direction', (string) $request->input('direction'));
@@ -92,7 +94,7 @@ class ProductMovementController extends Controller
                 'code' => $product->code,
                 'unit' => $product->unit?->name,
                 'unit_abbreviation' => $product->unit?->abbreviation,
-                'current_stock' => $this->currentStock($productId, $request->input('location_id')),
+                'current_stock' => $this->currentStock($productId, $locationId),
             ],
             'filters' => [
                 'reasons' => array_map(
@@ -104,16 +106,16 @@ class ProductMovementController extends Controller
     }
 
     /**
-     * Existencia actual: de una sucursal si se pidió filtrada, o la suma de
-     * todas si no.
+     * Existencia actual: de la sucursal a la que se limita la consulta, o la
+     * suma de todas si no se limita (solo quien ve todas las sucursales).
      */
-    private function currentStock(int $productId, mixed $locationId): float
+    private function currentStock(int $productId, ?int $locationId): float
     {
         $query = \Illuminate\Support\Facades\DB::table('product_location')
             ->where('product_id', $productId);
 
         if ($locationId) {
-            $query->where('location_id', (int) $locationId);
+            $query->where('location_id', $locationId);
         }
 
         return (float) ($query->sum('current_stock') ?? 0);

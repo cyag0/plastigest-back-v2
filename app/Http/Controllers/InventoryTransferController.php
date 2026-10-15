@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Exists;
+use Illuminate\Validation\ValidationException;
 use App\Models\InventoryTransfer;
 use App\Models\InventoryTransferDetail;
 use App\Models\InventoryAdjustmentDetail;
@@ -287,26 +288,26 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        try {
-            $transfer = InventoryTransfer::with([
-                'fromLocation',
-                'toLocation',
-                'requestedByUser',
-                'details.product.activePackages',
-                'details.product.mainImage',
-                'details.package',
-                'details.unit'
-            ])->where('company_id', CurrentCompany::id())->findOrFail($id);
+        $transfer = $this->findVisibleTransfer($id, [
+            'fromLocation',
+            'toLocation',
+            'requestedByUser',
+            'details.product.activePackages',
+            'details.product.mainImage',
+            'details.package',
+            'details.unit'
+        ]);
 
+        if (!$transfer) {
+            return $this->transferNotFoundResponse();
+        }
+
+        try {
             return response()->json([
                 'data' => new InventoryTransferResource($transfer),
             ]);
         } catch (Exception $e) {
-            Log::error('Error showing transfer: ' . $e->getMessage());
-            return response()->json([
-                'message' => 'Transferencia no encontrada',
-                'error' => $this->errorDetail($e)
-            ], 404);
+            return $this->errorResponse($e, 'Error al obtener la transferencia');
         }
     }
 
@@ -320,10 +321,15 @@ class InventoryTransferController extends Controller
         }
 
         $companyId = (int) CurrentCompany::id();
-        $transfer = InventoryTransfer::where('company_id', $companyId)->find($id);
+        $transfer = $this->findVisibleTransfer($id);
 
         if (!$transfer) {
-            return response()->json(['message' => 'Transferencia no encontrada'], 404);
+            return $this->transferNotFoundResponse();
+        }
+
+        // La edita una de las dos partes, desde su sucursal.
+        if (!$this->actsFrom((int) $transfer->from_location_id, (int) $transfer->to_location_id)) {
+            return $this->wrongLocationResponse('Esta solicitud solo se edita desde la sucursal de origen o la de destino.');
         }
 
         $validated = $request->validate(array_merge([
@@ -340,6 +346,12 @@ class InventoryTransferController extends Controller
                 'message' => 'El origen y el destino deben ser sucursales distintas.',
                 'errors' => ['to_location_id' => ['El origen y el destino deben ser sucursales distintas.']],
             ], 422);
+        }
+
+        // Con origen o destino nuevos, quien edita tiene que seguir siendo una
+        // de las dos partes (misma regla que al crearla).
+        if (!$this->actsFrom($fromLocationId, $toLocationId)) {
+            return $this->wrongLocationResponse('Solo puedes pedir mercancía para tu sucursal o enviarla desde ella.');
         }
 
         try {
@@ -399,12 +411,22 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        try {
-            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
+        $transfer = $this->findVisibleTransfer($id);
 
+        if (!$transfer) {
+            return $this->transferNotFoundResponse();
+        }
+
+        // La cancela quien la pidió (destino) o el origen, desde su sucursal.
+        if (!$this->actsFrom((int) $transfer->from_location_id, (int) $transfer->to_location_id)) {
+            return $this->wrongLocationResponse('Esta transferencia solo se cancela desde la sucursal de origen o la de destino.');
+        }
+
+        try {
             if (!$transfer->status->canCancel()) {
                 return response()->json([
-                    'message' => 'Esta transferencia no puede ser cancelada'
+                    'message' => 'Esta transferencia no puede ser cancelada',
+                    'code' => 'invalid_status',
                 ], 422);
             }
 
@@ -427,11 +449,7 @@ class InventoryTransferController extends Controller
                 'message' => 'Transferencia cancelada exitosamente',
             ]);
         } catch (Exception $e) {
-            Log::error('Error canceling transfer: ' . $e->getMessage());
-            return response()->json([
-                'message' => 'Error al cancelar la transferencia',
-                'error' => $this->errorDetail($e)
-            ], 500);
+            return $this->errorResponse($e, 'Error al cancelar la transferencia');
         }
     }
 
@@ -451,9 +469,18 @@ class InventoryTransferController extends Controller
             'items.*.quantity_requested' => 'required_with:items|numeric|min:0',
         ]);
 
-        try {
-            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
+        $transfer = $this->findVisibleTransfer($id, ['fromLocation']);
 
+        if (!$transfer) {
+            return $this->transferNotFoundResponse();
+        }
+
+        // La aprueba el origen, que es quien va a mandar la mercancía.
+        if (!$this->actsFrom((int) $transfer->from_location_id)) {
+            return $this->wrongLocationResponse("Esta transferencia la aprueba la sucursal de origen ({$transfer->fromLocation?->name}).");
+        }
+
+        try {
             $transfer = $this->transferService->approve($transfer, $request->all());
 
             try {
@@ -476,10 +503,7 @@ class InventoryTransferController extends Controller
                 'data' => new InventoryTransferResource($transfer)
             ]);
         } catch (Exception $e) {
-            Log::error('Error approving transfer: ' . $e->getMessage());
-            return response()->json([
-                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
-            ], 400);
+            return $this->errorResponse($e, 'No se pudo aprobar la transferencia');
         }
     }
 
@@ -492,20 +516,29 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
+        $validator = Validator::make($request->all(), [
+            'rejection_reason' => 'required|string|max:500'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $transfer = $this->findVisibleTransfer($id);
+
+        if (!$transfer) {
+            return $this->transferNotFoundResponse();
+        }
+
+        // La rechaza el origen (o la retira el destino), desde su sucursal.
+        if (!$this->actsFrom((int) $transfer->from_location_id, (int) $transfer->to_location_id)) {
+            return $this->wrongLocationResponse('Esta transferencia solo se rechaza desde la sucursal de origen o la de destino.');
+        }
+
         try {
-            $validator = Validator::make($request->all(), [
-                'rejection_reason' => 'required|string|max:500'
-            ]);
-
-            if ($validator->fails()) {
-                return response()->json([
-                    'message' => 'Validación fallida',
-                    'errors' => $validator->errors()
-                ], 422);
-            }
-
-            $transfer = InventoryTransfer::where('company_id', CurrentCompany::id())->findOrFail($id);
-
             $transfer = $this->transferService->reject($transfer, $request->rejection_reason);
 
             try {
@@ -526,10 +559,7 @@ class InventoryTransferController extends Controller
                 'data' => new InventoryTransferResource($transfer)
             ]);
         } catch (Exception $e) {
-            Log::error('Error rejecting transfer: ' . $e->getMessage());
-            return response()->json([
-                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
-            ], 400);
+            return $this->errorResponse($e, 'No se pudo rechazar la transferencia');
         }
     }
 
@@ -542,9 +572,18 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        try {
-            $transfer = InventoryTransfer::with('details')->where('company_id', CurrentCompany::id())->findOrFail($id);
+        $transfer = $this->findVisibleTransfer($id, ['details', 'fromLocation']);
 
+        if (!$transfer) {
+            return $this->transferNotFoundResponse();
+        }
+
+        // La envía el origen: es su stock el que sale.
+        if (!$this->actsFrom((int) $transfer->from_location_id)) {
+            return $this->wrongLocationResponse("Esta transferencia la envía la sucursal de origen ({$transfer->fromLocation?->name}).");
+        }
+
+        try {
             $validated = $request->validate([
                 'items' => 'required|array|min:1',
                 'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
@@ -652,11 +691,11 @@ class InventoryTransferController extends Controller
                 'message' => 'Transferencia enviada exitosamente',
                 'data' => new InventoryTransferResource($transfer)
             ]);
+        } catch (ValidationException $e) {
+            // 422 con el detalle por campo, no un 400 genérico.
+            throw $e;
         } catch (Exception $e) {
-            Log::error('Error shipping transfer: ' . $e->getMessage());
-            return response()->json([
-                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
-            ], 400);
+            return $this->errorResponse($e, 'No se pudo enviar la transferencia');
         }
     }
 
@@ -669,9 +708,18 @@ class InventoryTransferController extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        try {
-            $transfer = InventoryTransfer::with('details')->where('company_id', CurrentCompany::id())->findOrFail($id);
+        $transfer = $this->findVisibleTransfer($id, ['details', 'toLocation']);
 
+        if (!$transfer) {
+            return $this->transferNotFoundResponse();
+        }
+
+        // La recibe el destino: la mercancía entra a su stock.
+        if (!$this->actsFrom((int) $transfer->to_location_id)) {
+            return $this->wrongLocationResponse("Esta transferencia la recibe la sucursal de destino ({$transfer->toLocation?->name}).");
+        }
+
+        try {
             $validated = $request->validate([
                 'items' => 'required|array|min:1',
                 'items.*.detail_id' => 'required|distinct|exists:inventory_transfer_details,id',
@@ -899,12 +947,42 @@ class InventoryTransferController extends Controller
                 'message' => 'Transferencia recibida exitosamente',
                 'data' => new InventoryTransferResource($transfer)
             ]);
+        } catch (ValidationException $e) {
+            // 422 con el detalle por campo, no un 400 genérico.
+            throw $e;
         } catch (Exception $e) {
-            Log::error('Error receiving transfer: ' . $e->getMessage());
-            return response()->json([
-                'message' => $this->errorDetail($e) ?? 'Ocurrió un error al procesar la solicitud.'
-            ], 400);
+            return $this->errorResponse($e, 'No se pudo recibir la transferencia');
         }
+    }
+
+    /**
+     * Transferencia de la empresa que el usuario puede ver: con acceso a todas
+     * las sucursales, cualquiera; si no, solo si está asignado a la sucursal
+     * de origen o a la de destino. null si no existe o no la puede ver (se
+     * responde 404 sin confirmar que existe). Antes cualquiera con el permiso
+     * abría, aprobaba, enviaba o recibía la transferencia de otras sucursales
+     * con solo conocer el id.
+     */
+    private function findVisibleTransfer(int $id, array $with = []): ?InventoryTransfer
+    {
+        $transfer = InventoryTransfer::with($with)
+            ->where('company_id', CurrentCompany::id())
+            ->find($id);
+
+        if (!$transfer) {
+            return null;
+        }
+
+        $visible = CurrentWorker::canAccessAllLocations()
+            || CurrentWorker::canAccessLocation((int) $transfer->from_location_id)
+            || CurrentWorker::canAccessLocation((int) $transfer->to_location_id);
+
+        return $visible ? $transfer : null;
+    }
+
+    private function transferNotFoundResponse(): JsonResponse
+    {
+        return response()->json(['message' => 'Transferencia no encontrada'], 404);
     }
 
     /**
