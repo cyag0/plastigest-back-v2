@@ -19,8 +19,9 @@ use Tests\TestCase;
 
 /**
  * Producción: las acciones sobre una orden se limitan a la empresa y a la
- * sucursal de quien las hace, los errores dicen el motivo en `message` y el
- * formulario obtiene sus responsables sin pedir la lista de usuarios.
+ * sucursal de quien las hace, los errores dicen el motivo en `message`, el
+ * formulario obtiene sus responsables sin pedir la lista de usuarios y una
+ * sección que se vacía en un borrador se borra.
  */
 class ComprasProduccionProductionTest extends TestCase
 {
@@ -366,5 +367,47 @@ class ComprasProduccionProductionTest extends TestCase
             ->getJson("/api/auth/admin/production-orders/today-stats?location_id={$this->pitillal->id}")
             ->assertOk()
             ->assertJsonPath('data.productions_count_today', 1);
+    }
+
+    // ─── Borradores: secciones vaciadas ─────────────────────────────────────
+
+    private function waste(float $quantity = 2): array
+    {
+        return ['product_id' => $this->coco->id, 'unit_id' => $this->unitId('Pieza'), 'quantity' => $quantity, 'reason' => 'damage'];
+    }
+
+    public function test_removing_every_waste_of_a_draft_clears_them(): void
+    {
+        $id = $this->draft(null, null, ['wastes' => [$this->waste()]]);
+        $url = "/api/auth/admin/production-orders/{$id}";
+
+        // Sin la marca, una lista que no viene se queda como está.
+        $this->actingInBranch($this->user)->putJson($url, ['notes' => 'Solo cambio la nota'])->assertOk();
+        $this->assertCount(1, ProductionOrder::findOrFail($id)->getAttribute('wastes'));
+
+        // La app quitó la única merma: en FormData no viaja la lista vacía y
+        // manda wastes_empty=1. Se registra sin descontar esa merma.
+        $payload = $this->payload(['wastes_empty' => '1', 'affect_stock' => true]);
+        $this->actingInBranch($this->user)->putJson($url, $payload)->assertOk();
+
+        $this->assertSame('completed', ProductionOrder::findOrFail($id)->status->value);
+        $this->assertEquals(36, $this->stockOf($this->coco), 'solo los 14 consumidos, no la merma quitada');
+        $this->assertSame(0, ProductionOrder::findOrFail($id)->wastes()->count(), 'no queda ajuste de merma');
+    }
+
+    public function test_emptied_consumptions_and_outputs_of_a_draft_are_deleted(): void
+    {
+        $id = $this->draft();
+        $url = "/api/auth/admin/production-orders/{$id}";
+
+        $this->actingInBranch($this->user)->putJson($url, ['consumptions_empty' => 'true', 'outputs_empty' => 1])->assertOk();
+
+        $order = ProductionOrder::findOrFail($id);
+        $this->assertSame(0, $order->consumptions()->count());
+        $this->assertSame(0, $order->outputs()->count());
+
+        // Con renglones, la marca no estorba: mandan los renglones.
+        $this->actingInBranch($this->user)->putJson($url, $this->payload(['consumptions_empty' => 1]))->assertOk();
+        $this->assertSame(1, $order->consumptions()->count());
     }
 }

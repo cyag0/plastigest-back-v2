@@ -137,11 +137,24 @@ class ProductionOrderController extends CrudController
 
     protected function validateUpdateData(Request $request, Model $model): array
     {
+        foreach (self::LISTS as $list) {
+            if ($request->has("{$list}_empty")) {
+                $request->merge(["{$list}_empty" => $request->boolean("{$list}_empty")]);
+            }
+        }
+
         return $request->validate($this->rules([
             //'location_id' => 'sometimes|exists:locations,id',
             'production_date' => 'sometimes|date',
+            // Ver processUpdateData().
+            'consumptions_empty' => 'nullable|boolean',
+            'outputs_empty' => 'nullable|boolean',
+            'wastes_empty' => 'nullable|boolean',
         ], $request), $this->messages());
     }
+
+    /** Listas de renglones de la orden. */
+    private const LISTS = ['consumptions', 'outputs', 'wastes'];
 
     /**
      * Reglas comunes de alta y edición.
@@ -194,6 +207,26 @@ class ProductionOrderController extends CrudController
         return [
             'responsible_user_id.exists' => 'El responsable tiene que ser un usuario de la empresa.',
         ];
+    }
+
+    /**
+     * Una lista vacía no viaja en un FormData: cuando el usuario quita todos
+     * los renglones de una sección de un borrador, la app manda
+     * "<lista>_empty=1" (consumptions_empty, outputs_empty, wastes_empty) y
+     * aquí se vuelve una lista vacía, que borra los renglones guardados. Antes
+     * la merma quitada se seguía descontando al completar la orden. Sin la
+     * marca, una lista que no viene se queda como está.
+     */
+    protected function processUpdateData(array $validatedData, Request $request, Model $model): array
+    {
+        foreach (self::LISTS as $list) {
+            if (!empty($validatedData["{$list}_empty"]) && empty($validatedData[$list])) {
+                $validatedData[$list] = [];
+            }
+            unset($validatedData["{$list}_empty"]);
+        }
+
+        return $validatedData;
     }
 
     protected function process($callback, array $data, $method): Model
