@@ -17,6 +17,7 @@ use App\Http\Controllers\ProductMovementController;
 use App\Http\Controllers\InventoryMovementController;
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\PrintController;
+use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PurchaseV2Controller;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SupplierController;
@@ -311,6 +312,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('inventory-movements', [InventoryMovementController::class, 'index']);
             Route::get('inventory-movements/export-url', [InventoryMovementController::class, 'exportUrl']);
             Route::get('activity', [ActivityLogController::class, 'index']);
+            Route::get('home/summary', [HomeController::class, 'summary']);
+
             // URL firmadas de los documentos para imprimir.
             Route::get('sales/{id}/ticket-url', [PrintController::class, 'saleTicketUrl'])->whereNumber('id');
             Route::get('cash-register-sessions/{id}/ticket-url', [PrintController::class, 'shiftTicketUrl'])->whereNumber('id');
