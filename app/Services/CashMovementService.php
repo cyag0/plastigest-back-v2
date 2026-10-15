@@ -13,6 +13,14 @@ use Illuminate\Support\Facades\Auth;
 class CashMovementService
 {
     /**
+     * Devolver efectivo exige un turno abierto en la sucursal de la venta
+     * (decisión conservadora: el efectivo que sale de la caja tiene que
+     * quedar en algún corte). El mensaje dice qué hacer: quien cancela abre
+     * su turno o se lo pide al cajero en turno.
+     */
+    public const CASH_REFUND_NEEDS_SHIFT = 'Para devolver efectivo abre un turno de caja en esta sucursal o pide al cajero en turno que cancele la venta.';
+
+    /**
      * Mapea métodos de pago a los valores válidos de cash_movements.
      */
     private static function mapPaymentMethod(?string $method): string
@@ -148,7 +156,7 @@ class CashMovementService
 
         if (!$session && self::collectedCash($sale) > 0) {
             throw new BusinessRuleException(
-                'Para devolver el efectivo de esta venta abre un turno de caja en esta sucursal.',
+                self::CASH_REFUND_NEEDS_SHIFT,
                 'no_open_session',
             );
         }
@@ -188,7 +196,7 @@ class CashMovementService
 
             if ($row->payment_method === 'cash' && !$sessionId) {
                 throw new BusinessRuleException(
-                    'Para devolver el efectivo de esta venta abre un turno de caja en esta sucursal.',
+                    self::CASH_REFUND_NEEDS_SHIFT,
                     'no_open_session',
                 );
             }
