@@ -30,6 +30,19 @@ class SetCurrentCompany
      */
     public function handle(Request $request, Closure $next): Response
     {
+        // Los permisos consultados se reutilizan durante esta petición y se
+        // olvidan al terminarla (ver CurrentWorker::beginRequest()).
+        CurrentWorker::beginRequest();
+
+        try {
+            return $this->resolve($request, $next);
+        } finally {
+            CurrentWorker::endRequest();
+        }
+    }
+
+    private function resolve(Request $request, Closure $next): Response
+    {
         // Una cuenta desactivada no puede operar aunque conserve un token válido.
         // Este middleware corre antes de auth:sanctum, así que el usuario se
         // resuelve con el guard de sanctum (null en rutas públicas). Solo se
