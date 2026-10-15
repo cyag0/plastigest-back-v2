@@ -25,6 +25,10 @@ class FormulasSeeder extends Seeder
 {
     public function run(): void
     {
+        if (!InitialCatalogSeeder::allows($this)) {
+            return;
+        }
+
         $company = Company::where('name', 'Cocos Francisco')->first();
         if (!$company) {
             $this->command->error('No se encontró la compañía Cocos Francisco.');

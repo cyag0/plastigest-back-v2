@@ -15,6 +15,10 @@ class CategoriesSeeder extends Seeder
      */
     public function run(): void
     {
+        if (!InitialCatalogSeeder::allows($this)) {
+            return;
+        }
+
         // Obtener la compañía Cocos Francisco
         $cocosfrancisco = Company::where('name', 'Cocos Francisco')->first();
 

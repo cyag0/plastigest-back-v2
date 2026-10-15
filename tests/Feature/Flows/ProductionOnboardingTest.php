@@ -238,7 +238,8 @@ class ProductionOnboardingTest extends TestCase
 
         $this->as($admin)->putJson("/api/auth/admin/companies/{$this->company->id}", [
             'name' => $this->company->name, 'business_name' => 'Cocos Francisco S.A. de C.V.',
-            'rfc' => $this->company->rfc, 'email' => 'contacto@cocos.test', 'phone' => '322 123 4567',
+            // El seeder deja el RFC vacío: el dueño lo captura aquí.
+            'rfc' => 'CFR010101AB1', 'email' => 'contacto@cocos.test', 'phone' => '322 123 4567',
         ])->assertOk()->assertJsonPath('data.business_name', 'Cocos Francisco S.A. de C.V.');
 
         $roleId = $this->as($admin)->postJson('/api/auth/admin/roles', [

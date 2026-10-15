@@ -42,6 +42,10 @@ class ProductsSeeder extends Seeder
 {
     public function run(): void
     {
+        if (!InitialCatalogSeeder::allows($this)) {
+            return;
+        }
+
         $company = Company::where('name', 'Cocos Francisco')->first();
 
         if (!$company) {

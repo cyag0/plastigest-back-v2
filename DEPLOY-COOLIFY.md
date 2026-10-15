@@ -163,6 +163,10 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
    ```
    > `InitialCatalogSeeder` carga el catálogo de Cocos Francisco una sola vez: si la empresa ya tiene productos no hace nada, así no pisa precios cambiados desde la app. El stock queda en 0: la existencia inicial se captura con un conteo (Inventario → Inv. semanal) o con ajustes de entrada en cada sucursal.
    >
+   > `CompaniesSeeder` crea la empresa y las sucursales **sin razón social, RFC, correo ni teléfonos** (no hay datos verificados y salen en los tickets). Captúralos desde la app en *Administración → Empresa* y en cada sucursal; mientras estén vacíos, el ticket simplemente no los muestra.
+   >
+   > Los seeders del catálogo (`CategoriesSeeder`, `SupplierSeeder`, `ProductsSeeder`, `PackageSeeder`, `FormulasSeeder`) no hacen nada si se corren sueltos en producción: solo a través de `InitialCatalogSeeder`.
+   >
    > En producción `db:seed` solo corre los seeders de referencia; nunca catálogos ni datos demo, y `CompaniesSeeder` no borra nada si ya existen empresas. Correr `db:seed --force` otra vez es seguro (idempotente; no pide ni cambia la contraseña del admin ya creado). Después del primer seed puedes quitar `ADMIN_PASSWORD` de las variables y cambiar la contraseña desde la app.
 
 ---
