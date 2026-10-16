@@ -267,42 +267,47 @@ class PosController extends Controller
         return $sale;
     }
 
-    /**
-     * Respuesta del alta: la misma en el cobro, el reintento y la consulta por
-     * llave. Si la venta cobró un pedido del kiosko lleva kiosk_order {id,
-     * ticket_number}.
-     */
+    /** Respuesta del alta: la misma en el cobro, el reintento y la consulta por llave. */
     private function saleResponse(Sale $sale, int $status): JsonResponse
     {
         $sale->loadMissing('payments');
 
-        $data = [
-            'id' => $sale->id,
-            'sale_number' => $sale->sale_number,
-            'total' => (float) $sale->total,
-            'discount' => (float) $sale->discount,
-            'payment_method' => $sale->payment_method,
-            'payments' => $sale->payments->map(fn($p) => [
-                'method' => $p->method,
-                'amount' => (float) $p->amount,
-                'tendered' => $p->tendered !== null ? (float) $p->tendered : null,
-                'change' => $p->change !== null ? (float) $p->change : null,
-            ])->values(),
-            'change' => (float) $sale->payments->sum('change'),
-        ];
-
-        $content = is_array($sale->content) ? $sale->content : [];
-        if (($content['channel'] ?? null) === 'kiosk' && !empty($content['sales_order_id'])) {
-            $data['kiosk_order'] = [
-                'id' => (int) $content['sales_order_id'],
-                'ticket_number' => isset($content['ticket_number']) ? (int) $content['ticket_number'] : null,
-            ];
-        }
-
         return response()->json([
             'message' => 'Venta registrada',
-            'data' => $data,
+            'data' => [
+                'id' => $sale->id,
+                'sale_number' => $sale->sale_number,
+                'total' => (float) $sale->total,
+                'discount' => (float) $sale->discount,
+                'payment_method' => $sale->payment_method,
+                'payments' => $sale->payments->map(fn($p) => [
+                    'method' => $p->method,
+                    'amount' => (float) $p->amount,
+                    'tendered' => $p->tendered !== null ? (float) $p->tendered : null,
+                    'change' => $p->change !== null ? (float) $p->change : null,
+                ])->values(),
+                'change' => (float) $sale->payments->sum('change'),
+            ] + $this->kioskOrderOf($sale),
         ], $status);
+    }
+
+    /**
+     * kiosk_order {id, ticket_number} si la venta cobró un pedido del kiosko
+     * (lo dice su content); si no, nada.
+     *
+     * @return array{kiosk_order?: array{id: int, ticket_number: int|null}}
+     */
+    private function kioskOrderOf(Sale $sale): array
+    {
+        $content = is_array($sale->content) ? $sale->content : [];
+        if (($content['channel'] ?? null) !== 'kiosk' || empty($content['sales_order_id'])) {
+            return [];
+        }
+
+        return ['kiosk_order' => [
+            'id' => (int) $content['sales_order_id'],
+            'ticket_number' => isset($content['ticket_number']) ? (int) $content['ticket_number'] : null,
+        ]];
     }
 
     /**
