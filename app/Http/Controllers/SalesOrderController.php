@@ -364,6 +364,12 @@ class SalesOrderController extends CrudController
 
     public function getInitialData(Request $request)
     {
+        // Lleva clientes (RFC, teléfono, correo) y costos: solo para quien
+        // arma pedidos. Antes cualquier usuario con sesión podía bajarlo.
+        if (!$this->canStore()) {
+            return $this->forbiddenResponse('armar pedidos');
+        }
+
         $location = CurrentLocation::get();
         $companyId = CurrentCompany::id();
 
