@@ -248,6 +248,59 @@ class CurrentWorker
     }
 
     /**
+     * Por qué $actor (por defecto el usuario actual) no puede asignar ni
+     * quitar $role, o null si puede:
+     * - 'system': es un rol del sistema;
+     * - 'company': es de una empresa a la que no pertenece;
+     * - 'permissions': tiene permisos que él no tiene en ninguno de sus roles
+     *   (allPermissionNames()).
+     *
+     * No exime al administrador del sistema: eso lo decide quien llama
+     * (canAssignRole(), UserController::guardAssignment). Una sola regla para
+     * UserController::guardRoles y la marca assignable de la lista de roles.
+     *
+     * @return 'system'|'company'|'permissions'|null
+     */
+    public static function roleAssignmentDenial(Role $role, ?Authenticatable $actor = null): ?string
+    {
+        $actor ??= Auth::user();
+
+        if ($role->is_system) {
+            return 'system';
+        }
+
+        if ($role->company_id !== null && !in_array((int) $role->company_id, self::companyIds($actor), true)) {
+            return 'company';
+        }
+
+        $permissions = $role->relationLoaded('permissions')
+            ? $role->permissions->pluck('name')
+            : $role->permissions()->pluck('permissions.name');
+
+        if ($permissions->diff(self::allPermissionNames($actor))->isNotEmpty()) {
+            return 'permissions';
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿$actor (por defecto el usuario actual) puede asignarle o quitarle $role
+     * a un usuario? El administrador del sistema, cualquiera; los demás, si
+     * roleAssignmentDenial() no lo impide. La lista de roles lo manda como
+     * assignable para que la app no ofrezca lo que UserController rechazaría.
+     */
+    public static function canAssignRole(Role $role, ?Authenticatable $actor = null): bool
+    {
+        $actor ??= Auth::user();
+        if (!$actor) {
+            return false;
+        }
+
+        return self::isSystemAdmin($actor) || self::roleAssignmentDenial($role, $actor) === null;
+    }
+
+    /**
      * Carga en la caché de la petición los roles (directos y por sucursal) de
      * varios usuarios con dos consultas, para las listas que comparan permisos
      * usuario por usuario (can_manage). Sin petición en curso no hace nada.

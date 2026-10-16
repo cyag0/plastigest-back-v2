@@ -4,6 +4,7 @@ namespace App\Http\Resources\Admin\Permissions;
 
 use App\Http\Resources\Resources;
 use App\Models\Admin\Role;
+use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -24,6 +25,10 @@ class RolesResource extends Resources
             // El listado y el selector de roles pintan el chip Activo/Inactivo con
             // este campo, así que va siempre y no solo en show/edit.
             'is_active' => $resource->is_active ?? true,
+            // ¿El usuario actual puede dar (o quitar) este rol? La misma regla
+            // que UserController al asignarlo: el selector de roles bloquea
+            // los demás en vez de dejar que el guardado falle con 403.
+            'assignable' => CurrentWorker::canAssignRole($resource),
         ];
 
         // Campos adicionales según el contexto

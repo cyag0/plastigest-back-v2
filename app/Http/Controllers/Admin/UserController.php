@@ -223,17 +223,6 @@ class UserController extends CrudController
     }
 
     /**
-     * Permisos que tiene el actor en cualquiera de sus roles (directos o de
-     * sucursal). Se usa para que nadie pueda asignar permisos que él no tiene.
-     *
-     * @return string[]
-     */
-    private function actorPermissionNames(): array
-    {
-        return CurrentWorker::allPermissionNames(Auth::user());
-    }
-
-    /**
      * Impide la escalación de privilegios al crear/editar usuarios: salvo el
      * administrador del sistema, nadie puede asignar roles de sistema, roles de
      * otra empresa, permisos que no tiene, ni empresas/sucursales ajenas.
@@ -322,7 +311,9 @@ class UserController extends CrudController
 
     /**
      * Roles que el actor puede asignar o quitar: de su empresa, que no sean de
-     * sistema y sin permisos que él no tenga.
+     * sistema y sin permisos que él no tenga (CurrentWorker::
+     * roleAssignmentDenial, la misma regla que la marca assignable de la
+     * lista de roles).
      *
      * @param int[] $roleIds
      * @param string $verb "asignar" o "quitar"
@@ -333,24 +324,21 @@ class UserController extends CrudController
             return null;
         }
 
-        $actorPermissions = $this->actorPermissionNames();
-        $actorCompanyIds = $this->actorCompanyIds();
+        $actor = Auth::user();
         $roles = Role::with('permissions')->whereIn('id', $roleIds)->get();
 
         foreach ($roles as $role) {
-            if ($role->is_system) {
-                return $this->forbiddenResponse("{$verb} un rol del sistema");
-            }
+            $action = match (CurrentWorker::roleAssignmentDenial($role, $actor)) {
+                'system' => "{$verb} un rol del sistema",
+                'company' => "{$verb} un rol de otra empresa",
+                'permissions' => $verb === 'asignar'
+                    ? 'asignar permisos que tú no tienes'
+                    : 'quitar un rol con permisos que tú no tienes',
+                default => null,
+            };
 
-            if ($role->company_id !== null && !in_array((int) $role->company_id, $actorCompanyIds, true)) {
-                return $this->forbiddenResponse("{$verb} un rol de otra empresa");
-            }
-
-            $extraPermissions = $role->permissions->pluck('name')->diff($actorPermissions);
-            if ($extraPermissions->isNotEmpty()) {
-                return $verb === 'asignar'
-                    ? $this->forbiddenResponse('asignar permisos que tú no tienes')
-                    : $this->forbiddenResponse('quitar un rol con permisos que tú no tienes');
+            if ($action !== null) {
+                return $this->forbiddenResponse($action);
             }
         }
 
