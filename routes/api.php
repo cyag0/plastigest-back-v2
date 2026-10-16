@@ -287,6 +287,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('pos/sales', [\App\Http\Controllers\PosController::class, 'store']);
             Route::get('pos/sales/request/{clientRequestId}', [\App\Http\Controllers\PosController::class, 'findByRequest'])
                 ->where('clientRequestId', '[A-Za-z0-9_-]{1,64}');
+            // Kiosko de autoservicio (sales_kiosk): catálogo para clientes y pedidos para pagar en caja.
+            Route::get('kiosk/catalog', [\App\Http\Controllers\KioskController::class, 'catalog']);
+            Route::post('kiosk/orders', [\App\Http\Controllers\KioskController::class, 'storeOrder']);
             Route::prefix('cash-register-sessions')->controller(\App\Http\Controllers\CashRegisterSessionController::class)->group(function () {
                 Route::get('/', 'index');
                 Route::get('current', 'current');

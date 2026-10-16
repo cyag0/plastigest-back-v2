@@ -34,6 +34,7 @@ class SalesOrder extends Model
         'created_by',
         'updated_by',
         'order_number',
+        'ticket_number',
         'client_request_id',
         'order_date',
         'channel',
@@ -62,6 +63,7 @@ class SalesOrder extends Model
         'channel' => SalesOrderChannel::class,
         'service_mode' => \App\Enums\SalesOrderServiceMode::class,
         'status' => SalesOrderStatus::class,
+        'ticket_number' => 'integer',
         'order_date' => 'date:Y-m-d',
         'promised_at' => 'datetime',
         'prepared_at' => 'datetime',
@@ -155,6 +157,17 @@ class SalesOrder extends Model
         $value = $serviceMode instanceof \App\Enums\SalesOrderServiceMode ? $serviceMode->value : $serviceMode;
 
         return $query->where('service_mode', $value);
+    }
+
+    /**
+     * Pedidos del kiosko de autoservicio: los que manda el cliente desde el
+     * kiosko (canal kiosk con número corto). Un pedido de canal kiosk sin
+     * número es del cobro rápido anterior o de un alta manual: no se lista en
+     * el punto de venta ni vence solo.
+     */
+    public function scopeKiosk(Builder $query): Builder
+    {
+        return $query->where('channel', SalesOrderChannel::KIOSK->value)->whereNotNull('ticket_number');
     }
 
     /**

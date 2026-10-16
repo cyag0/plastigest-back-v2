@@ -13,6 +13,8 @@ class SalesOrderResource extends Resources
         $item = [
             'id' => $resource->id,
             'order_number' => $resource->order_number,
+            // Número corto de los pedidos del kiosko ("Pedido del kiosko 7"); null en los demás.
+            'ticket_number' => $resource->ticket_number,
             'order_date' => $resource->order_date?->format('Y-m-d'),
             'channel' => $resource->channel?->value,
             'channel_label' => $resource->channel?->label(),
