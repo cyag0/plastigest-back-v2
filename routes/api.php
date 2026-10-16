@@ -39,7 +39,6 @@ use App\Http\Controllers\NotificationPreferenceController;
 use App\Http\Controllers\ProductPackageController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\SettingsController;
-use App\Http\Controllers\SalesReportController;
 use App\Http\Controllers\BusinessReportController;
 use App\Http\Controllers\SalesOrderController;
 use App\Http\Controllers\CashMovementController;
@@ -97,10 +96,6 @@ Route::prefix('auth')->group(function () {
 // Ruta pública para descargar PDFs con URL firmada
 Route::get('inventory-counts/{id}/pdf', [InventoryCountController::class, 'generatePdf'])
     ->name('inventory-counts.pdf')
-    ->middleware('signed');
-
-Route::get('sales-reports/{id}/pdf', [SalesReportController::class, 'generatePdf'])
-    ->name('sales-reports.pdf')
     ->middleware('signed');
 
 Route::get('purchases-v2/{purchases_v2}/pdf', [PurchaseV2Controller::class, 'generatePdf'])
@@ -259,7 +254,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::prefix('sales')->group(function () {
                 Route::get('initial-data', [SaleController::class, 'getInitialData']);
                 Route::get('stats', [SaleController::class, 'salesStats']);
-                Route::get('cash-register', [SaleController::class, 'cashRegister']);
                 Route::post('{id}/add-payment', [SaleController::class, 'addPayment']);
                 Route::post('{id}/cancel', [SaleController::class, 'cancel']);
                 Route::get('{id}/pdf-url', [SaleController::class, 'generatePdfUrl']);
@@ -354,9 +348,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('customer-notes/total-pending', [CustomerNoteController::class, 'getTotalPending']);
             Route::apiResource('customer-notes', CustomerNoteController::class);
 
-            // === SALES REPORTS ===
-            Route::apiResource('sales-reports', \App\Http\Controllers\SalesReportController::class);
-
             // Sistema legacy de inventory transfers (solo CRUD + workflow)
             // "Pedir a" de la solicitud; antes del apiResource para que
             // {inventory_transfer} no capture "origins".
@@ -389,9 +380,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('inventory-counts/{id}/pdf-url', [InventoryCountController::class, 'generatePdfUrl']);
             Route::apiResource('inventory-counts', InventoryCountController::class);
             Route::apiResource('inventory-counts-details', InventoryCountDetailController::class);
-
-            // Rutas de reportes de ventas
-            Route::get('sales-reports/{id}/pdf-url', [SalesReportController::class, 'generatePdfUrl']);
 
             // Rutas de tokens de dispositivos (notificaciones push)
             Route::prefix('device-tokens')->group(function () {
