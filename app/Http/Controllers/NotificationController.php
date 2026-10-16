@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Http\Resources\NotificationResource;
 use App\Models\Notification;
 use App\Support\CurrentCompany;
+use App\Support\NotFoundMessage;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -154,6 +156,10 @@ class NotificationController extends CrudController
                 'message' => 'Notificación marcada como leída',
                 'data' => new $this->resource($notification),
             ]);
+        } catch (ModelNotFoundException $e) {
+            // Ya borrada o de otro usuario: 404 «Notificación no encontrada»
+            // (antes 400 con «No query results for model…»).
+            return response()->json(['success' => false, 'message' => NotFoundMessage::of($e)], 404);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -180,6 +186,10 @@ class NotificationController extends CrudController
                 'message' => 'Notificación marcada como no leída',
                 'data' => new $this->resource($notification),
             ]);
+        } catch (ModelNotFoundException $e) {
+            // Ya borrada o de otro usuario: 404 «Notificación no encontrada»
+            // (antes 400 con «No query results for model…»).
+            return response()->json(['success' => false, 'message' => NotFoundMessage::of($e)], 404);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

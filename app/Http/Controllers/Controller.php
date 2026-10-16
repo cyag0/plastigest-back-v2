@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\BusinessRuleException;
+use App\Support\NotFoundMessage;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Http\JsonResponse;
@@ -53,7 +55,7 @@ abstract class Controller
         // Solo se expone el detalle cuando es un mensaje de negocio seguro, no
         // cuando es un error interno (que filtraría estructura/consultas).
         if (!$this->isInternalError($e)) {
-            $payload['error'] = $e->getMessage();
+            $payload['error'] = $this->publicMessage($e);
         }
 
         return response()->json($payload, $status);
@@ -80,7 +82,17 @@ abstract class Controller
             return null;
         }
 
-        return $e->getMessage();
+        return $this->publicMessage($e);
+    }
+
+    /**
+     * Texto que sí puede ver el usuario de una excepción que no es interna.
+     * Un findOrFail sin resultado dice "No query results for model
+     * [App\Models\Sale] 5": se cambia por "Venta no encontrada".
+     */
+    private function publicMessage(Throwable $e): string
+    {
+        return $e instanceof ModelNotFoundException ? NotFoundMessage::of($e) : $e->getMessage();
     }
 
         protected function isInternalError(Throwable $e): bool

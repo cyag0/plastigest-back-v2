@@ -1,10 +1,12 @@
 <?php
 
+use App\Support\NotFoundMessage;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -53,6 +55,22 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn(Request $request) => $request->is('api/*') || $request->expectsJson()
         );
+
+        // 404 de la API con un mensaje en español. Un registro que no existe
+        // (findOrFail, {task} de la ruta) respondía "No query results for
+        // model [App\Models\Task] 7" y, con APP_DEBUG, la traza; la app lo
+        // mostraba tal cual. Llega ya como NotFoundHttpException (Laravel lo
+        // convierte antes de los render): el modelo va en el previo. Un
+        // abort(404, 'Compra no encontrada') conserva su mensaje.
+        $exceptions->render(function (NotFoundHttpException $e, Request $request) {
+            if (!$request->is('api/*')) {
+                return null;
+            }
+
+            return response()->json([
+                'message' => NotFoundMessage::forHttpException($e, $request),
+            ], 404, $e->getHeaders());
+        });
 
         // Personalizar la respuesta 429 (rate limit) en español y devolver
         // los headers X-RateLimit-* + Retry-After al cliente. El front
