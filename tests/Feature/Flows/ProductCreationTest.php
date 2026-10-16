@@ -4,6 +4,7 @@ namespace Tests\Feature\Flows;
 
 use App\Models\InventoryType;
 use App\Models\Product;
+use App\Models\Supplier;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\CreatesTenant;
 use Tests\TestCase;
@@ -120,5 +121,32 @@ class ProductCreationTest extends TestCase
             ->getJson('/api/auth/admin/products?product_type[]=processed&per_page=50')
             ->assertOk()->json('data'))->pluck('code');
         $this->assertContains('BOT-1L', $codes->all());
+    }
+
+    public function test_the_detail_names_the_supplier_and_the_bulk_unit_for_the_form(): void
+    {
+        $supplier = Supplier::create(['company_id' => $this->company->id, 'name' => 'Plásticos del Norte']);
+        $bulk = $this->createProduct(['name' => 'Cloro a granel'], 0, 'Litro');
+        $product = $this->createProduct([
+            'supplier_id' => $supplier->id,
+            'requires_packaging' => true,
+            'packaging_source_product_id' => $bulk->id,
+            'packaging_source_quantity' => 1,
+            'packaging_source_unit_id' => $this->unitId('Litro'),
+        ]);
+
+        $this->actingInBranch($this->user)->getJson("/api/auth/admin/products/{$product->id}")
+            ->assertOk()
+            ->assertJsonPath('data.supplier_name', 'Plásticos del Norte')
+            ->assertJsonPath('data.packaging_source_unit', ['id' => $this->unitId('Litro'), 'name' => 'Litro']);
+
+        // Sin proveedor ni granel vienen en null, no faltan ni truenan.
+        $plain = $this->createProduct();
+        $data = $this->actingInBranch($this->user)->getJson("/api/auth/admin/products/{$plain->id}")
+            ->assertOk()->json('data');
+        $this->assertArrayHasKey('supplier_name', $data);
+        $this->assertNull($data['supplier_name']);
+        $this->assertArrayHasKey('packaging_source_unit', $data);
+        $this->assertNull($data['packaging_source_unit']);
     }
 }

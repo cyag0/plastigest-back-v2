@@ -136,6 +136,20 @@ class ProductResource extends Resources
             ];
         }
 
+        // Con estos el formulario muestra el proveedor y la unidad del granel
+        // ya elegidos (selectedLabelField) y el detalle los nombra. Solo si la
+        // relación viene cargada: así no cuesta una consulta por producto.
+        if ($this->relationLoaded('supplier')) {
+            $item['supplier_name'] = $this->supplier?->name;
+        }
+
+        if ($this->relationLoaded('packagingSourceUnit')) {
+            $item['packaging_source_unit'] = $this->packagingSourceUnit ? [
+                'id' => $this->packagingSourceUnit->id,
+                'name' => $this->packagingSourceUnit->name,
+            ] : null;
+        }
+
         if ($editing) {
             if ($this->relationLoaded('productIngredients')) {
                 $item['ingredients'] = $this->productIngredients->map(function ($productIngredient) {
