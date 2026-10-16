@@ -69,12 +69,52 @@ class RolesController extends CrudController
             'name' => 'required|string',
             'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
-            'permissions' => 'array',
-        ]);
+            'permissions' => $this->permissionsRule(),
+        ], $this->permissionsMessages());
 
         $this->guardGrantedPermissions($request);
 
         return $validated;
+    }
+
+    private const PERMISSIONS_SHAPE_MESSAGE =
+        'Los permisos se mandan como un mapa {id_del_permiso: true|false}, no como una lista de ids.';
+
+    /**
+     * permissions es el mapa del editor de roles: {id_del_permiso: true|false}
+     * (en multipart llega como permissions[12]=1 / permissions[13]=0). Antes
+     * solo se pedía "array": una lista [12, 13] se tomaba por sus índices
+     * (ids 0 y 1) y sync() reventaba con 500 por la llave foránea; un "false"
+     * en texto contaba como marcado. Un mapa vacío deja el rol sin permisos.
+     */
+    private function permissionsRule(): array
+    {
+        return ['sometimes', 'array', function (string $attribute, mixed $value, \Closure $fail): void {
+            if (!is_array($value) || $value === []) {
+                return;
+            }
+
+            if (array_is_list($value)) {
+                $fail(self::PERMISSIONS_SHAPE_MESSAGE);
+                return;
+            }
+
+            foreach ($value as $id => $checked) {
+                if (!is_int($id) || $id <= 0 || !in_array($checked, [true, false, 1, 0, '1', '0'], true)) {
+                    $fail(self::PERMISSIONS_SHAPE_MESSAGE);
+                    return;
+                }
+            }
+
+            if (Permission::whereIn('id', array_keys($value))->count() !== count($value)) {
+                $fail('Alguno de los permisos enviados no existe.');
+            }
+        }];
+    }
+
+    private function permissionsMessages(): array
+    {
+        return ['permissions.array' => self::PERMISSIONS_SHAPE_MESSAGE];
     }
 
     /**
@@ -92,8 +132,8 @@ class RolesController extends CrudController
             'name' => 'required|string',
             'description' => 'nullable|string',
             'is_active' => 'sometimes|boolean',
-            'permissions' => 'array',
-        ]);
+            'permissions' => $this->permissionsRule(),
+        ], $this->permissionsMessages());
 
         $this->guardGrantedPermissions($request);
         $this->guardRoleChanges($request, $model);
