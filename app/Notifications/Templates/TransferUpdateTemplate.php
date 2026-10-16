@@ -62,10 +62,17 @@ class TransferUpdateTemplate extends BaseNotificationTemplate
 
     public function getPushData(): array
     {
+        $transfer = $this->context['transfer'] ?? null;
+
         return [
-            'event_type'  => $this->getEventType(),
-            'sub_type'    => $this->subType(),
-            'transfer_id' => $this->context['transfer']?->id ?? null,
+            'event_type'       => $this->getEventType(),
+            'sub_type'         => $this->subType(),
+            'transfer_id'      => $transfer?->id,
+            // Origen y destino: si quien abre el aviso está en otra sucursal,
+            // la app le ofrece cambiarse a la que le toca (sin el dato solo
+            // veía un 404).
+            'from_location_id' => $transfer?->from_location_id,
+            'to_location_id'   => $transfer?->to_location_id,
         ];
     }
 

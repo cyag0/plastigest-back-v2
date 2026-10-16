@@ -146,7 +146,12 @@ class NotificationTriggersTest extends TestCase
             ->assertOk();
 
         $this->assertCount(1, $this->inbox($this->manager, 'purchase_update'));
-        $this->assertStringContainsString('en camino', $this->inbox($this->manager, 'purchase_update')->first()->title);
+        $notice = $this->inbox($this->manager, 'purchase_update')->first();
+        $this->assertStringContainsString('en camino', $notice->title);
+        // La app abre la compra con estos datos y, si quien la abre está en
+        // otra sucursal, le ofrece cambiarse a la de la compra.
+        $this->assertSame($purchase->id, (int) $notice->data['purchase_id']);
+        $this->assertSame($this->location->id, (int) ($notice->data['location_id'] ?? 0));
 
         // La tarea "Recibir compra" la puede resolver el encargado, no el cajero.
         $task = Task::where('related_type', PurchaseV2::class)->where('related_id', $purchase->id)->firstOrFail();
@@ -188,6 +193,9 @@ class NotificationTriggersTest extends TestCase
         $this->assertCount(1, $updates);
         $this->assertStringContainsString('aprobada', $updates->first()->title);
         $this->assertSame($transferId, (int) $updates->first()->data['transfer_id']);
+        // Origen y destino: la app ofrece cambiarse a la sucursal que le toca.
+        $this->assertSame($origin->id, (int) ($updates->first()->data['from_location_id'] ?? 0));
+        $this->assertSame($this->location->id, (int) ($updates->first()->data['to_location_id'] ?? 0));
 
         // Quien aprobó no recibe su propio aviso.
         $this->assertCount(0, $this->inbox($originManager, 'transfer_update'));

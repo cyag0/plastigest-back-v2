@@ -98,10 +98,15 @@ class PurchaseUpdateTemplate extends BaseNotificationTemplate
 
     public function getPushData(): array
     {
+        $purchase = $this->context['purchase'] ?? null;
+
         return [
             'event_type'  => $this->getEventType(),
-            'purchase_id' => $this->context['purchase']?->id ?? null,
-            'sub_type'    => $this->context['sub_type']      ?? null,
+            'purchase_id' => $purchase?->id,
+            // Sucursal de la compra: a quien no entra a todas y está en otra,
+            // la app le ofrece cambiarse a ella (sin el dato solo veía un 404).
+            'location_id' => $purchase?->location_id,
+            'sub_type'    => $this->context['sub_type'] ?? null,
         ];
     }
 
