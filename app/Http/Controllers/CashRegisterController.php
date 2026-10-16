@@ -72,17 +72,29 @@ class CashRegisterController extends CrudController
         // La búsqueda y el alcance por compañía se resuelven en handleQuery.
     }
 
-    /** show/update/destroy solo sobre cajas de la compañía actual. */
+    /**
+     * show/update/destroy solo sobre cajas de la compañía actual y, sin acceso
+     * a todas las sucursales, de la sucursal en la que se trabaja (como el
+     * listado). Antes solo se revisaba la compañía: un encargado de una
+     * sucursal abría y editaba por URL la caja de otra.
+     */
     protected function findModel($id): ?Model
     {
-        return CashRegister::where('company_id', CurrentCompany::id())->find($id);
+        return $this->registersInScope()->find($id);
     }
 
     protected function findModelForShow($id): ?Model
     {
-        return CashRegister::with($this->getShowRelations())
-            ->where('company_id', CurrentCompany::id())
-            ->find($id);
+        return $this->registersInScope()->with($this->getShowRelations())->find($id);
+    }
+
+    private function registersInScope()
+    {
+        return CashRegister::where('company_id', CurrentCompany::id())
+            ->when(
+                !CurrentWorker::canAccessAllLocations(),
+                fn($query) => $query->where('location_id', CurrentLocation::id())
+            );
     }
 
     private function rules(?CashRegister $register = null): array
@@ -100,6 +112,13 @@ class CashRegisterController extends CrudController
             'location_id' => [
                 $register ? 'sometimes' : 'required',
                 Rule::exists('locations', 'id')->where('company_id', $companyId),
+                // Sin acceso a todas las sucursales tampoco se crea una caja en
+                // otra sucursal ni se mueve ahí la propia.
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (!CurrentWorker::canAccessAllLocations() && (int) $value !== (int) CurrentLocation::id()) {
+                        $fail('La caja tiene que ser de la sucursal en la que estás trabajando.');
+                    }
+                },
             ],
             'is_active' => 'sometimes|boolean',
             'notes' => 'nullable|string|max:1000',
