@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Services\CashRegisterSessionService;
+use App\Services\KioskOrderService;
 use App\Services\SaleService;
 use App\Support\ClientRequest;
 use App\Support\CurrentCompany;
@@ -31,6 +32,7 @@ class PosController extends Controller
     public function __construct(
         private readonly CashRegisterSessionService $sessions,
         private readonly SaleService $sales,
+        private readonly KioskOrderService $kioskOrders,
     ) {}
 
     /**
@@ -110,6 +112,12 @@ class PosController extends Controller
      * Con client_request_id (la llave del intento de cobro) es idempotente: si
      * ya hay una venta con esa llave responde 200 con la misma forma que el
      * alta (201) y no cobra otra vez, aunque el turno ya se haya cerrado.
+     *
+     * Con kiosk_order_id cobra un pedido del kiosko: la venta lleva los
+     * renglones del carrito (pueden diferir del pedido) y, en la misma
+     * transacción, se libera lo apartado y el pedido queda entregado con su
+     * venta (KioskOrderService::chargeAtPos). Un pedido que ya no está
+     * pendiente, de otra sucursal o que no existe: 422 kiosk_order_unavailable.
      */
     public function store(Request $request): JsonResponse
     {
@@ -144,6 +152,8 @@ class PosController extends Controller
             'payments.*.tendered' => 'nullable|numeric|min:0',
             'customer_id' => ['nullable', 'integer', Rule::exists('customers', 'id')->where('company_id', $companyId)],
             'notes' => 'nullable|string|max:500',
+            // Pedido del kiosko que se cobra con esta venta (se valida al cobrar).
+            'kiosk_order_id' => 'nullable|integer|min:1',
         ], [
             'details.required' => 'Agrega al menos un producto.',
             'payments.required' => 'Indica cómo se paga.',
@@ -175,17 +185,33 @@ class PosController extends Controller
             }
         }
 
+        $saleData = [
+            'company_id' => $companyId,
+            'location_id' => $session->location_id,
+            'user_id' => Auth::id(),
+            'customer_id' => $validated['customer_id'] ?? null,
+            'notes' => $validated['notes'] ?? null,
+            'client_request_id' => $requestId,
+            'details' => $details,
+            'payments' => $validated['payments'],
+        ];
+
         try {
-            $sale = $this->sales->create([
-                'company_id' => $companyId,
-                'location_id' => $session->location_id,
-                'user_id' => Auth::id(),
-                'customer_id' => $validated['customer_id'] ?? null,
-                'notes' => $validated['notes'] ?? null,
-                'client_request_id' => $requestId,
-                'details' => $details,
-                'payments' => $validated['payments'],
-            ], $session);
+            if (!empty($validated['kiosk_order_id'])) {
+                [$sale, $created] = $this->kioskOrders->chargeAtPos(
+                    (int) $validated['kiosk_order_id'],
+                    $session,
+                    $requestId,
+                    fn(array $kioskData) => $this->sales->create(array_merge($saleData, $kioskData), $session),
+                );
+
+                // Reintento de un cobro que ya ligó el pedido: esa venta.
+                if (!$created) {
+                    return $this->saleResponse($sale, 200);
+                }
+            } else {
+                $sale = $this->sales->create($saleData, $session);
+            }
         } catch (QueryException $e) {
             // Otra petición con la misma llave se registró primero (doble envío
             // simultáneo): esta se revirtió completa y se responde con aquella.
@@ -241,27 +267,41 @@ class PosController extends Controller
         return $sale;
     }
 
-    /** Respuesta del alta: la misma en el cobro, el reintento y la consulta por llave. */
+    /**
+     * Respuesta del alta: la misma en el cobro, el reintento y la consulta por
+     * llave. Si la venta cobró un pedido del kiosko lleva kiosk_order {id,
+     * ticket_number}.
+     */
     private function saleResponse(Sale $sale, int $status): JsonResponse
     {
         $sale->loadMissing('payments');
 
+        $data = [
+            'id' => $sale->id,
+            'sale_number' => $sale->sale_number,
+            'total' => (float) $sale->total,
+            'discount' => (float) $sale->discount,
+            'payment_method' => $sale->payment_method,
+            'payments' => $sale->payments->map(fn($p) => [
+                'method' => $p->method,
+                'amount' => (float) $p->amount,
+                'tendered' => $p->tendered !== null ? (float) $p->tendered : null,
+                'change' => $p->change !== null ? (float) $p->change : null,
+            ])->values(),
+            'change' => (float) $sale->payments->sum('change'),
+        ];
+
+        $content = is_array($sale->content) ? $sale->content : [];
+        if (($content['channel'] ?? null) === 'kiosk' && !empty($content['sales_order_id'])) {
+            $data['kiosk_order'] = [
+                'id' => (int) $content['sales_order_id'],
+                'ticket_number' => isset($content['ticket_number']) ? (int) $content['ticket_number'] : null,
+            ];
+        }
+
         return response()->json([
             'message' => 'Venta registrada',
-            'data' => [
-                'id' => $sale->id,
-                'sale_number' => $sale->sale_number,
-                'total' => (float) $sale->total,
-                'discount' => (float) $sale->discount,
-                'payment_method' => $sale->payment_method,
-                'payments' => $sale->payments->map(fn($p) => [
-                    'method' => $p->method,
-                    'amount' => (float) $p->amount,
-                    'tendered' => $p->tendered !== null ? (float) $p->tendered : null,
-                    'change' => $p->change !== null ? (float) $p->change : null,
-                ])->values(),
-                'change' => (float) $sale->payments->sum('change'),
-            ],
+            'data' => $data,
         ], $status);
     }
 

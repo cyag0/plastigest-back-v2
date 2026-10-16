@@ -28,6 +28,9 @@ class SaleService
      *   details: [{product_id, package_id?, unit_id, quantity, unit_price, discount?}],
      *   payments?: [{method: cash|card|transfer, amount, tendered?}],
      *   payment_method?, paid_amount?   (formato anterior, si no hay payments)
+     *   sale_number?   (folio ya tomado por quien llama; si no, lo da el modelo)
+     *   content?       (datos extra para content, p. ej. el pedido del kiosko
+     *                   que se cobra; no reemplazan los de arriba)
      * }
      */
     public function create(array $data, ?CashRegisterSession $session = null): Sale
@@ -86,6 +89,9 @@ class SaleService
                 : ($payments[0]['method'] ?? ($data['payment_method'] ?? 'cash'));
 
             $sale = Sale::create([
+                // El cobro de un pedido del kiosko toma el folio antes de
+                // liberar lo apartado (turno → folio → existencias).
+                'sale_number' => $data['sale_number'] ?? null,
                 'company_id' => $data['company_id'],
                 'location_id' => $data['location_id'],
                 'cash_register_id' => $session?->cash_register_id,
@@ -115,7 +121,7 @@ class SaleService
                     'notes' => $data['notes'] ?? null,
                     'document_number' => $data['document_number'] ?? null,
                     'comments' => $data['comments'] ?? null,
-                ], fn($v) => $v !== null),
+                ] + ($data['content'] ?? []), fn($v) => $v !== null),
             ]);
 
             foreach ($lines as $line) {
