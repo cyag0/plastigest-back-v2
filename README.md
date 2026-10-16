@@ -1,3 +1,15 @@
+# GCStock (PlastiGest) — API
+
+Backend Laravel 12 (PHP 8.4) de GCStock: inventario, punto de venta, caja, compras, producción y transferencias entre sucursales.
+
+- Desarrollo local: [INSTALLATION.md](INSTALLATION.md)
+- Producción (ruta principal: Coolify + Hetzner + Cloudflare): [DEPLOY-COOLIFY.md](DEPLOY-COOLIFY.md) — estado, pendientes del dueño, orden de salida, variables, logs y prueba de humo.
+- Alternativa sin Coolify (VPS montado a mano): [DEPLOY.md](DEPLOY.md)
+- Variables de producción comentadas: [.env.production.example](.env.production.example)
+- CI: `.github/workflows/tests.yml` (pruebas en MySQL 8.4 e imagen de producción con Nixpacks)
+
+---
+
 <p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
 
 <p align="center">

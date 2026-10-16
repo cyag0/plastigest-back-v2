@@ -2,7 +2,9 @@
 
 Runbook para sacar el beta a producción montando el servidor **a mano** sobre un VPS. Stack detectado:
 
-- **Backend:** Laravel 12, PHP 8.4 (`composer.json` lo exige: con otra versión la app no arranca), Sanctum (token Bearer), cola y caché en `database`, scheduler (`tasks:generate-recurring` diario 06:00), PDFs con dompdf, push con Firebase (kreait).
+> **La ruta principal es `DEPLOY-COOLIFY.md`.** Ahí están el estado al 15-oct-2026, los pendientes del dueño (token de WhatsApp, repos privados, contraseña vieja del Super Admin), el orden de salida, el frontend, las apps nativas, logs y alertas, el primer día en la app, la prueba de humo y las decisiones tomadas. Esta guía solo cubre lo que cambia al montar el servidor sin Coolify; lo común se remite allá.
+
+- **Backend:** Laravel 12, PHP 8.4 (`composer.json` lo exige: con otra versión la app no arranca), Sanctum (token Bearer), cola y caché en `database`, scheduler (avisos cada hora de 07:00 a 21:00, cuadre de inventario 04:00, tareas recurrentes 06:00 y limpiezas; Fase 6), PDFs con dompdf, Excel con OpenSpout, push con Firebase (kreait). Sin build de Node: la API no tiene frontend.
 - **Frontend:** Expo SDK 56 / Expo Router (web `output: "single"`, SPA). API por `EXPO_PUBLIC_API_URL`.
 - **Objetivo:** 8 sucursales, ~30 usuarios en total. Pico concurrente ~24 (3 por sucursal), realista ~8. Carga pequeña: el VPS va sobrado.
 
@@ -25,9 +27,10 @@ Arquitectura objetivo:
 - [x] ~~Comprar dominio y mover su DNS a Cloudflare~~ — `cocos-francisco.com` comprado en **Cloudflare Registrar**; el DNS ya está en Cloudflare.
 - [x] ~~Crear cuenta de Cloudflare~~ — ya existe (el dominio está ahí). Sirve para DNS + Pages.
 - [ ] Generar un **par de llaves SSH** y subir la pública al VPS (Contabo suele dar acceso root por contraseña; conviene pasar a llave). Si no tienes: `ssh-keygen -t ed25519`, luego `ssh-copy-id root@vps3451515.trouble-free.net`.
-- [ ] Tener el **JSON de credenciales de Firebase** (service account) que ya usas en dev.
-- [ ] **Commit + push del fix de doble-venta** y limpiar los `console.log` de debug en `inventory/products/form.tsx`.
-- [ ] Decidir qué seeders corren en producción (Fase 4): solo datos de referencia (permisos, unidades), **no** datos demo de productos.
+- [ ] Tener el **JSON de credenciales de Firebase** (service account) del proyecto `plastigest-976ac`, el que ya usas en dev.
+- [ ] Pendientes del dueño de `DEPLOY-COOLIFY.md` (token de WhatsApp revocado, repos privados, contraseña vieja del Super Admin descartada) antes de subir nada.
+- [x] ~~Commit + push del fix de doble-venta y limpiar los `console.log`~~ — resuelto en código (cobros idempotentes en servidor y app; la app silencia sus logs en producción). Falta subirlo: ver "Orden de salida" en `DEPLOY-COOLIFY.md`.
+- [x] ~~Decidir qué seeders corren en producción~~ — resuelto en código: fuera de local `db:seed` solo corre los de referencia (Fase 4).
 
 ---
 
@@ -51,6 +54,7 @@ Arquitectura objetivo:
    ufw allow 443
    ufw enable
    ```
+   > ufw basta aquí porque este stack no usa Docker. Si algún día instalas Docker (o Coolify) en este VPS, los puertos que publica Docker se saltan ufw: filtra entonces en el firewall del proveedor (ver Fases 1 y 2 de `DEPLOY-COOLIFY.md`). Comprueba desde fuera que solo responden 22, 80 y 443 (`nmap -Pn -p 22,80,443,3306 <IP>`).
 5. [ ] Salir y volver a entrar como `deploy`: `ssh deploy@IP`. (Opcional pero recomendado: deshabilitar login root y por contraseña en `/etc/ssh/sshd_config`.)
 
 ---
@@ -80,7 +84,7 @@ sudo mv composer.phar /usr/local/bin/composer
 sudo apt install -y git
 ```
 
-> dompdf usa `gd` (ya incluido arriba) para imágenes en PDF. Firebase (kreait) usa curl/openssl (ya disponibles).
+> dompdf usa `gd` (ya incluido arriba) para imágenes en PDF. Firebase (kreait) usa curl/openssl (ya disponibles). El Excel de los reportes (OpenSpout) necesita `zip` y `xmlreader` (este último viene en `php8.4-xml`). Si falta una extensión que piden los paquetes, `composer install` se detiene: no uses `--ignore-platform-reqs`.
 
 ---
 
@@ -97,6 +101,15 @@ FLUSH PRIVILEGES;
 EXIT;
 ```
 
+Memoria de MySQL: el valor por defecto del buffer pool (128 MB) no alcanza para los datos que se consultan a diario. Crea `/etc/mysql/mysql.conf.d/zz-plastigest.cnf` y reinicia (`sudo systemctl restart mysql`):
+```ini
+[mysqld]
+innodb_buffer_pool_size=1G      # con 4 GB de RAM; con 8 GB, 2G (comparte el servidor con PHP-FPM)
+innodb_redo_log_capacity=512M
+slow_query_log=ON
+long_query_time=1
+```
+
 ---
 
 ## Fase 4 — Desplegar el código
@@ -109,6 +122,7 @@ EXIT;
    cd plastigest
    composer install --no-dev --optimize-autoloader
    ```
+   > `--no-dev` ya funciona: Telescope e IDE Helper solo se registran en local, así que la app arranca sin las dependencias de desarrollo.
 2. [ ] Crear `.env`:
    ```bash
    cp .env.example .env
@@ -122,6 +136,11 @@ EXIT;
    APP_DEBUG=false
    APP_URL=https://api.cocos-francisco.com
    APP_TIMEZONE=America/Mexico_City
+
+   # Logs en archivos diarios (storage/logs/laravel-AAAA-MM-DD.log, 14 días)
+   LOG_CHANNEL=stack
+   LOG_STACK=daily
+   LOG_LEVEL=info
 
    DB_CONNECTION=mysql
    DB_HOST=127.0.0.1
@@ -141,14 +160,15 @@ EXIT;
 
    FRONTEND_URL=https://app.cocos-francisco.com
 
-   # Solo para el primer seed (crea el Super Admin); mínimo 12 caracteres
+   # Solo para el primer seed (crea el Super Admin); mínimo 12 caracteres.
+   # Nueva: nunca la contraseña vieja que quedó en el historial de git.
    ADMIN_EMAIL=admin@cocos-francisco.com
    ADMIN_PASSWORD=<contraseña-larga>
 
    # Firebase: ruta ABSOLUTA del JSON (config/services.php → services.firebase.credentials)
    FIREBASE_CREDENTIALS=/var/www/plastigest/storage/app/firebase/credentials.json
    ```
-   La plantilla completa y comentada está en `.env.production.example`.
+   La plantilla completa y comentada está en `.env.production.example`: copia también `MAIL_*` y `MAIL_TIMEOUT` (Fase 7.5), `MIN_NATIVE_APP_VERSION` / `LATEST_NATIVE_APP_VERSION` y `WHATSAPP_*` (con el token nuevo y un `WHATSAPP_VERIFY_TOKEN` propio). Las reglas de cada variable están en la Fase 5 de `DEPLOY-COOLIFY.md`.
 3. [ ] Subir el JSON de Firebase a esa ruta (con `scp` desde tu máquina):
    ```bash
    scp credentials.json deploy@IP:/var/www/plastigest/storage/app/firebase/credentials.json
@@ -212,10 +232,12 @@ EXIT;
            fastcgi_index index.php;
            fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
            include fastcgi_params;
-           # La app confía en el proxy (bootstrap/app.php: trustProxies '*').
-           # Aquí nginx da la cara directamente: se descartan los X-Forwarded-*
-           # que mande el cliente (si no, podría falsear su IP y saltarse el
-           # rate limit del login) y se informa el esquema real.
+           # La app confía en el salto inmediato (REMOTE_ADDR) y en los rangos
+           # de Cloudflare (config/trustedproxy.php). Aquí nginx da la cara
+           # directamente, así que el salto inmediato es el cliente: se
+           # descartan los X-Forwarded-* que mande (si no, podría falsear su
+           # IP y saltarse el límite de intentos del login) y se informa el
+           # esquema real.
            fastcgi_param HTTP_X_FORWARDED_FOR "";
            fastcgi_param HTTP_X_FORWARDED_HOST "";
            fastcgi_param HTTP_X_FORWARDED_PORT "";
@@ -226,7 +248,7 @@ EXIT;
        location ~ /\.(?!well-known).* { deny all; }
    }
    ```
-   > Si luego proxeas `api.` con Cloudflare (nube naranja), agrega `set_real_ip_from` con los rangos de Cloudflare y `real_ip_header CF-Connecting-IP;` para que la IP del cliente siga siendo la real.
+   > Si luego proxeas `api.` con Cloudflare (nube naranja), no hace falta tocar nginx: cuando la petición llega desde un rango de Cloudflare, la app toma la IP real de `CF-Connecting-IP` (middleware `RestoreCloudflareClientIp`). Mantén actualizada la lista de rangos de `config/trustedproxy.php`.
 2. [ ] Activar y recargar:
    ```bash
    sudo ln -s /etc/nginx/sites-available/plastigest /etc/nginx/sites-enabled/
@@ -265,13 +287,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now plastigest-worker
 sudo systemctl status plastigest-worker     # verificar que está "active (running)"
 ```
-> `--queue=notifications,default` es obligatorio: las notificaciones (push, correo, in-app) van a la cola `notifications` y el resto (reset de contraseña, cierre de caja) a `default`; sin la primera, las notificaciones nunca salen. El worker usa el mismo `.env` y necesita el JSON de Firebase en la ruta de `FIREBASE_CREDENTIALS` (los push salen desde el worker). `--timeout` (60 s) debe quedar por debajo de `retry_after` (90 s).
+> `--queue=notifications,default` es obligatorio: las notificaciones (push, correo, in-app) van a la cola `notifications` y el resto (reset de contraseña, cierre de caja) a `default`; sin la primera, las notificaciones nunca salen. El worker usa el mismo `.env` y necesita el JSON de Firebase en la ruta de `FIREBASE_CREDENTIALS` (los push salen desde el worker). `--timeout` (60 s) debe quedar por debajo de `retry_after` (90 s). Los reintentos con espera los define cada job (mandan sobre `--tries=3`), y si un job agota sus intentos se avisa a los administradores del sistema (campana y correo; ver Fase 7.6 de `DEPLOY-COOLIFY.md`).
 
 **Scheduler** vía cron. `crontab -e` (como `deploy`) y agregar:
 ```cron
 * * * * * cd /var/www/plastigest && php artisan schedule:run >> /dev/null 2>&1
 ```
-Esto dispara `tasks:generate-recurring` a las 06:00 y las limpiezas nocturnas `queue:prune-failed` (03:30) y `sanctum:prune-expired` (03:45), definidas en `routes/console.php`.
+Esto dispara, según `routes/console.php` (hora de `APP_TIMEZONE`): `notifications:scheduled` cada hora de 07:00 a 21:00 (avisos de tareas y recordatorios: sin el cron nunca salen), `queue:prune-failed` (03:30), `sanctum:prune-expired` (03:45), el cuadre `inventory:reconcile` (04:00; si no cuadra, error en el log y alerta a los administradores) y `tasks:generate-recurring` (06:00). Detalle en la Fase 7 de `DEPLOY-COOLIFY.md`.
+
+> Salida de las tareas: por defecto va a `/proc/1/fd/1`, que en un VPS no es escribible por `deploy`, así que se descarta (los errores de los comandos igual quedan en el log de Laravel). Para guardarla: `touch /var/www/plastigest/storage/logs/schedule.log`, `LOG_SCHEDULE_OUTPUT=/var/www/plastigest/storage/logs/schedule.log` en el `.env` y `php artisan config:cache` (el archivo debe existir y ser escribible; si no, se ignora).
 
 ---
 
@@ -326,7 +350,7 @@ En dev se usa **MailHog** (contenedor del `docker-compose.yml`, SMTP `1025`, UI 
    php artisan tinker
    >>> Mail::raw('Prueba de correo prod', fn($m) => $m->to('TU_CORREO@gmail.com')->subject('Test GCStock'));
    ```
-   Debe llegar a la bandeja (revisa spam). Si falla, mira `storage/logs/laravel.log`.
+   Debe llegar a la bandeja (revisa spam). Si falla, mira el log del día en `storage/logs/` (`laravel-AAAA-MM-DD.log` con `LOG_STACK=daily`).
 3. [ ] Probar un **flujo real**: solicitar reset de contraseña (OTP) y hacer un **cierre de caja** → que llegue el correo con el **PDF adjunto**.
 
 > **Salida de SMTP en el VPS:** Contabo no suele bloquear el puerto **587/465** saliente, pero algunos proveedores VPS sí. Si los correos no salen, prueba el otro puerto o usa la API HTTPS del proveedor (Resend/Mailgun por API evita el puerto SMTP por completo).
@@ -340,29 +364,17 @@ En dev se usa **MailHog** (contenedor del `docker-compose.yml`, SMTP `1025`, UI 
 Para el beta el disco local del VPS (80 GB) sirve. Si quieres sacar imágenes/PDF del servidor:
 
 1. [ ] Crear bucket en Cloudflare R2 + token S3.
-2. [ ] `.env`: `FILESYSTEM_DISK=s3` y las claves `AWS_*` apuntando al endpoint de R2; `php artisan config:cache`.
-3. [ ] Verificar subidas y apertura de PDFs.
+2. [ ] **Requiere código:** instalar `league/flysystem-aws-s3-v3` (no está en `composer.json`) y cambiar los `Storage::disk('public')` del código por un disco configurable. Cambiar solo `FILESYSTEM_DISK=s3` no mueve las imágenes y, sin el paquete, rompe la app.
+3. [ ] `.env`: las claves `AWS_*` apuntando al endpoint de R2; `php artisan config:cache`.
+4. [ ] Verificar subidas y apertura de PDFs.
 
 ---
 
 ## Fase 9 — Frontend (Cloudflare Pages)
 
-1. [ ] Cloudflare Dashboard → *Workers & Pages* → *Create* → *Pages* → conectar el repo `plastigest-app-v3`.
-2. [ ] Build settings:
-   - **Build command:** `npx expo export -p web`
-   - **Output directory:** `dist`
-3. [ ] Variables de entorno (`EXPO_PUBLIC_*` de producción; se **incrustan en el build**):
-   ```env
-   EXPO_PUBLIC_API_URL=https://api.cocos-francisco.com/api
-   EXPO_PUBLIC_APP_ENV=production
-   EXPO_PUBLIC_APP_NAME=GCStock
-   EXPO_PUBLIC_APP_VERSION=1.0.0
-   EXPO_PUBLIC_FIREBASE_API_KEY=...
-   EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=...
-   EXPO_PUBLIC_FIREBASE_PROJECT_ID=...
-   ```
-   > Son **obligatorias**: `.env` no está en el repo y, sin `EXPO_PUBLIC_API_URL`, el build apunta a `http://localhost/api`.
-4. [ ] Deploy. La web es una SPA (`output: "single"`): `public/_redirects` ya sirve `index.html` en cualquier ruta, así que recargar `sales/[id]` no da 404.
+El frontend no depende de cómo se monte el backend: sigue la **Fase 9 de `DEPLOY-COOLIFY.md`** (Cloudflare Pages: `npm run build:web`, salida `dist`, Node 22 de `.node-version`, la lista completa de variables `EXPO_PUBLIC_*`, `public/_headers`, `_redirects` y las páginas de privacidad) y la **Fase 9.5** para las apps nativas (EAS y `MIN_NATIVE_APP_VERSION`).
+
+> Desactualizado y ya corregido allá: el build command `npx expo export -p web` y las variables `EXPO_PUBLIC_APP_ENV` / `APP_NAME` / `APP_VERSION` que listaba esta fase. Sin `EXPO_PUBLIC_API_URL` el build de Pages ahora se detiene en vez de apuntar a `localhost`.
 
 ---
 
@@ -402,9 +414,12 @@ crontab -e
 
 ## Fase 12 — Actualizaciones futuras (deploy manual)
 
+Solo despliega commits de `main` con el CI en verde (workflow `Tests`: pruebas en MySQL 8.4 + imagen Nixpacks), y si traen migraciones hazlo fuera del horario de las sucursales siguiendo las reglas de expandir y contraer (Fase 16 de `DEPLOY-COOLIFY.md`): entre el `git pull` y el fin de `migrate`, el código nuevo corre con el esquema viejo.
+
 Script `/var/www/plastigest/deploy.sh`:
 ```bash
 #!/bin/bash
+set -e
 cd /var/www/plastigest
 git pull origin main
 composer install --no-dev --optimize-autoloader
@@ -420,29 +435,24 @@ Cada actualización: `bash deploy.sh`.
 
 ## Fase 13 — Prueba de humo antes de abrir a usuarios
 
-En `app.cocos-francisco.com`, ciclo real completo:
-
-1. [ ] Login real → seleccionar empresa y sucursal.
-2. [ ] **Vender** → confirmar que el **stock baja**.
-3. [ ] Que la venta **entre a caja**.
-4. [ ] **Cierre de caja** y que **cuadre**.
-5. [ ] **Cancelar** una venta → el **stock regresa**.
-6. [ ] Probar **ajuste de inventario** y **conteo semanal**.
-7. [ ] Generar un **PDF** y que abra.
-8. [ ] Desde **dos sucursales** confirmar que los stocks están aislados.
+Es la misma que con Coolify: primero el **primer día en la app** (Fase 13 de `DEPLOY-COOLIFY.md`: datos fiscales, roles desde las plantillas, usuarios por sucursal, una caja por sucursal, conteo inicial y notificaciones) y luego la **prueba de humo completa** (Fase 14 de `DEPLOY-COOLIFY.md`): turno, venta en el punto de venta con protección contra doble venta, kiosco, devolución en efectivo, cierre de turno, transferencia con "Pedir a", conteo con "Correcto", compra parcial, producción con responsable, reportes en PDF/Excel, push y aislamiento entre sucursales. Aquí los errores se buscan en `storage/logs/` en vez de en los Logs de Coolify.
 
 ---
 
 ## Fase 14 — Go-live checklist
 
+- [ ] Pendientes del dueño de `DEPLOY-COOLIFY.md` hechos (token de WhatsApp revocado, repos privados, contraseña vieja descartada) y CI en verde para el commit desplegado.
 - [ ] `APP_DEBUG=false`.
-- [ ] CORS restringido al dominio de la web (no `*`).
+- [x] CORS restringido al dominio de la web (no `*`) — en código; solo falta `FRONTEND_URL`.
 - [ ] `plastigest-worker` activo (`systemctl status`) y cron del scheduler puesto.
-- [ ] **Correo en producción funcionando** (Fase 7.5): SPF/DKIM/DMARC en DNS y prueba real de reset de contraseña y cierre de caja con PDF.
+- [ ] **Correo en producción funcionando** (Fase 7.5): SPF/DKIM/DMARC en DNS y prueba real de reset de contraseña y cierre de caja con PDF; `ADMIN_EMAIL` es un buzón que alguien lee (recibe las alertas del sistema).
+- [ ] Desde fuera solo responden 22, 80 y 443 (`nmap`); MySQL sin puerto público.
+- [ ] MySQL con el buffer pool ajustado y `slow_query_log` (Fase 3).
+- [ ] Logs diarios en `storage/logs/` y la alerta de prueba recibida (Fase 7.6 de `DEPLOY-COOLIFY.md`).
 - [ ] Backup diario **probado** (restauración verificada, fuera del servidor).
-- [ ] Fix de doble-venta desplegado.
+- [x] Fix de doble-venta (servidor + app) — en código; llega con el deploy.
 - [ ] Plan de internet de respaldo por sucursal (POS web = sin internet, sin ventas).
-- [ ] (Opcional, fase 2) Web push: requiere `EXPO_PUBLIC_FIREBASE_VAPID_KEY` y un service worker `firebase-messaging-sw.js`. Se puede lanzar el beta sin esto.
+- [ ] (Opcional) Web push: las `EXPO_PUBLIC_FIREBASE_*` y `EXPO_PUBLIC_FIREBASE_VAPID_KEY` en Pages; el service worker `firebase-messaging-sw.js` ya está en el frontend. Se puede lanzar el beta sin esto.
 
 ---
 
@@ -466,7 +476,9 @@ Fases 1-6 (backend en línea con cola y scheduler) ≈ medio día la primera vez
 
 ---
 
-## Qué falta (estado a 2026-06-19)
+## Qué falta (estado a 2026-06-19, desactualizado)
+
+> **Desactualizado.** El estado vigente, con los pendientes del dueño y el orden de salida, está en "Estado al 15-oct-2026 y pendientes del dueño" de `DEPLOY-COOLIFY.md`. Esta lista queda como historial del plan sobre el VPS de Contabo; el fix de doble-venta, los `console.log` y la elección de seeders ya están resueltos en código.
 
 **Hecho**
 - [x] VPS aprovisionado (`vps3451515.trouble-free.net`, Contabo).
