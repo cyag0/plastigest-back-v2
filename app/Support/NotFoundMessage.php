@@ -26,7 +26,6 @@ use App\Models\PurchaseV2;
 use App\Models\Reminder;
 use App\Models\Sale;
 use App\Models\SalesOrder;
-use App\Models\SalesReport;
 use App\Models\Supplier;
 use App\Models\Task;
 use App\Models\TaskComment;
@@ -75,7 +74,6 @@ final class NotFoundMessage
         Role::class => 'Rol no encontrado',
         Sale::class => 'Venta no encontrada',
         SalesOrder::class => 'Pedido no encontrado',
-        SalesReport::class => 'Reporte no encontrado',
         Supplier::class => 'Proveedor no encontrado',
         Task::class => 'Tarea no encontrada',
         TaskComment::class => 'Comentario no encontrado',
