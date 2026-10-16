@@ -101,6 +101,13 @@ class PermissionSeeder extends Seeder
                 'resource' => Resources::SALES->value,
             ],
             [
+                // Kiosko de autoservicio: catálogo para clientes y pedidos
+                // que se pagan en caja. La cuenta del kiosko solo tiene este.
+                'name' => 'sales_kiosk',
+                'description' => 'Usar el kiosko de autoservicio',
+                'resource' => Resources::SALES->value,
+            ],
+            [
                 // Entrar y operar en cualquier sucursal de la empresa. Antes lo
                 // daba locations_list ("Listar ubicaciones") sin que se notara.
                 'name' => 'locations_all',
