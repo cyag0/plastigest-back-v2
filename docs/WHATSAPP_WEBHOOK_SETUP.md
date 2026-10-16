@@ -10,8 +10,11 @@ https://tu-dominio.com/api/webhooks/whatsapp
 
 **Verify Token:**
 ```
-plastigest_webhook_token_2024
+<el valor de WHATSAPP_VERIFY_TOKEN>
 ```
+Genera un valor propio y largo (por ejemplo `openssl rand -hex 32`) y ponlo en
+`WHATSAPP_VERIFY_TOKEN`. No hay valor por defecto: sin él, el webhook rechaza la
+verificación. El token que aparecía aquí antes es público y no debe usarse.
 
 ## Pasos para configurar en Meta Developer Console
 
@@ -21,7 +24,7 @@ plastigest_webhook_token_2024
 4. En la sección "Webhooks", haz clic en **Configurar webhooks**
 5. Ingresa:
    - **URL de devolución de llamada**: `https://tu-dominio.com/api/webhooks/whatsapp`
-   - **Verificar token**: `plastigest_webhook_token_2024`
+   - **Verificar token**: el mismo valor de `WHATSAPP_VERIFY_TOKEN`
 6. Haz clic en **Verificar y guardar**
 7. Suscríbete a los siguientes campos:
    - ✅ **messages** (para recibir mensajes)

@@ -251,7 +251,7 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
    >
    > **`ADMIN_EMAIL`** recibe las alertas del sistema (Fase 7.6): que sea un buzón que alguien lea (p. ej. reenviado a tu Gmail con *Email Routing* de Cloudflare).
    >
-   > **WhatsApp:** el webhook es `https://api.cocos-francisco.com/api/webhooks/whatsapp` y sin `WHATSAPP_APP_SECRET` y `WHATSAPP_VERIFY_TOKEN` rechaza todo (ya no hay valores por defecto). Usa un token de verificación propio: el `plastigest_webhook_token_2024` que aparece en `docs/WHATSAPP_WEBHOOK_SETUP.md` es público.
+   > **WhatsApp:** el webhook es `https://api.cocos-francisco.com/api/webhooks/whatsapp` y sin `WHATSAPP_APP_SECRET` y `WHATSAPP_VERIFY_TOKEN` rechaza todo (ya no hay valores por defecto). Usa un token de verificación propio y largo (por ejemplo `openssl rand -hex 32`); el que aparecía antes en `docs/WHATSAPP_WEBHOOK_SETUP.md` es público y ya se quitó.
    >
    > **Cloudflare y proxies de confianza:** no hay variable. `config/trustedproxy.php` confía en el salto inmediato (el Traefik de Coolify) y en los rangos publicados de Cloudflare (consultados el 2026-10-15), y el middleware `RestoreCloudflareClientIp` toma `CF-Connecting-IP` solo cuando la petición viene de Cloudflare (Fase 8).
    >
