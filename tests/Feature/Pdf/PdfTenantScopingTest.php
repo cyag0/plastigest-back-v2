@@ -9,7 +9,6 @@ use App\Models\Unit;
 use App\Models\InventoryCount;
 use App\Models\Product;
 use App\Models\ProductPackage;
-use App\Models\SalesReport;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -19,8 +18,8 @@ use Tests\Concerns\CreatesTenant;
 use Tests\TestCase;
 
 /**
- * Verifica que los endpoints de generación/emisión de PDFs de inventory-counts,
- * sales-reports y products respetan el aislamiento por compañía (anti-IDOR).
+ * Verifica que los endpoints de generación/emisión de PDFs de inventory-counts
+ * y products respetan el aislamiento por compañía (anti-IDOR).
  *
  * Cubre dos barreras:
  *  1. `*-pdf-url` autenticados: solo emiten URL si el registro pertenece a la
@@ -120,47 +119,6 @@ class PdfTenantScopingTest extends TestCase
             'inventory-counts.pdf',
             now()->addHour(),
             ['id' => $inventoryCount->id, 'company_id' => $this->companyB->id]
-        );
-
-        $response = $this->get($signedUrl);
-        $response->assertStatus(404);
-    }
-
-    // ─── SalesReport ────────────────────────────────────────────────────────
-
-    public function test_sales_report_pdf_url_is_403_for_other_tenant(): void
-    {
-        $salesReport = $this->makeSalesReport($this->companyA, $this->locationA);
-
-        $response = $this->withHeaders([
-            'X-Company-ID'  => $this->companyB->id,
-            'X-Location-ID' => $this->locationB->id,
-        ])->getJson("/api/auth/admin/sales-reports/{$salesReport->id}/pdf-url");
-
-        $response->assertStatus(403);
-    }
-
-    public function test_sales_report_pdf_url_is_200_for_own_tenant(): void
-    {
-        $salesReport = $this->makeSalesReport($this->companyA, $this->locationA);
-
-        $response = $this->withHeaders([
-            'X-Company-ID'  => $this->companyA->id,
-            'X-Location-ID' => $this->locationA->id,
-        ])->getJson("/api/auth/admin/sales-reports/{$salesReport->id}/pdf-url");
-
-        $response->assertStatus(200)
-            ->assertJsonStructure(['url', 'expires_at']);
-    }
-
-    public function test_sales_report_render_rejects_signed_url_with_wrong_company(): void
-    {
-        $salesReport = $this->makeSalesReport($this->companyA, $this->locationA);
-
-        $signedUrl = URL::temporarySignedRoute(
-            'sales-reports.pdf',
-            now()->addHour(),
-            ['id' => $salesReport->id, 'company_id' => $this->companyB->id]
         );
 
         $response = $this->get($signedUrl);
@@ -297,23 +255,6 @@ class PdfTenantScopingTest extends TestCase
             'count_date'  => now()->toDateString(),
             'status'      => 'completed',
             'content'     => [],
-        ]);
-    }
-
-    private function makeSalesReport(Company $company, Location $location): SalesReport
-    {
-        return SalesReport::create([
-            'company_id'         => $company->id,
-            'location_id'        => $location->id,
-            'user_id'            => $this->user->id,
-            'report_date'        => now()->toDateString(),
-            'total_sales'        => 0,
-            'total_cash'         => 0,
-            'total_card'         => 0,
-            'total_transfer'     => 0,
-            'total_expenses'     => 0,
-            'net_income'         => 0,
-            'transactions_count' => 0,
         ]);
     }
 

@@ -162,27 +162,6 @@ class VentasCajaShiftRulesTest extends VentasCajaTestCase
         $this->assertDatabaseHas('sale_payments', ['sale_id' => $saleId, 'method' => 'card', 'amount' => 50, 'tendered' => null]);
     }
 
-    public function test_the_cash_cut_counts_an_abono_on_the_day_it_is_paid(): void
-    {
-        $coco = $this->createProduct(['sale_price' => 100], 10);
-        $cashier = $this->cashier(['sales_create', 'sales_update']);
-        $saleId = $this->legacySale($cashier, ['payment_method' => 'credit', 'details' => [$this->legacyLine($coco, 2)]])
-            ->assertCreated()->json('data.id');
-        $yesterday = now()->subDay()->toDateString();
-        DB::table('sales')->where('id', $saleId)->update(['sale_date' => $yesterday]);
-
-        $this->actingInBranch($cashier)
-            ->postJson("/api/auth/admin/sales/{$saleId}/add-payment", ['amount' => 80, 'payment_method' => 'cash'])
-            ->assertOk();
-
-        $cash = fn(string $date) => collect($this->actingInBranch($this->user)
-            ->getJson('/api/auth/admin/sales/cash-register?date=' . $date)->assertOk()->json('data.payment_methods'))
-            ->firstWhere('method', 'Efectivo')['total'];
-
-        $this->assertEquals(80, $cash(now()->toDateString()), 'el abono cuenta el día en que entró el dinero');
-        $this->assertEquals(0, $cash($yesterday));
-    }
-
     // ─── Devoluciones ────────────────────────────────────────────────────────
 
     public function test_a_cash_refund_needs_an_open_shift_in_the_branch(): void

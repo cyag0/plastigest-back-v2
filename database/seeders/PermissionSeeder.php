@@ -59,8 +59,9 @@ class PermissionSeeder extends Seeder
             [Resources::CASH_REGISTER_SESSIONS, [Actions::READ, Actions::LIST]],
 
             // Reportes y Dashboard
-            // El CRUD lo usa SalesReportController (reportes de venta / corte).
-            [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT, Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            // Solo ver y exportar: el CRUD era del reporte de ventas manual, que
+            // se retiró (el corte es el del turno de caja).
+            [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT]],
             [Resources::DASHBOARD, [Actions::VIEW]],
             [Resources::SETTINGS, [Actions::READ, Actions::UPDATE, Actions::MANAGE]],
         ];
