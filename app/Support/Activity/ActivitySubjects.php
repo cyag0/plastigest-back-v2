@@ -60,6 +60,9 @@ class ActivitySubjects
                     'preparing' => 'Empezó a preparar', 'in_transit' => 'Envió',
                     'delivered' => 'Entregó', 'cancelled' => 'Canceló',
                 ],
+                // Apartar y liberar mercancía es parte de preparar, cobrar o
+                // cancelar (y de cada pedido del kiosko): no es una edición.
+                'ignore' => ['reserved_at'],
             ],
 
             // ── Caja ────────────────────────────────────────────────────────

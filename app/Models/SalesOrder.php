@@ -13,6 +13,7 @@ use App\Models\Sale;
 use App\Models\SalesOrderDetail;
 use App\Models\User;
 use App\Support\DocumentSequence;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -33,6 +34,7 @@ class SalesOrder extends Model
         'created_by',
         'updated_by',
         'order_number',
+        'ticket_number',
         'client_request_id',
         'order_date',
         'channel',
@@ -61,6 +63,7 @@ class SalesOrder extends Model
         'channel' => SalesOrderChannel::class,
         'service_mode' => \App\Enums\SalesOrderServiceMode::class,
         'status' => SalesOrderStatus::class,
+        'ticket_number' => 'integer',
         'order_date' => 'date:Y-m-d',
         'promised_at' => 'datetime',
         'prepared_at' => 'datetime',
@@ -154,6 +157,62 @@ class SalesOrder extends Model
         $value = $serviceMode instanceof \App\Enums\SalesOrderServiceMode ? $serviceMode->value : $serviceMode;
 
         return $query->where('service_mode', $value);
+    }
+
+    /**
+     * Pedidos del kiosko de autoservicio: los que manda el cliente desde el
+     * kiosko (canal kiosk con número corto). Un pedido de canal kiosk sin
+     * número es del cobro rápido anterior o de un alta manual: no se lista en
+     * el punto de venta ni vence solo.
+     */
+    public function scopeKiosk(Builder $query): Builder
+    {
+        return $query->where('channel', SalesOrderChannel::KIOSK->value)->whereNotNull('ticket_number');
+    }
+
+    /**
+     * Guarda los renglones (ya con su precio definitivo, ver
+     * SalePricing::priceLines) y deja subtotal y total como la suma exacta de
+     * sus importes. La usan el alta y la edición de pedidos y el kiosko: un
+     * pedido se calcula igual venga de donde venga.
+     *
+     * En centavos enteros, como el punto de venta y la app: el renglón se
+     * redondea y el total es la suma exacta de los renglones (antes se
+     * sumaban flotantes sin redondear y el total podía no cuadrar con sus
+     * renglones por un centavo).
+     *
+     * @param array<int, array{product_id: int, package_id?: int|null, unit_id: int, requested_quantity: mixed, unit_price: mixed}> $details
+     */
+    public function writeDetails(array $details): void
+    {
+        $subtotalCents = 0;
+        foreach ($details as $detail) {
+            $lineCents = Money::line($detail['requested_quantity'], $detail['unit_price'])['subtotal'];
+            $subtotalCents += $lineCents;
+
+            SalesOrderDetail::create([
+                'sales_order_id' => $this->id,
+                'product_id' => $detail['product_id'],
+                'package_id' => $detail['package_id'] ?? null,
+                'unit_id' => $detail['unit_id'],
+                'requested_quantity' => Money::roundQuantity($detail['requested_quantity']),
+                'prepared_quantity' => 0,
+                'delivered_quantity' => 0,
+                'reserved_quantity_base' => 0,
+                'delivered_quantity_base' => 0,
+                'unit_price' => Money::round($detail['unit_price']),
+                'line_subtotal' => Money::fromCents($lineCents),
+                'line_total' => Money::fromCents($lineCents),
+            ]);
+        }
+
+        $subtotal = Money::fromCents($subtotalCents);
+        $this->forceFill([
+            'subtotal' => $subtotal,
+            'total_amount' => $subtotal,
+            'tax_amount' => $this->tax_amount ?? 0,
+            'discount_amount' => $this->discount_amount ?? 0,
+        ])->save();
     }
 
     public function transitionTo(SalesOrderStatus $nextStatus): bool

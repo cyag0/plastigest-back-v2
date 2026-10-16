@@ -552,6 +552,13 @@ class SaleController extends CrudController
      */
     public function getInitialData(Request $request)
     {
+        // Productos con su costo y existencias: solo para quien arma ventas o
+        // transferencias (los formularios que lo usan). Antes cualquier sesión,
+        // p. ej. la cuenta del kiosko, podía bajar los costos de compra.
+        if (!CurrentWorker::hasAnyPermission(['sales_create', 'sales_update', 'transfers_create', 'transfers_update'])) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
         try {
             $companyId = CurrentCompany::get()->id;
             $locationId = $request->integer('location_id') ?: CurrentLocation::get()->id;

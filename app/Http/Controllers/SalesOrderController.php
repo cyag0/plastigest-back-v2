@@ -19,7 +19,6 @@ use App\Support\ClientRequest;
 use App\Support\CurrentWorker;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
-use App\Support\Money;
 use App\Support\SalePricing;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
@@ -301,38 +300,8 @@ class SalesOrderController extends CrudController
                 $order->details()->delete();
             }
 
-            // En centavos enteros, como el punto de venta y la app: el renglón
-            // se redondea y el total es la suma exacta de los renglones (antes
-            // se sumaban flotantes sin redondear y el total podía no cuadrar
-            // con sus renglones por un centavo).
-            $subtotalCents = 0;
-            foreach ($details as $detail) {
-                $lineCents = Money::line($detail['requested_quantity'], $detail['unit_price'])['subtotal'];
-                $subtotalCents += $lineCents;
-
-                SalesOrderDetail::create([
-                    'sales_order_id' => $order->id,
-                    'product_id' => $detail['product_id'],
-                    'package_id' => $detail['package_id'] ?? null,
-                    'unit_id' => $detail['unit_id'],
-                    'requested_quantity' => Money::roundQuantity($detail['requested_quantity']),
-                    'prepared_quantity' => 0,
-                    'delivered_quantity' => 0,
-                    'reserved_quantity_base' => 0,
-                    'delivered_quantity_base' => 0,
-                    'unit_price' => Money::round($detail['unit_price']),
-                    'line_subtotal' => Money::fromCents($lineCents),
-                    'line_total' => Money::fromCents($lineCents),
-                ]);
-            }
-
-            $subtotal = Money::fromCents($subtotalCents);
-            $order->forceFill([
-                'subtotal' => $subtotal,
-                'total_amount' => $subtotal,
-                'tax_amount' => $order->tax_amount ?? 0,
-                'discount_amount' => $order->discount_amount ?? 0,
-            ])->save();
+            // Renglones y totales en centavos enteros (el kiosko usa lo mismo).
+            $order->writeDetails($details);
 
             return $order->fresh($this->getShowRelations());
         });
@@ -364,6 +333,12 @@ class SalesOrderController extends CrudController
 
     public function getInitialData(Request $request)
     {
+        // Lleva clientes (RFC, teléfono, correo) y costos: solo para quien
+        // arma pedidos. Antes cualquier usuario con sesión podía bajarlo.
+        if (!$this->canStore()) {
+            return $this->forbiddenResponse('armar pedidos');
+        }
+
         $location = CurrentLocation::get();
         $companyId = CurrentCompany::id();
 
