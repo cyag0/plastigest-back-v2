@@ -292,7 +292,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('pos/kiosk-orders/{id}/cancel', [\App\Http\Controllers\PosKioskOrderController::class, 'cancel'])->whereNumber('id');
             // Kiosko de autoservicio (sales_kiosk): catálogo para clientes y pedidos para pagar en caja.
             Route::get('kiosk/catalog', [\App\Http\Controllers\KioskController::class, 'catalog']);
-            Route::post('kiosk/orders', [\App\Http\Controllers\KioskController::class, 'storeOrder']);
+            // Un kiosko manda pocos pedidos por minuto: el límite frena a quien
+            // intente apartar mercancía en ráfaga con la sesión del dispositivo.
+            Route::post('kiosk/orders', [\App\Http\Controllers\KioskController::class, 'storeOrder'])->middleware('throttle:20,1');
             Route::prefix('cash-register-sessions')->controller(\App\Http\Controllers\CashRegisterSessionController::class)->group(function () {
                 Route::get('/', 'index');
                 Route::get('current', 'current');

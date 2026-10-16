@@ -231,6 +231,32 @@ class VentasCajaKioskOrderTest extends KioskTestCase
         $this->assertEquals(0, $this->reservedStock($coco));
     }
 
+    public function test_a_branch_with_too_many_orders_waiting_takes_no_more(): void
+    {
+        config(['kiosk.max_pending_orders' => 2]);
+        $coco = $this->createProduct(['sale_price' => 30], 10);
+        $kiosk = $this->kioskUser();
+
+        $first = $this->kioskOrder($kiosk, [$this->item($coco, 1)], ['client_request_id' => 'k-first'])->assertCreated();
+        $this->kioskOrder($kiosk, [$this->item($coco, 1)])->assertCreated();
+
+        $this->kioskOrder($kiosk, [$this->item($coco, 1)])
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'kiosk_busy');
+        $this->assertSame(2, SalesOrder::count());
+        $this->assertEquals(2, $this->reservedStock($coco));
+
+        // El reintento de un pedido que ya entró sigue respondiendo ese pedido.
+        $this->kioskOrder($kiosk, [$this->item($coco, 1)], ['client_request_id' => 'k-first'])
+            ->assertOk()
+            ->assertJsonPath('data.id', $first->json('data.id'));
+
+        // Otra sucursal tiene su propio tope.
+        $branch = $this->createBranch();
+        $this->setStock($coco, $branch, 10);
+        $this->kioskOrder($this->kioskUser($branch), [$this->item($coco, 1)], [], $branch)->assertCreated();
+    }
+
     public function test_what_the_kiosk_does_not_sell_is_rejected(): void
     {
         $coco = $this->createProduct(['name' => 'Coco entero', 'sale_price' => 30], 10);

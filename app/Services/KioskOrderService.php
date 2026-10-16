@@ -78,6 +78,19 @@ class KioskOrderService
             return [$existing, false];
         }
 
+        // Tope de pedidos esperando pago en la sucursal (kiosk.max_pending_orders):
+        // cada uno aparta mercancía hasta que lo cobran o vence.
+        $pending = SalesOrder::query()->kiosk()
+            ->where('location_id', $locationId)
+            ->where('status', SalesOrderStatus::PENDING)
+            ->count();
+        if ($pending >= (int) config('kiosk.max_pending_orders', 30)) {
+            throw new BusinessRuleException(
+                'Hay muchos pedidos esperando en caja. Pide ayuda en caja para continuar.',
+                'kiosk_busy',
+            );
+        }
+
         $lines = $this->priceItems($companyId, $locationId, $items);
 
         try {
