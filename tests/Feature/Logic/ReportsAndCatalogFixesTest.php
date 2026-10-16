@@ -137,6 +137,68 @@ class ReportsAndCatalogFixesTest extends TestCase
         $this->assertEquals(24, (float) $box->fresh()->factor_to_base);
     }
 
+    public function test_unit_list_shows_the_company_units_besides_the_global_ones(): void
+    {
+        // Quien no es system_admin crea la unidad para su empresa.
+        Sanctum::actingAs($this->createUserWithRole($this->location, ['units_list', 'units_read', 'units_create'])->fresh(), ['*']);
+
+        $sackId = $this->withHeaders($this->tenantHeaders())
+            ->postJson('/api/auth/admin/units', [
+                'name' => 'Costal', 'abbreviation' => 'cst',
+                'base_unit_id' => $this->unitId('Kilogramo'), 'factor_to_base' => 25,
+            ])->assertCreated()->json('data.id');
+        $this->assertSame($this->company->id, (int) Unit::findOrFail($sackId)->company_id);
+
+        [$otherCompany] = $this->createCompanyWithBranch();
+        $foreign = Unit::create([
+            'name' => 'Bulto', 'abbreviation' => 'blt', 'unit_type' => 'mass',
+            'company_id' => $otherCompany->id, 'factor_to_base' => 50,
+        ]);
+
+        $ids = collect(
+            $this->withHeaders($this->tenantHeaders())->getJson('/api/auth/admin/units?all=true')->assertOk()->json('data')
+        )->pluck('id');
+
+        // Antes la lista solo traía las globales: la unidad recién creada no aparecía.
+        $this->assertSame($sackId, $ids->first(), 'la más nueva primero, como la lista de la app');
+        $this->assertContains($this->unitId('Kilogramo'), $ids);
+        $this->assertNotContains($foreign->id, $ids, 'las unidades de otra empresa no');
+
+        $this->withHeaders($this->tenantHeaders())->getJson("/api/auth/admin/units/{$sackId}")->assertOk();
+        $this->withHeaders($this->tenantHeaders())->getJson("/api/auth/admin/units/{$foreign->id}")->assertNotFound();
+    }
+
+    public function test_grouped_units_include_the_company_units_but_not_another_company(): void
+    {
+        $sack = Unit::create([
+            'name' => 'Costal', 'abbreviation' => 'cst', 'unit_type' => 'mass',
+            'company_id' => $this->company->id, 'factor_to_base' => 25,
+        ]);
+        [$otherCompany] = $this->createCompanyWithBranch();
+        $foreign = Unit::create([
+            'name' => 'Bulto', 'abbreviation' => 'blt', 'unit_type' => 'mass',
+            'company_id' => $otherCompany->id, 'factor_to_base' => 50,
+        ]);
+
+        // Por tipo (compras): antes solo las globales.
+        $mass = collect(
+            $this->withHeaders($this->tenantHeaders())->getJson('/api/auth/admin/units/grouped-by-type')->assertOk()->json('data.mass')
+        )->pluck('id');
+        $this->assertContains($sack->id, $mass);
+        $this->assertContains($this->unitId('Gramo'), $mass);
+        $this->assertNotContains($foreign->id, $mass);
+
+        // Por base (ajustes): el company_id de la petición ya no abre las de otra empresa.
+        $group = $this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/units/grouped-by-base?unit_id=' . $this->unitId('Kilogramo') . "&company_id={$otherCompany->id}")
+            ->assertOk()
+            ->json('data');
+        $ids = collect($group)->flatten(1)->pluck('id');
+        $this->assertContains($sack->id, $ids);
+        $this->assertContains($this->unitId('Kilogramo'), $ids);
+        $this->assertNotContains($foreign->id, $ids);
+    }
+
     // ─── Conteos ─────────────────────────────────────────────────────────────
 
     public function test_count_difference_keeps_decimals(): void

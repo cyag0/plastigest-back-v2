@@ -47,25 +47,11 @@ class UnitControllerV2 extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
-        /** @var \Illuminate\Database\Eloquent\Builder $query */
-        $query;
-
-        // Filtro por compañía
-        /*  if (isset($params['company_id'])) {
-            $query->where('company_id', $params['company_id']);
-        } */
-        $query->where('company_id', null);
-        /* if (isset($params["only_base"])) {
-            $query->where('base_unit_id', null);
-        }
- */
-        // Filtro para obtener unidad base + derivadas de un producto
-        /*  if (isset($params['product_unit_id'])) {
-            $query->where(function ($q) use ($params) {
-                $q->where('id', $params['product_unit_id'])
-                    ->orWhere('base_unit_id', $params['product_unit_id']);
-            });
-        } */
+        // Sin filtro de empresa propio: applyTenantScope() ya deja las
+        // unidades globales (company_id null) y las de la empresa actual.
+        // Antes aquí se forzaba company_id null y una unidad creada por la
+        // empresa (quien no es system_admin crea unidades de su empresa)
+        // nunca aparecía en la lista ni en los selectores.
     }
 
     /**
@@ -276,21 +262,12 @@ class UnitControllerV2 extends CrudController
     public function getGroupedByBase(Request $request): JsonResponse
     {
         try {
-            $currentCompany = CurrentCompany::get();
-            $companyId = $request->input('company_id') ?? ($currentCompany?->id);
             $targetUnitId = (int) $request->input('unit_id', 0);
 
-            // Incluir unidades globales (company_id null) y, si existe, unidades de la compañía actual
-            $allUnits = Unit::query()
-                ->where(function ($query) use ($companyId) {
-                    $query->whereNull('company_id');
-
-                    if ($companyId) {
-                        $query->orWhere('company_id', $companyId);
-                    }
-                })
-                ->orderBy('name')
-                ->get();
+            // Unidades globales y las de la empresa actual, con el mismo
+            // aislamiento que la lista. Antes un company_id en la petición
+            // dejaba ver las unidades de cualquier empresa.
+            $allUnits = $this->scopedQuery()->orderBy('name')->get();
 
             // Agrupar por tipo de unidad y elegir una base por tipo.
             $grouped = [];
@@ -364,12 +341,9 @@ class UnitControllerV2 extends CrudController
     public function getGroupedByType(Request $request): JsonResponse
     {
         try {
-
-            // Obtener todas las unidades de la compañía
-            $allUnits = Unit::where('company_id', null)
-                ->orderBy('name')
-                ->get();
-
+            // Globales y de la empresa actual: antes solo las globales, y la
+            // compra no ofrecía la unidad propia de un producto.
+            $allUnits = $this->scopedQuery()->orderBy('name')->get();
 
             $units = [];
 
