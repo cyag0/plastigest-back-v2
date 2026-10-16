@@ -19,6 +19,11 @@ Schedule::command('tasks:generate-recurring')->dailyAt('06:00');
 // los avisos se saltaban hasta el día siguiente.
 Schedule::command('notifications:scheduled')->hourly()->between('7:00', '21:00')->withoutOverlapping(10);
 
+// Pedidos del kiosko que nadie cobró a tiempo (kiosk.order_ttl_minutes): se
+// cancelan y liberan lo apartado. El candado vence a los 10 minutos, como
+// arriba, para que una corrida interrumpida no frene las siguientes.
+Schedule::command('kiosk:expire-orders')->everyTenMinutes()->withoutOverlapping(10);
+
 // Mantenimiento. Requiere el cron del scheduler (`php artisan schedule:run`
 // cada minuto): Scheduled Task en Coolify o crontab en el VPS (ver DEPLOY*.md).
 // Jobs fallidos de más de 7 días (la tabla failed_jobs crece sin límite).
