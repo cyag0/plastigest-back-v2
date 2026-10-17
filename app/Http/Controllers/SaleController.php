@@ -127,9 +127,17 @@ class SaleController extends CrudController
      */
     protected function handleQuery($query, array $params)
     {
-        // Filtrar por estado
+        // Filtrar por estado. Además de closed/cancelled acepta el estado del
+        // pago (paid, partial, pending), como lo muestra la lista: una venta
+        // cancelada dice «Cancelada» y las demás cómo va su pago, así que
+        // «Pagadas» no incluye las canceladas aunque se hubieran cobrado.
         if (isset($params['status']) && !empty($params['status'])) {
-            $query->where('status', $params['status']);
+            if (in_array($params['status'], ['paid', 'partial', 'pending'], true)) {
+                $query->where('status', '!=', SaleStatus::CANCELLED->value)
+                    ->where('payment_status', $params['status']);
+            } else {
+                $query->where('status', $params['status']);
+            }
         }
 
         // Filtrar por ubicación

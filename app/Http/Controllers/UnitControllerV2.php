@@ -52,6 +52,19 @@ class UnitControllerV2 extends CrudController
         // Antes aquí se forzaba company_id null y una unidad creada por la
         // empresa (quien no es system_admin crea unidades de su empresa)
         // nunca aparecía en la lista ni en los selectores.
+
+        // Tipo de unidad: quantity, mass, volume, length.
+        if (!empty($params['unit_type'])) {
+            $query->where('unit_type', $params['unit_type']);
+        }
+
+        // Origen: las del sistema (compartidas, sin empresa) o las que creó
+        // la empresa.
+        match ($params['origin'] ?? null) {
+            'system' => $query->whereNull('company_id'),
+            'company' => $query->whereNotNull('company_id'),
+            default => null,
+        };
     }
 
     /**

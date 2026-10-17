@@ -41,14 +41,25 @@ class ProductPackageController extends Controller
 
         $query = $this->scoped()->with(['product', 'unit']);
 
-        // Filtrar por producto
-        if ($request->has('product_id')) {
+        // Filtrar por producto. filled y no has: un product_id vacío llega
+        // como null y filtraba por "product_id IS NULL" (lista vacía).
+        if ($request->filled('product_id')) {
             $query->where('product_id', $request->product_id);
         }
 
         // Solo activos
         if ($request->boolean('active_only')) {
             $query->active();
+        }
+
+        // Estado (filtro de la lista): activos o inactivos.
+        if ($request->filled('is_active')) {
+            $query->where('is_active', $request->boolean('is_active'));
+        }
+
+        // Categoría del producto del empaque.
+        if ($request->filled('category_id')) {
+            $query->whereHas('product', fn($q) => $q->where('category_id', (int) $request->input('category_id')));
         }
 
         // Búsqueda general: nombre del empaque, código de barras o nombre del producto

@@ -59,6 +59,15 @@ class CashRegisterController extends CrudController
             $query->where('is_active', filter_var($params['is_active'], FILTER_VALIDATE_BOOLEAN));
         }
 
+        // Estado como lo muestra la lista: desactivada, con turno abierto o
+        // libre (activa y sin turno).
+        match ($params['status'] ?? null) {
+            'inactive' => $query->where('is_active', false),
+            'in_session' => $query->where('is_active', true)->whereHas('openSession'),
+            'free' => $query->where('is_active', true)->whereDoesntHave('openSession'),
+            default => null,
+        };
+
         if (!empty($params['search'])) {
             $search = $params['search'];
             $query->where(fn($q) => $q->where('name', 'like', "%{$search}%")->orWhere('code', 'like', "%{$search}%"));
