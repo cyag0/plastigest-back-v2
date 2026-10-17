@@ -109,21 +109,9 @@ class CompanyController extends CrudController
      */
     protected function validateStoreData(Request $request): array
     {
-        return $request->validate([
-            'name' => 'required|string|max:255|unique:companies,name',
-            'business_name' => 'required|string|max:255',
-            'rfc' => [
-                'required',
-                'string',
-                'max:13',
-                'regex:/^[A-Z]{3,4}[0-9]{6}[A-Z0-9]{3}$/',
-                'unique:companies,rfc'
-            ],
-            'address' => 'nullable|string|max:500',
-            'phone' => 'nullable|string|max:20|regex:/^[0-9+\-\s()]+$/',
-            'email' => 'required|email|max:255|unique:companies,email',
-            'is_active' => 'nullable|boolean',
-        ]);
+        $this->normalizeRfc($request);
+
+        return $request->validate($this->companyRules(), $this->companyMessages());
     }
 
     /**
@@ -131,21 +119,56 @@ class CompanyController extends CrudController
      */
     protected function validateUpdateData(Request $request, Model $model): array
     {
-        return $request->validate([
-            'name' => 'required|string|max:255|unique:companies,name,' . $model->id,
-            'business_name' => 'required|string|max:255',
-            'rfc' => [
-                'required',
-                'string',
-                'max:13',
-                'regex:/^[A-Z]{3,4}[0-9]{6}[A-Z0-9]{3}$/',
-                'unique:companies,rfc,' . $model->id
-            ],
-            'address' => 'nullable|string|max:500',
+        $this->normalizeRfc($request);
+
+        return $request->validate($this->companyRules((int) $model->id), $this->companyMessages());
+    }
+
+    /**
+     * Reglas de alta y edición. Los límites son los de las columnas: antes se
+     * validaban 255 en el nombre y el correo y 500 en la dirección, y un texto
+     * largo tronaba en MySQL. Razón social, RFC y correo son opcionales: la
+     * base los acepta vacíos, el ticket ya los omite, y un negocio sin RFC no
+     * podía ni cambiar su dirección.
+     */
+    private function companyRules(?int $ignoreId = null): array
+    {
+        $unique = fn(string $column) => 'unique:companies,' . $column . ($ignoreId ? ',' . $ignoreId : '');
+
+        return [
+            'name' => ['required', 'string', 'max:150', $unique('name')],
+            'business_name' => 'nullable|string|max:255',
+            // 3 letras (empresa) o 4 (persona física); la Ñ y el & existen en
+            // RFC reales y antes se rechazaban.
+            'rfc' => ['nullable', 'string', 'max:13', 'regex:/^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$/u', $unique('rfc')],
+            'address' => 'nullable|string|max:255',
             'phone' => 'nullable|string|max:20|regex:/^[0-9+\-\s()]+$/',
-            'email' => 'required|email|max:255|unique:companies,email,' . $model->id,
+            'email' => ['nullable', 'email', 'max:100', $unique('email')],
             'is_active' => 'nullable|boolean',
-        ]);
+        ];
+    }
+
+    private function companyMessages(): array
+    {
+        return [
+            'rfc.regex' => 'Revisa el RFC: son 12 caracteres si es empresa o 13 si es persona física.',
+            'rfc.unique' => 'Ya hay otra empresa con ese RFC.',
+            'name.unique' => 'Ya hay otra empresa con ese nombre.',
+            'email.unique' => 'Ya hay otra empresa con ese correo.',
+        ];
+    }
+
+    /**
+     * RFC en mayúsculas y sin espacios, puntos ni guiones antes de validarlo:
+     * escrito en minúsculas ("cfr010101ab1") daba 422 aunque estuviera bien.
+     */
+    private function normalizeRfc(Request $request): void
+    {
+        if (!$request->has('rfc')) {
+            return;
+        }
+        $rfc = preg_replace('/[\s.\-]/u', '', (string) $request->input('rfc'));
+        $request->merge(['rfc' => $rfc === '' ? null : mb_strtoupper($rfc)]);
     }
 
     /**

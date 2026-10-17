@@ -112,11 +112,13 @@ class LocationController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         return $request->validate([
-            'name' => 'required|string|max:255',
+            // Los límites son los de las columnas (antes 255/500/255 y un texto
+            // largo tronaba en MySQL).
+            'name' => 'required|string|max:150',
             'description' => 'nullable|string|max:1000',
-            'address' => 'required|string|max:500',
+            'address' => 'required|string|max:255',
             'phone' => 'nullable|string|max:20',
-            'email' => 'nullable|email|max:255',
+            'email' => 'nullable|email|max:100',
             'company_id' => 'required|exists:companies,id',
             'is_active' => 'boolean',
         ]);
@@ -128,11 +130,13 @@ class LocationController extends CrudController
     protected function validateUpdateData(Request $request, Model $model): array
     {
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
+            // Los límites son los de las columnas (antes 255/500/255 y un texto
+            // largo tronaba en MySQL).
+            'name' => 'required|string|max:150',
             'description' => 'nullable|string|max:1000',
-            'address' => 'required|string|max:500',
+            'address' => 'required|string|max:255',
             'phone' => 'nullable|string|max:20',
-            'email' => 'nullable|email|max:255',
+            'email' => 'nullable|email|max:100',
             'company_id' => 'required|exists:companies,id',
             'is_active' => 'boolean',
         ]);
