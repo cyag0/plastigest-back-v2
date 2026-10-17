@@ -65,6 +65,7 @@ class ProductionOrderController extends CrudController
             'consumptions.product.unit',
             'consumptions.unit',
             'outputs.product.unit',
+            'outputs.product.inventoryType',
             'outputs.unit',
             'wastes.product',
             'wastes.unit',

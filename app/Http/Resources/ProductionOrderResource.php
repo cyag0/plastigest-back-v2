@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Enums\ProductionOrderStatus;
+use App\Models\InventoryType;
 use App\Models\Operations\ProductionOrder;
 use App\Models\Product;
 use App\Services\ProductionOrderService;
@@ -24,8 +25,9 @@ class ProductionOrderResource extends Resources
             'folio' => $resource->folio,
             'kind' => $resource->kind ?? ProductionOrder::KIND_PROCESS,
             'kind_label' => $isPackaging ? 'Envasado' : 'Producción',
-            // Lo que se muestra como nombre: el proceso que se corrió.
-            'title' => $isPackaging ? 'Envasado' : ($formulaName ?? 'Producción'),
+            // Lo que se muestra como nombre: el proceso que se corrió, o qué
+            // granel se envasó ("Envasado de agua de coco").
+            'title' => $isPackaging ? $this->packagingTitle($resource) : ($formulaName ?? 'Producción'),
             'production_date' => $resource->production_date?->format('Y-m-d'),
             'company_id' => $resource->company_id,
             'location_id' => $resource->location_id,
@@ -137,6 +139,34 @@ class ProductionOrderResource extends Resources
         return $item;
     }
 
+    /** "Envasado de agua de coco" si se envasó un solo granel; si no, "Envasado". */
+    private function packagingTitle(ProductionOrder $order): string
+    {
+        $names = [];
+        if ($order->relationLoaded('packagings')) {
+            foreach ($order->packagings as $packaging) {
+                if ($packaging->relationLoaded('sourceProduct') && $packaging->sourceProduct) {
+                    $names[$packaging->sourceProduct->id] = $packaging->sourceProduct->name;
+                }
+            }
+        }
+        if (!$names && $order->planned_packagings) {
+            $sourceIds = Product::whereIn('id', array_column($order->planned_packagings, 'product_id'))
+                ->pluck('packaging_source_product_id')
+                ->filter()
+                ->unique();
+            $names = Product::whereIn('id', $sourceIds)->pluck('name', 'id')->all();
+        }
+
+        if (count($names) !== 1) {
+            return 'Envasado';
+        }
+
+        $name = trim(preg_replace('/\s*\(granel\)\s*$/iu', '', reset($names)));
+
+        return 'Envasado de ' . mb_strtolower(mb_substr($name, 0, 1)) . mb_substr($name, 1);
+    }
+
     /** Un consumo o una salida, con nombre y unidad. */
     private function line($row): array
     {
@@ -152,6 +182,10 @@ class ProductionOrderResource extends Resources
             'expected_quantity' => $row->expected_quantity !== null ? (float) $row->expected_quantity : null,
             'variance_pct' => $this->variancePct($row->quantity, $row->expected_quantity),
             'notes' => $row->notes,
+            // Granel: lo que no se envasó se queda en inventario.
+            'is_bulk' => $row->relationLoaded('product') && $row->product?->relationLoaded('inventoryType')
+                ? $row->product->inventoryType?->code === InventoryType::SEMI_FINISHED
+                : null,
         ];
     }
 

@@ -175,7 +175,7 @@ class ProductionLockingTest extends TestCase
         $order = $this->packLater([['product_id' => $jar->id, 'quantity' => 120]])
             ->assertCreated()
             ->assertJsonPath('data.kind', 'packaging')
-            ->assertJsonPath('data.title', 'Envasado')
+            ->assertJsonPath('data.title', 'Envasado de dulce de coco granel')
             ->assertJsonPath('data.status', 'completed')
             ->json('data');
 
