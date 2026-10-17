@@ -91,7 +91,7 @@ class SupplierController extends CrudController
         return $request->validate([
             'name' => 'required|string|max:150',
             'business_name' => 'nullable|string|max:255',
-            'social_reason' => 'nullable|string|max:20',
+            'social_reason' => 'nullable|string|max:255',
             'rfc' => 'nullable|string|max:20',
             'address' => 'nullable|string|max:255',
             'phone' => 'nullable|string|max:50',
@@ -117,7 +117,7 @@ class SupplierController extends CrudController
         return $request->validate([
             'name' => 'required|string|max:150',
             'business_name' => 'nullable|string|max:255',
-            'social_reason' => 'nullable|string|max:20',
+            'social_reason' => 'nullable|string|max:255',
             'rfc' => 'nullable|string|max:20',
             'address' => 'nullable|string|max:255',
             'phone' => 'nullable|string|max:50',
@@ -137,7 +137,13 @@ class SupplierController extends CrudController
         try {
             DB::beginTransaction();
 
-            $data["company_id"] = isset($data["company_id"][0]) ? $data["company_id"][0] : $data["company_id"];
+            // Solo una lista (company_id[]) se toma por su primer elemento. La
+            // app manda FormData y company_id llega como texto: "12"[0] es "1",
+            // así que con empresas de id 10 o más el proveedor se guardaba en
+            // otra empresa.
+            if (isset($data['company_id']) && is_array($data['company_id'])) {
+                $data['company_id'] = reset($data['company_id']) ?: null;
+            }
 
             // El callback ejecuta el store() o update() del modelo
             $model = $callback($data);

@@ -135,6 +135,14 @@ abstract class CrudController extends Controller
         }
 
         $requested = $request->input($column);
+        // Algunas pantallas mandan company_id[]: se toma el primero (y se deja
+        // así en la petición) para revisar el acceso a esa empresa. Antes una
+        // lista se saltaba la revisión.
+        if (is_array($requested)) {
+            $requested = reset($requested);
+            $request->merge([$column => $requested === false ? null : $requested]);
+            $requested = $request->input($column);
+        }
         if ($requested === null || $requested === '') {
             $request->merge([$column => $current]);
 
@@ -642,6 +650,13 @@ abstract class CrudController extends Controller
 
             // Procesar los datos antes de actualizar
             $processedData = $this->processUpdateData($validatedData, $request, $model);
+
+            // Un registro no cambia de empresa al editarlo: el company_id que
+            // mande el cliente se ignora. Antes se podía mover un cliente, un
+            // proveedor o una categoría a cualquier empresa.
+            if ($this->companyColumn && array_key_exists($this->companyColumn, $processedData)) {
+                $processedData[$this->companyColumn] = $model->{$this->companyColumn};
+            }
 
             // Actualizar el modelo
             $model = $this->process(fn($data) => $this->edit($data, $id), $processedData, 'update');
