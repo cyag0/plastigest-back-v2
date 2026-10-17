@@ -248,10 +248,12 @@ class InventoryAdjustmentController extends Controller
                         ? $this->countedDifference($product, (int) $unit->id, (float) $item['counted_quantity'], $previousStock)
                         : [(string) $item['direction'], $this->movementService->quantityInProductUnit((int) $product->id, (int) $unit->id, (float) $item['quantity'])];
 
+                    // El kárdex muestra el motivo como lo lee la persona ("Ajuste:
+                    // Daño"), no el código ("Ajuste: damage").
                     $adjustmentContext = StockContext::for(
                         StockLedgerReason::ADJUSTMENT,
                         null,
-                        'Ajuste: ' . (string) ($item['reason_code'] ?? 'other')
+                        'Ajuste: ' . AdjustmentReasonCode::from((string) $item['reason_code'])->label()
                     );
 
                     if ($direction === 'in') {
