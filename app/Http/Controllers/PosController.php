@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Services\CashRegisterSessionService;
@@ -13,12 +14,13 @@ use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
 use App\Support\Money;
 use App\Support\SalePricing;
-use Illuminate\Database\QueryException;
+use Illuminate\Database\DetectsConcurrencyErrors;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use PDOException;
 
 /**
  * Punto de venta para cajeros.
@@ -29,6 +31,8 @@ use Illuminate\Validation\ValidationException;
  */
 class PosController extends Controller
 {
+    use DetectsConcurrencyErrors;
+
     public function __construct(
         private readonly CashRegisterSessionService $sessions,
         private readonly SaleService $sales,
@@ -118,6 +122,10 @@ class PosController extends Controller
      * transacción, se libera lo apartado y el pedido queda entregado con su
      * venta (KioskOrderService::chargeAtPos). Un pedido que ya no está
      * pendiente, de otra sucursal o que no existe: 422 kiosk_order_unavailable.
+     *
+     * Si el cobro choca con otra operación sobre los mismos productos y no
+     * entra ni reintentando: 422 busy_retry. No se registró nada; se puede
+     * volver a cobrar (con la misma llave o con otra).
      */
     public function store(Request $request): JsonResponse
     {
@@ -202,6 +210,7 @@ class PosController extends Controller
                     (int) $validated['kiosk_order_id'],
                     $session,
                     $requestId,
+                    array_column($details, 'product_id'),
                     fn(array $kioskData) => $this->sales->create(array_merge($saleData, $kioskData), $session),
                 );
 
@@ -212,11 +221,26 @@ class PosController extends Controller
             } else {
                 $sale = $this->sales->create($saleData, $session);
             }
-        } catch (QueryException $e) {
+        } catch (PDOException $e) {
             // Otra petición con la misma llave se registró primero (doble envío
             // simultáneo): esta se revirtió completa y se responde con aquella.
             if ($requestId && ClientRequest::isDuplicate($e) && ($existing = $this->saleForRequest($requestId))) {
                 return $this->saleResponse($existing, 200);
+            }
+
+            // Chocó con otra operación sobre los mismos productos (deadlock o
+            // espera agotada, ya con sus reintentos): la venta se revirtió
+            // completa, así que es un rechazo y no un error del servidor. Si
+            // otra petición con la misma llave alcanzó a cobrar, esa venta.
+            if ($this->causedByConcurrencyError($e)) {
+                if ($requestId && ($existing = $this->saleForRequest($requestId))) {
+                    return $this->saleResponse($existing, 200);
+                }
+
+                throw new BusinessRuleException(
+                    'No se pudo cobrar porque otra operación estaba usando los mismos productos. Intenta cobrar de nuevo.',
+                    'busy_retry',
+                );
             }
 
             throw $e;
