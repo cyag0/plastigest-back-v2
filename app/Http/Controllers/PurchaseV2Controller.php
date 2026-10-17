@@ -326,7 +326,10 @@ class PurchaseV2Controller extends Controller
             ->join('purchases', 'purchases.id', '=', 'purchase_details.purchase_id')
             ->where('purchases.company_id', CurrentCompany::id())
             ->where('purchases.status', PurchaseV2::STATUS_RECEIVED)
-            ->where('purchase_details.quantity_received', '>', 0)
+            // Lo que llegó; sin cantidad recibida es una compra de antes de
+            // capturarla (llegó completa), como en ProductCosts.
+            ->where(fn($q) => $q->whereNull('purchase_details.quantity_received')
+                ->orWhere('purchase_details.quantity_received', '>', 0))
             ->where('purchase_details.unit_price', '>', 0)
             ->when(
                 $validated['supplier_id'] ?? null,

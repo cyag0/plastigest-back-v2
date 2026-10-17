@@ -1044,6 +1044,20 @@ class ComprasProduccionPurchasesTest extends TestCase
         );
     }
 
+    public function test_last_prices_count_purchases_received_before_quantities_were_captured(): void
+    {
+        $this->boughtAt(now()->subDays(3), [[$this->coco, 12]]);
+        // Sin cantidad recibida: se recibió antes de capturarla, llegó completa.
+        $this->boughtAt(now()->subDay(), [[$this->coco, 14]])->details()->update(['quantity_received' => null]);
+        // Recibido en 0: no llegó, no cuenta.
+        $this->boughtAt(now(), [[$this->coco, 99, null, 0]]);
+
+        $this->assertEquals(
+            ["{$this->coco->id}/-" => 14],
+            $this->priceMap($this->lastPrices()->assertOk())
+        );
+    }
+
     public function test_last_prices_only_take_suppliers_of_the_company_and_need_purchases_create(): void
     {
         [$other] = $this->createCompanyWithBranch();

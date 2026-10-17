@@ -77,7 +77,8 @@ class BusinessReportsTest extends TestCase
             ->assertCreated()->json('data.id');
     }
 
-    private function receivedPurchase(Product $product, float $unitPrice, ?int $unitId = null, ?int $packageId = null, ?string $receivedAt = null): void
+    /** Compra recibida de 1; $quantityReceived 0 = no llegó, null = de antes de capturarlo. */
+    private function receivedPurchase(Product $product, float $unitPrice, ?int $unitId = null, ?int $packageId = null, ?string $receivedAt = null, ?float $quantityReceived = 1.0): void
     {
         $purchase = PurchaseV2::create([
             'company_id' => $this->company->id,
@@ -94,7 +95,7 @@ class BusinessReportsTest extends TestCase
             'package_id' => $packageId,
             'unit_id' => $unitId ?? $product->unit_id,
             'quantity' => 1,
-            'quantity_received' => 1,
+            'quantity_received' => $quantityReceived,
             'unit_price' => $unitPrice,
             'total' => $unitPrice,
             'received_at' => $receivedAt ?? now(),
@@ -225,6 +226,22 @@ class BusinessReportsTest extends TestCase
         // A una fecha de corte anterior a la última compra vale la compra de entonces.
         $before = new ProductCosts($this->company->id, now()->subDays(5));
         $this->assertEqualsWithDelta(5.0, $before->cost($tapa->id), 0.0001);
+    }
+
+    public function test_the_last_purchase_cost_only_takes_what_arrived(): void
+    {
+        $tapa = $this->createProduct(['name' => 'Tapa', 'purchase_price' => 3]);
+        $this->receivedPurchase($tapa, 10, receivedAt: now()->subDays(3)->toDateTimeString());
+        // La compra más reciente no trajo tapas: su precio nadie lo pagó.
+        $this->receivedPurchase($tapa, 99, receivedAt: now()->subDay()->toDateTimeString(), quantityReceived: 0);
+
+        $costs = new ProductCosts($this->company->id);
+        $this->assertEqualsWithDelta(10.0, $costs->cost($tapa->id), 0.0001);
+        $this->assertSame(ProductCosts::SOURCE_PURCHASE, $costs->resolve($tapa->id)['source']);
+
+        // Una compra de antes de capturar lo recibido llegó completa: sí cuenta.
+        $this->receivedPurchase($tapa, 12, receivedAt: now()->toDateTimeString(), quantityReceived: null);
+        $this->assertEqualsWithDelta(12.0, (new ProductCosts($this->company->id))->cost($tapa->id), 0.0001);
     }
 
     // ─── Inventario valorizado ───────────────────────────────────────────────

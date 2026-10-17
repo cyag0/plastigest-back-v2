@@ -256,6 +256,11 @@ final class ProductCosts
             ->where('purchases.company_id', $this->companyId)
             ->where('purchases.status', PurchaseV2::STATUS_RECEIVED)
             ->where('purchase_details.unit_price', '>', 0)
+            // Solo lo que de verdad llegó: un renglón recibido en 0 (no llegó)
+            // fijaba el costo con un precio que nadie pagó. Sin cantidad
+            // recibida es una compra de antes de capturarla: llegó completa.
+            ->where(fn($q) => $q->whereNull('purchase_details.quantity_received')
+                ->orWhere('purchase_details.quantity_received', '>', 0))
             ->when($this->asOf, fn($q) => $q->whereRaw("{$receivedAt} <= ?", [$this->asOf->copy()->endOfDay()->toDateTimeString()]))
             ->orderByRaw("{$receivedAt} DESC")
             ->orderByDesc('purchase_details.id')
