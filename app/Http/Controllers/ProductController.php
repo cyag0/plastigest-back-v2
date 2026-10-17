@@ -598,9 +598,16 @@ class ProductController extends CrudController
     {
         $data = $request->all();
         $newImages = $data['product_images'] ?? [];
-        // Verificar si se enviaron imágenes
-        if (empty($newImages)) {
+        // La app manda product_images_sync=1: la lista que llega es la
+        // completa, así que vacía quiere decir "quitar todas" (antes quitar la
+        // última foto no la borraba). Sin la marca, una lista vacía no toca
+        // las fotos, como siempre.
+        $syncAll = $isUpdate && $request->boolean('product_images_sync');
+        if (empty($newImages) && !$syncAll) {
             return;
+        }
+        if (!is_array($newImages)) {
+            $newImages = [];
         }
 
         if ($isUpdate) {

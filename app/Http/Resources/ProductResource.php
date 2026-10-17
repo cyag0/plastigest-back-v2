@@ -69,8 +69,10 @@ class ProductResource extends Resources
             'current_stock' => (float) $currentStock ?? 0,
             'reserved_stock' => (float) $reservedStock ?? 0,
             'available_stock' => ((float) $currentStock ?? 0) - ((float) $reservedStock ?? 0),
-            'minimum_stock' => (int) $minimumStock,
-            'maximum_stock' => (int) $maximumStock,
+            // Decimales (la columna guarda 3): con (int) un mínimo de 2.5 kg se
+            // mostraba como 2 y al volver a guardar el producto quedaba en 2.
+            'minimum_stock' => (float) $minimumStock,
+            'maximum_stock' => (float) $maximumStock,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];

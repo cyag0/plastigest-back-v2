@@ -6,6 +6,8 @@ use App\Models\InventoryType;
 use App\Models\Product;
 use App\Models\Supplier;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Tests\Concerns\CreatesTenant;
 use Tests\TestCase;
 
@@ -148,5 +150,48 @@ class ProductCreationTest extends TestCase
         $this->assertNull($data['supplier_name']);
         $this->assertArrayHasKey('packaging_source_unit', $data);
         $this->assertNull($data['packaging_source_unit']);
+    }
+
+    public function test_stock_levels_keep_their_decimals(): void
+    {
+        $this->withHeaders($this->tenantHeaders())
+            ->post('/api/auth/admin/products', $this->payload(['minimum_stock' => '2.5', 'maximum_stock' => '12.75']))
+            ->assertCreated();
+        $product = Product::where('code', 'BOT-1L')->firstOrFail();
+
+        // Antes el detalle los convertía a entero (2 y 12) y al volver a
+        // guardar el producto se quedaban así.
+        $this->actingInBranch($this->user)->getJson("/api/auth/admin/products/{$product->id}")
+            ->assertOk()
+            ->assertJsonPath('data.minimum_stock', 2.5)
+            ->assertJsonPath('data.maximum_stock', 12.75);
+    }
+
+    public function test_removing_the_last_photo_deletes_it_only_when_the_app_says_the_list_is_complete(): void
+    {
+        Storage::fake('public');
+
+        $this->withHeaders($this->tenantHeaders())
+            ->post('/api/auth/admin/products', $this->payload([
+                'product_images' => [UploadedFile::fake()->image('coco.jpg')],
+            ]))
+            ->assertCreated();
+        $product = Product::where('code', 'BOT-1L')->firstOrFail();
+        $this->assertSame(1, $product->images()->count());
+
+        // Sin la marca (una versión vieja de la app) una lista vacía no toca las fotos.
+        $this->withHeaders($this->tenantHeaders())
+            ->post("/api/auth/admin/products/{$product->id}", $this->payload(['_method' => 'PUT']))
+            ->assertOk();
+        $this->assertSame(1, $product->images()->count());
+
+        // Con product_images_sync la lista vacía quiere decir "quitar todas".
+        $this->withHeaders($this->tenantHeaders())
+            ->post("/api/auth/admin/products/{$product->id}", $this->payload([
+                '_method' => 'PUT',
+                'product_images_sync' => '1',
+            ]))
+            ->assertOk();
+        $this->assertSame(0, $product->images()->count());
     }
 }
