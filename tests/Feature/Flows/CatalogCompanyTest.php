@@ -4,6 +4,7 @@ namespace Tests\Feature\Flows;
 
 use App\Models\Admin\Company;
 use App\Models\Admin\Customer;
+use App\Models\Category;
 use App\Models\Supplier;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\CreatesTenant;
@@ -101,5 +102,23 @@ class CatalogCompanyTest extends TestCase
             ->assertCreated();
 
         $this->assertSame($reason, Supplier::where('name', 'Cocos del Pacífico')->value('social_reason'));
+    }
+
+    public function test_the_active_filter_understands_true_as_text(): void
+    {
+        Category::create(['company_id' => $this->company->id, 'name' => 'Bebidas', 'is_active' => true]);
+        Category::create(['company_id' => $this->company->id, 'name' => 'Vieja', 'is_active' => false]);
+        Customer::create(['company_id' => $this->company->id, 'name' => 'Activo', 'is_active' => true]);
+        Customer::create(['company_id' => $this->company->id, 'name' => 'Inactivo', 'is_active' => false]);
+
+        // Así lo manda la app (axios convierte el booleano en "true"); antes
+        // "true" se comparaba como 0 y la lista salía vacía.
+        $names = collect($this->actingInBranch($this->user)->getJson('/api/auth/admin/categories?is_active=true')
+            ->assertOk()->json('data'))->pluck('name');
+        $this->assertEquals(['Bebidas'], $names->values()->all());
+
+        $names = collect($this->actingInBranch($this->user)->getJson('/api/auth/admin/customers?is_active=1')
+            ->assertOk()->json('data'))->pluck('name');
+        $this->assertEquals(['Activo'], $names->values()->all());
     }
 }

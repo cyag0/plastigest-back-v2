@@ -60,7 +60,8 @@ class CustomerController extends CrudController
 
         // Filtro por estado activo/inactivo
         if (isset($params['is_active'])) {
-            $query->where('is_active', $params['is_active']);
+            // "true"/"false" llegan como texto: comparados tal cual, "true" valía 0.
+            $query->where('is_active', filter_var($params['is_active'], FILTER_VALIDATE_BOOLEAN));
         }
 
         // Búsqueda en múltiples campos
