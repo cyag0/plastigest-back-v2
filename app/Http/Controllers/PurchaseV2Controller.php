@@ -366,6 +366,9 @@ class PurchaseV2Controller extends Controller
             // El encabezado se puede editar sobre un borrador ya creado.
             'supplier_id' => ['nullable', $this->companyRule('suppliers')],
             'purchase_date' => 'nullable|date',
+            // El formulario de la app manda las notas al confirmar (el
+            // borrador nace con el primer producto, sin encabezado).
+            'notes' => 'nullable|string|max:2000',
         ]);
 
         try {
@@ -402,6 +405,9 @@ class PurchaseV2Controller extends Controller
                     'paid_from_cash' => $validated['paid_from_cash'] ?? $purchase->paid_from_cash,
                     'supplier_id' => $validated['supplier_id'] ?? $purchase->supplier_id,
                     'purchase_date' => $validated['purchase_date'] ?? $purchase->purchase_date,
+                    // Vacías se borran; si no vienen (versiones viejas de la
+                    // app) se quedan las del borrador.
+                    'notes' => array_key_exists('notes', $validated) ? $validated['notes'] : $purchase->notes,
                 ]);
 
                 return $purchase;

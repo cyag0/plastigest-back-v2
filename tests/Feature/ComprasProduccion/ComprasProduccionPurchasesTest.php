@@ -173,6 +173,34 @@ class ComprasProduccionPurchasesTest extends TestCase
         $this->assertSame(PurchaseV2::STATUS_ORDERED, $purchase->fresh()->status);
     }
 
+    public function test_confirm_saves_the_form_notes_and_keeps_them_when_not_sent(): void
+    {
+        $buyer = $this->buyer();
+
+        $withNotes = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT);
+        $this->actingInBranch($buyer)
+            ->postJson("/api/auth/admin/purchases-v2/{$withNotes->id}/confirm", ['notes' => 'Entregar en bodega'])
+            ->assertOk();
+        $this->assertSame('Entregar en bodega', $withNotes->fresh()->notes);
+
+        // Una app anterior no manda notas: se quedan las del borrador (las
+        // que puso Reabastecimiento, por ejemplo).
+        $suggested = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT);
+        $suggested->update(['notes' => 'Sugerida por reabastecimiento']);
+        $this->actingInBranch($buyer)
+            ->postJson("/api/auth/admin/purchases-v2/{$suggested->id}/confirm")
+            ->assertOk();
+        $this->assertSame('Sugerida por reabastecimiento', $suggested->fresh()->notes);
+
+        // Mandarlas vacías las borra.
+        $cleared = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT);
+        $cleared->update(['notes' => 'Vieja']);
+        $this->actingInBranch($buyer)
+            ->postJson("/api/auth/admin/purchases-v2/{$cleared->id}/confirm", ['notes' => ''])
+            ->assertOk();
+        $this->assertNull($cleared->fresh()->notes);
+    }
+
     public function test_the_buyer_runs_their_own_branch_purchase_flow(): void
     {
         $buyer = $this->buyer();
