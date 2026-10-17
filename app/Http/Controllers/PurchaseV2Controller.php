@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CashMovement;
 use App\Models\PurchaseV2;
 use App\Models\PurchaseDetailV2;
 use App\Services\CashMovementService;
@@ -85,6 +86,40 @@ class PurchaseV2Controller extends Controller
     }
 
     /**
+     * El borrador de purchase_id con su fila bloqueada y el estado releído,
+     * como al editar o quitar un renglón: si otro dispositivo lo está
+     * confirmando (o registrando recibido), se espera y ya no entra nada.
+     * Antes se leía sin bloqueo y un producto agregado en ese momento caía en
+     * la compra ya recibida, sin stock ni kárdex, y le cambiaba el total.
+     *
+     * Una compra que ya no es borrador se rechaza (422): antes se creaba otro
+     * borrador en silencio y el producto quedaba en una compra que la app no
+     * tenía abierta. null si no viene o no es de la sucursal (se crea uno).
+     */
+    private function lockedDraft($purchaseId, int $companyId, int $locationId): PurchaseV2|JsonResponse|null
+    {
+        if (empty($purchaseId)) {
+            return null;
+        }
+
+        $purchase = PurchaseV2::query()
+            ->where('id', $purchaseId)
+            ->where('company_id', $companyId)
+            ->where('location_id', $locationId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($purchase && $purchase->status !== PurchaseV2::STATUS_DRAFT) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Esta compra ya no está en borrador: sus productos ya no se pueden cambiar.',
+            ], 422);
+        }
+
+        return $purchase;
+    }
+
+    /**
      * Crear o actualizar una compra en estado draft
      * Se llama cada vez que se agrega/modifica/elimina un producto
      */
@@ -124,14 +159,11 @@ class PurchaseV2Controller extends Controller
             $locationId = CurrentLocation::get()->id;
             $userId = Auth::id();
 
-            // Buscar o crear compra en draft
-            $purchase = null;
-            if (!empty($validated['purchase_id'])) {
-                $purchase = PurchaseV2::draft()
-                    ->where('id', $validated['purchase_id'])
-                    ->where('company_id', $companyId)
-                    ->where('location_id', $locationId)
-                    ->first();
+            // Buscar (bloqueado) o crear compra en draft
+            $purchase = $this->lockedDraft($validated['purchase_id'] ?? null, $companyId, $locationId);
+            if ($purchase instanceof JsonResponse) {
+                DB::rollBack();
+                return $purchase;
             }
 
             if (!$purchase) {
@@ -267,6 +299,76 @@ class PurchaseV2Controller extends Controller
     }
 
     /**
+     * Último precio pagado de cada producto y empaque: el del renglón más
+     * reciente que de verdad llegó (cantidad recibida y precio > 0) en una
+     * compra recibida de la empresa; con supplier_id, solo de ese proveedor.
+     * La app lo propone al armar la compra: antes cada renglón tomaba el
+     * precio de compra del catálogo (en $0 si nadie lo capturó) y los reportes
+     * valúan el inventario con el de la última compra (ProductCosts), así que
+     * un producto comprado "a $0" valía $0. Misma fecha de recepción y mismo
+     * desempate que ProductCosts::loadLastPurchases().
+     */
+    public function lastPrices(Request $request)
+    {
+        if (!CurrentWorker::hasPermission('purchases_create')) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        $validated = $request->validate([
+            'supplier_id' => ['nullable', 'integer', $this->companyRule('suppliers')],
+        ]);
+
+        $receivedAt = 'COALESCE(purchase_details.received_at, purchases.delivery_date, purchases.updated_at)';
+
+        // Una sola consulta: cada renglón numerado dentro de su producto y
+        // empaque, del más reciente al más viejo, y se queda el primero.
+        $ranked = DB::table('purchase_details')
+            ->join('purchases', 'purchases.id', '=', 'purchase_details.purchase_id')
+            ->where('purchases.company_id', CurrentCompany::id())
+            ->where('purchases.status', PurchaseV2::STATUS_RECEIVED)
+            ->where('purchase_details.quantity_received', '>', 0)
+            ->where('purchase_details.unit_price', '>', 0)
+            ->when(
+                $validated['supplier_id'] ?? null,
+                fn($q, $supplierId) => $q->where('purchases.supplier_id', $supplierId)
+            )
+            ->select([
+                'purchase_details.product_id',
+                'purchase_details.package_id',
+                'purchase_details.unit_id',
+                'purchase_details.unit_price',
+                'purchases.id as purchase_id',
+                'purchases.purchase_number',
+            ])
+            ->selectRaw("DATE({$receivedAt}) as received_at")
+            ->selectRaw(
+                'ROW_NUMBER() OVER (PARTITION BY purchase_details.product_id, purchase_details.package_id'
+                . " ORDER BY {$receivedAt} DESC, purchase_details.id DESC) as position"
+            );
+
+        $prices = DB::query()
+            ->fromSub($ranked, 'ranked')
+            ->where('position', 1)
+            ->orderBy('product_id')
+            ->orderBy('package_id')
+            ->get()
+            ->map(fn($row) => [
+                'product_id' => (int) $row->product_id,
+                'package_id' => $row->package_id !== null ? (int) $row->package_id : null,
+                'unit_id' => (int) $row->unit_id,
+                'unit_price' => (float) $row->unit_price,
+                'purchase_id' => (int) $row->purchase_id,
+                'purchase_number' => $row->purchase_number,
+                'received_at' => $row->received_at,
+            ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $prices,
+        ]);
+    }
+
+    /**
      * Mostrar datos de una compra específica
      */
     public function show($id)
@@ -278,8 +380,15 @@ class PurchaseV2Controller extends Controller
         try {
             $purchase = $this->purchases()
                 ->where('id', $id)
-                ->with(['details.product.mainImage', 'details.package', 'details.unit', 'supplier'])
+                ->with([
+                    'details.product.mainImage', 'details.package', 'details.unit', 'supplier',
+                    'user:id,name', 'receivedBy:id,name',
+                ])
                 ->firstOrFail();
+
+            // delivery_date guarda solo la fecha: la hora de la recepción sale
+            // de los renglones, que se marcan recibidos en esa misma recepción.
+            $receivedAt = $purchase->details->pluck('received_at')->filter()->max();
 
             return response()->json([
                 'success' => true,
@@ -289,6 +398,14 @@ class PurchaseV2Controller extends Controller
                         'supplier_id' => $purchase->supplier_id,
                         'supplier_name' => $purchase->supplier?->name,
                         'purchase_date' => $purchase->purchase_date?->format('Y-m-d'),
+                        // Cuándo llegó (o se espera) y quién la hizo y recibió,
+                        // para el detalle.
+                        'expected_delivery_date' => $purchase->expected_delivery_date?->format('Y-m-d'),
+                        'delivery_date' => $purchase->delivery_date
+                            ? ($receivedAt ?? $purchase->delivery_date)->format('Y-m-d H:i')
+                            : null,
+                        'created_by_name' => $purchase->user?->name,
+                        'received_by_name' => $purchase->receivedBy?->name,
                         'purchase_number' => $purchase->purchase_number,
                         'notes' => $purchase->notes,
                         'document_number' => $purchase->document_number,
@@ -317,6 +434,7 @@ class PurchaseV2Controller extends Controller
                                 'package_name' => $detail->package?->package_name,
                                 'quantity' => $detail->quantity,
                                 'quantity_received' => $detail->quantity_received,
+                                'received_at' => $detail->received_at?->format('Y-m-d H:i'),
                                 'unit_id' => $detail->unit_id,
                                 'unit_name' => $detail->unit?->name,
                                 'unit_abbreviation' => $detail->unit?->abbreviation,
@@ -341,7 +459,8 @@ class PurchaseV2Controller extends Controller
     }
 
     /**
-     * Confirmar compra (cambiar de draft a ordered)
+     * Confirmar compra: de borrador a pedida (ordered) o, con receive_now, a
+     * recibida en el mismo paso.
      */
     public function confirm(Request $request, $id)
     {
@@ -349,10 +468,14 @@ class PurchaseV2Controller extends Controller
             return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
         }
 
-        // Llega como "true"/"false" (FormData) o 1/0; boolean() acepta todos.
-        if ($request->filled('paid_from_cash')) {
-            $request->merge(['paid_from_cash' => $request->boolean('paid_from_cash')]);
+        // Llegan como "true"/"false" (FormData) o 1/0; boolean() acepta todos
+        // ("false" es false).
+        foreach (['paid_from_cash', 'receive_now'] as $flag) {
+            if ($request->filled($flag)) {
+                $request->merge([$flag => $request->boolean($flag)]);
+            }
         }
+        $receiveNow = $request->boolean('receive_now');
 
         // Fuera del try: un dato inválido es un 422 con el detalle por campo,
         // no un "Error al confirmar la compra" 500.
@@ -365,14 +488,24 @@ class PurchaseV2Controller extends Controller
             'paid_from_cash' => 'nullable|boolean',
             // El encabezado se puede editar sobre un borrador ya creado.
             'supplier_id' => ['nullable', $this->companyRule('suppliers')],
-            'purchase_date' => 'nullable|date',
+            // Lo que ya llegó no puede tener fecha posterior a hoy: el stock
+            // entraba hoy y el egreso de caja quedaba fechado en el futuro,
+            // fuera de los totales del día en que salió el dinero.
+            'purchase_date' => ['nullable', 'date', ...($receiveNow ? ['before:tomorrow'] : [])],
             // El formulario de la app manda las notas al confirmar (el
             // borrador nace con el primer producto, sin encabezado).
             'notes' => 'nullable|string|max:2000',
+            // «Registrar compra recibida»: la mercancía ya está aquí (se
+            // compró en la tienda y se trajo), así que entra al inventario al
+            // confirmar. Antes toda compra pasaba por pedida, en tránsito y
+            // recibida: tres confirmaciones más después de armarla.
+            'receive_now' => 'nullable|boolean',
+        ], [
+            'purchase_date.before' => 'Una compra que ya llegó no puede tener fecha posterior a hoy.',
         ]);
 
         try {
-            $result = DB::transaction(function () use ($id, $validated) {
+            $result = DB::transaction(function () use ($id, $validated, $receiveNow) {
                 // Con la fila bloqueada: un doble envío confirmaba dos veces y
                 // le mandaba el pedido por WhatsApp dos veces al proveedor.
                 $purchase = $this->purchases()->lockForUpdate()->find($id);
@@ -395,10 +528,7 @@ class PurchaseV2Controller extends Controller
                     ], 422);
                 }
 
-                $purchase->appendStatusLog(PurchaseV2::STATUS_ORDERED, Auth::id());
-
-                $purchase->update([
-                    'status' => PurchaseV2::STATUS_ORDERED,
+                $header = [
                     'expected_delivery_date' => $validated['expected_delivery_date'] ?? null,
                     'document_number' => $validated['document_number'] ?? null,
                     'payment_method' => $validated['payment_method'] ?? $purchase->payment_method ?? 'other',
@@ -408,7 +538,33 @@ class PurchaseV2Controller extends Controller
                     // Vacías se borran; si no vienen (versiones viejas de la
                     // app) se quedan las del borrador.
                     'notes' => array_key_exists('notes', $validated) ? $validated['notes'] : $purchase->notes,
-                ]);
+                ];
+
+                // Registrada recibida, nunca fue un pedido: se guarda el
+                // encabezado sin pasar por «pedida» y la recepción de abajo
+                // deja un solo paso, de borrador a recibida (y en la bitácora
+                // solo «Recibió»). Antes quedaban «pedida» y «recibida»
+                // seguidas, como si se le hubiera pedido al proveedor.
+                if (!$receiveNow) {
+                    $purchase->appendStatusLog(PurchaseV2::STATUS_ORDERED, Auth::id());
+                    $header['status'] = PurchaseV2::STATUS_ORDERED;
+                }
+
+                $purchase->update($header);
+
+                // Llegó todo: se recibe con la misma recepción que receive()
+                // (kárdex, egreso de caja, tareas y aviso), con la compra ya
+                // bloqueada.
+                if ($receiveNow) {
+                    $lines = $purchase->details()->get(['id', 'quantity'])
+                        ->map(fn(PurchaseDetailV2 $detail) => [
+                            'id' => $detail->id,
+                            'quantity_received' => $detail->quantity,
+                        ])
+                        ->all();
+
+                    $this->receiveLockedPurchase($purchase, $lines);
+                }
 
                 return $purchase;
             });
@@ -418,10 +574,24 @@ class PurchaseV2Controller extends Controller
             }
 
             $purchase = $result;
+
+            // Ya está aquí: no hay pedido que mandarle al proveedor.
+            if ($receiveNow) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Compra registrada como recibida',
+                    'received' => true,
+                    'whatsapp_sent' => false,
+                    'cash_out_of_shift' => $this->cashOutOfShift($purchase),
+                    'data' => $purchase->fresh(['details']),
+                ]);
+            }
+
             $whatsappSent = $this->sendOrderToSupplier($purchase);
 
             return response()->json([
                 'success' => true,
+                'received' => false,
                 'whatsapp_sent' => $whatsappSent,
                 'message' => 'Compra confirmada exitosamente',
                 'data' => $purchase,
@@ -503,7 +673,7 @@ class PurchaseV2Controller extends Controller
     }
 
     /**
-     * Recibir compra y actualizar inventario
+     * Recibir compra (pedida o en tránsito) y actualizar inventario
      */
     public function receive(Request $request, $id)
     {
@@ -515,6 +685,12 @@ class PurchaseV2Controller extends Controller
             'details' => 'required|array',
             'details.*.id' => 'required|distinct|exists:purchase_details,id',
             'details.*.quantity_received' => 'required|numeric|min:0',
+            // Lo que de verdad se pagó, si al llegar no es el precio del
+            // pedido (cambió, o iba en $0 porque el proveedor lo da al
+            // entregar). Sin él se queda el del pedido. Antes el precio quedaba
+            // fijo al confirmar: el egreso de caja y el costo de los reportes
+            // (último precio de compra) salían con el precio del pedido.
+            'details.*.unit_price' => 'nullable|numeric|min:0',
         ]);
 
         $purchase = $this->purchases()->with('details.product')->find($id);
@@ -556,6 +732,7 @@ class PurchaseV2Controller extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Compra recibida exitosamente',
+                'cash_out_of_shift' => $this->cashOutOfShift($result),
                 'data' => $result->fresh(['details']),
             ]);
         } catch (Exception $e) {
@@ -582,13 +759,29 @@ class PurchaseV2Controller extends Controller
             return $this->purchaseNotFound();
         }
 
-        if ($purchase->status !== PurchaseV2::STATUS_IN_TRANSIT) {
+        // Una compra pedida también se recibe: «en tránsito» es opcional (lo
+        // marca el proveedor por WhatsApp o quien quiere avisar que ya viene).
+        // Antes solo se recibía en tránsito y había que marcarla primero.
+        if (!in_array($purchase->status, [PurchaseV2::STATUS_ORDERED, PurchaseV2::STATUS_IN_TRANSIT], true)) {
             return response()->json([
                 'success' => false,
-                'message' => 'La compra ya fue recibida o no está en tránsito.',
+                'message' => 'La compra ya fue recibida, o no está pedida ni en tránsito.',
             ], 422);
         }
 
+        return $this->receiveLockedPurchase($purchase, $lines);
+    }
+
+    /**
+     * Recibe una compra ya bloqueada (lockForUpdate) y con el estado ya
+     * revisado, dentro de la transacción de quien llama: receive() y
+     * confirm() con receive_now. Así las dos registran lo mismo: kárdex,
+     * egreso de caja por lo recibido, discrepancias, tareas y aviso.
+     *
+     * @param array<int, array{id: int, quantity_received: float|string, unit_price?: float|string|null}> $lines
+     */
+    private function receiveLockedPurchase(PurchaseV2 $purchase, array $lines): PurchaseV2
+    {
         // El turno de quien recibe (de donde sale el pago) se bloquea antes que
         // las existencias: mismo orden que una venta (turno → stock), para que
         // una venta simultánea en ese turno no se cruce con esta recepción.
@@ -599,13 +792,30 @@ class PurchaseV2Controller extends Controller
 
         $movementService = new MovementService();
 
+        // Las existencias se bloquean en orden de producto, como en una venta
+        // (Sale::assertStockNotReserved) y en las transferencias. Antes se
+        // recorrían en el orden de los renglones (o de la petición) y una
+        // venta simultánea de esos productos, que los toma de menor a mayor,
+        // se trababa con la recepción (deadlock) y perdía la venta o la compra.
+        $details = $purchase->details()->findOrFail(array_column($lines, 'id'))->keyBy('id');
+        usort($lines, fn(array $a, array $b) => [(int) $details[(int) $a['id']]->product_id, (int) $a['id']]
+            <=> [(int) $details[(int) $b['id']]->product_id, (int) $b['id']]);
+
         // Actualizar cantidades recibidas e incrementar stock
+        $repriced = false;
         foreach ($lines as $detailData) {
-            $detail = $purchase->details()->findOrFail($detailData['id']);
-            $detail->update([
+            $detail = $details[(int) $detailData['id']];
+            $changes = [
                 'quantity_received' => $detailData['quantity_received'],
                 'received_at' => now(),
-            ]);
+            ];
+            // El precio pagado reemplaza al del pedido antes del egreso, y el
+            // renglón y la compra recalculan su total al guardarse.
+            if (isset($detailData['unit_price'])) {
+                $changes['unit_price'] = $detailData['unit_price'];
+                $repriced = true;
+            }
+            $detail->update($changes);
 
             // Lo que no llegó no mueve stock (ni deja un renglón en cero en
             // el kárdex).
@@ -624,6 +834,11 @@ class PurchaseV2Controller extends Controller
             );
         }
 
+        // El total nuevo ya se guardó con cada renglón; se relee para el aviso.
+        if ($repriced) {
+            $purchase->refresh();
+        }
+
         $purchase->appendStatusLog(PurchaseV2::STATUS_RECEIVED, Auth::id());
 
         $purchase->update([
@@ -640,7 +855,14 @@ class PurchaseV2Controller extends Controller
         $receivedTotal = round((float) $purchase->details()->get()->sum(
             fn(PurchaseDetailV2 $detail) => round((float) ($detail->quantity_received ?? 0) * (float) $detail->unit_price, 2)
         ), 2);
-        CashMovementService::fromPurchaseV2((clone $purchase)->forceFill(['total' => $receivedTotal]));
+        // Fechado el día de la compra, pero nunca después del día en que se
+        // recibe: un pedido con fecha adelantada que llegaba antes dejaba su
+        // egreso en el futuro, fuera de los totales de caja del día.
+        $cashDate = $purchase->purchase_date?->isAfter(today()) ? today() : $purchase->purchase_date;
+        CashMovementService::fromPurchaseV2((clone $purchase)->forceFill([
+            'total' => $receivedTotal,
+            'purchase_date' => $cashDate,
+        ]));
 
         // Notificar recepción de compra
         $purchase->load(['supplier', 'details.product']);
@@ -686,6 +908,22 @@ class PurchaseV2Controller extends Controller
     }
 
     /**
+     * ¿El pago salió de la caja fuera de turno? Pasa cuando quien la recibe
+     * (o la registra recibida) no tiene turno abierto en la sucursal: ningún
+     * corte lo descuenta y el cajero de quien tomó el efectivo sale con
+     * faltante. La respuesta lo dice para que la app avise, en lugar de
+     * prometer que se descuenta en el corte.
+     */
+    private function cashOutOfShift(PurchaseV2 $purchase): bool
+    {
+        return CashMovement::query()
+            ->where('source_type', 'purchase_v2')
+            ->where('source_id', $purchase->id)
+            ->whereNull('cash_register_session_id')
+            ->exists();
+    }
+
+    /**
      * Agregar un detalle individual a la compra draft
      */
     public function addDetail(Request $request)
@@ -712,14 +950,11 @@ class PurchaseV2Controller extends Controller
             $locationId = CurrentLocation::get()->id;
             $userId = Auth::id();
 
-            // Buscar o crear compra en draft
-            $purchase = null;
-            if (!empty($validated['purchase_id'])) {
-                $purchase = PurchaseV2::draft()
-                    ->where('id', $validated['purchase_id'])
-                    ->where('company_id', $companyId)
-                    ->where('location_id', $locationId)
-                    ->first();
+            // Buscar (bloqueado) o crear compra en draft
+            $purchase = $this->lockedDraft($validated['purchase_id'] ?? null, $companyId, $locationId);
+            if ($purchase instanceof JsonResponse) {
+                DB::rollBack();
+                return $purchase;
             }
 
             if (!$purchase) {
