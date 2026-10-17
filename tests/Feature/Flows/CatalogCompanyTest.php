@@ -121,4 +121,16 @@ class CatalogCompanyTest extends TestCase
             ->assertOk()->json('data'))->pluck('name');
         $this->assertEquals(['Activo'], $names->values()->all());
     }
+
+    public function test_units_say_what_they_equal(): void
+    {
+        $units = collect($this->actingInBranch($this->user)->getJson('/api/auth/admin/units?per_page=100')
+            ->assertOk()->json('data'))->keyBy('abbreviation');
+
+        // Antes decía "N/A" en todas.
+        $this->assertSame('Unidad base', $units['pz']['description']);
+        $this->assertSame('1 dz = 12 pz', $units['dz']['description']);
+        $this->assertSame('1 g = 0.001 kg', $units['g']['description']);
+        $this->assertSame('1 ton = 1,000 kg', $units['ton']['description']);
+    }
 }
