@@ -21,18 +21,32 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class ProductionOrder extends Model
 {
+    /** Producción: entran insumos y salen productos (cocos → agua y pulpa). */
+    public const KIND_PROCESS = 'process';
+
+    /**
+     * Envasado de granel que ya estaba en inventario: el agua que quedó en la
+     * mañana se embotella en la tarde. No tiene consumos ni salidas propios,
+     * sólo empaques.
+     */
+    public const KIND_PACKAGING = 'packaging';
+
+    public const KINDS = [self::KIND_PROCESS, self::KIND_PACKAGING];
+
     protected $table = 'production_orders';
 
     protected $fillable = [
         'company_id',
         'location_id',
         'formula_id',
+        'kind',
         'folio',
         'production_date',
         'responsible_user_id',
         'status',
         'notes',
         'wastes',
+        'planned_packagings',
         'total_consumed_quantity',
         'total_produced_quantity',
         'waste_percentage',
@@ -53,6 +67,7 @@ class ProductionOrder extends Model
         'waste_percentage' => 'decimal:2',
         'status' => ProductionOrderStatus::class,
         'wastes' => 'array',
+        'planned_packagings' => 'array',
     ];
 
     protected static function booted(): void
@@ -140,7 +155,7 @@ class ProductionOrder extends Model
             ->where('reference_type', 'production_order');
     }
 
-    /** Operaciones de empaque registradas después de completar la producción. */
+    /** Envasado registrado: granel + material → producto terminado. */
     public function packagings(): HasMany
     {
         return $this->hasMany(ProductionOrderPackaging::class)->orderBy('sort_order');
@@ -197,6 +212,11 @@ class ProductionOrder extends Model
         });
     }
 
+    public function isPackaging(): bool
+    {
+        return $this->kind === self::KIND_PACKAGING;
+    }
+
     public function scopeToday(Builder $query): Builder
     {
         return $query->whereDate('production_date', today());
@@ -216,9 +236,8 @@ class ProductionOrder extends Model
             $current = $this->status->label();
 
             throw new BusinessRuleException(match ($next) {
-                ProductionOrderStatus::COMPLETED => "Solo se puede completar una producción en borrador (esta está «{$current}»).",
+                ProductionOrderStatus::COMPLETED => "Solo se puede registrar una producción pendiente (esta está «{$current}»).",
                 ProductionOrderStatus::CANCELLED => 'La producción ya está cancelada.',
-                ProductionOrderStatus::PACKED => "Solo se puede cerrar el empaque de una producción terminada o en empaque (esta está «{$current}»).",
                 default => "No se puede pasar la producción de «{$current}» a «{$next->label()}».",
             }, 'invalid_status');
         }

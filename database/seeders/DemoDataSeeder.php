@@ -64,6 +64,12 @@ class DemoDataSeeder extends Seeder
     private array $tokens = [];
     /** @var array<string, object> productos por código */
     private array $products = [];
+    /** @var array<string, int> procesos (fórmulas) por nombre */
+    private array $formulas = [];
+    /** @var array<string, array{content: float, materials: array<string, float>}> receta de envasado por código */
+    private array $recipes = [];
+    /** @var array<string, int> proveedores por nombre */
+    private array $suppliers = [];
     private array $customerIds = [];
     private Kernel $kernel;
     private string $evidencePath;
@@ -164,6 +170,21 @@ class DemoDataSeeder extends Seeder
 
         foreach (DB::table('products')->where('company_id', $this->company->id)->get() as $p) {
             $this->products[$p->code] = $p;
+        }
+        $this->formulas = DB::table('formulas')->where('company_id', $this->company->id)->pluck('id', 'name')->all();
+        $this->suppliers = DB::table('suppliers')->where('company_id', $this->company->id)->pluck('id', 'name')->all();
+        $codes = array_flip(array_map(fn($p) => $p->id, $this->products));
+        foreach ($this->products as $code => $p) {
+            if ($p->requires_packaging && $p->packaging_source_product_id) {
+                $this->recipes[$code] = [
+                    'bulk' => $codes[$p->packaging_source_product_id] ?? null,
+                    'content' => (float) $p->packaging_source_quantity,
+                    'materials' => DB::table('product_packaging_materials')->where('product_id', $p->id)
+                        ->pluck('quantity', 'material_product_id')
+                        ->mapWithKeys(fn($q, $id) => [$codes[$id] => (float) $q])
+                        ->all(),
+                ];
+            }
         }
 
         // Todas las sucursales manejan todo el catálogo.
@@ -276,28 +297,31 @@ class DemoDataSeeder extends Seeder
     private function purchases(Carbon $day, int $d, bool $initial, bool $last = false): void
     {
         $plans = [];
-        // Los cocos llegan cada dos días: la producción gasta unos 300 al día.
+        // Los cocos llegan cada dos días: la producción gasta unos 250 al día.
         if ($initial || $d % 2 === 0) {
             // Se pagan por transferencia: la caja de la matriz no alcanza para los cocos.
-            $plans[] = [22, 'transfer', false, ['COC-ENT-001' => [$initial ? 1000 : mt_rand(65, 75) * 10, 15]]];
+            $plans[] = ['Huerteros', 'transfer', false, ['COC-ENT-001' => [$initial ? 1000 : mt_rand(60, 70) * 10, 15]]];
+            // La savia de la palma para la tuba, también de los huerteros.
+            $plans[] = ['Huerteros', 'cash', true, ['ING-SAVIA-L' => [80, 12]]];
         }
         if ($initial || $d % 7 === 1) {
-            $plans[] = [3, 'transfer', false, ['PET-BOT-1LT' => [800, 2.23], 'PET-BOT-500T' => [500, 1.6], 'PET-TAP-R28' => [1300, 0.27]]];
-            $plans[] = [5, 'transfer', false, ['PET-GAL-4L' => [80, 6.2], 'PET-TAP-GAL' => [80, 0.27]]];
+            $plans[] = ['TESTUS PET SOLUTIONS', 'transfer', false, ['PET-BOT-1LT' => [800, 2.23], 'PET-BOT-500T' => [500, 1.6], 'PET-TAP-R28' => [1300, 0.27]]];
+            $plans[] = ['MAZAPLASTICOS', 'transfer', false, ['PET-GAL-4L' => [90, 6.2], 'PET-TAP-GAL' => [90, 0.27]]];
+            $plans[] = ["Sam's Club", 'card', false, ['ING-AZU-KG' => [60, 28], 'ING-NUEZ-KG' => [10, 260], 'ING-LCL-LATA' => [24, 41.88]]];
         }
         if ($initial || $d % 7 === 4) {
-            $plans[] = [23, 'transfer', false, ['DER-ACN-180' => [30, 45], 'DER-ACN-1L' => [12, 180], 'DER-ACC-500' => [16, 50], 'DER-ACC-1L' => [10, 200]]];
-            $plans[] = [11, 'cash', true, ['DER-RP-001' => [24, 70]]];
+            $plans[] = ['Colima Tropical', 'transfer', false, ['DER-ACN-180' => [30, 45], 'DER-ACN-1L' => [12, 180], 'DER-ACC-500' => [16, 50], 'DER-ACC-1L' => [10, 200]]];
+            $plans[] = ['OSMAR ROMPOPE TALPA', 'cash', true, ['DER-RP-001' => [24, 70]]];
         }
         if ($initial || $d % 14 === 6) {
-            $plans[] = [25, 'card', false, ['LIM-JAB-001' => [2, 400], 'LIM-CLO-001' => [3, 400], 'ING-SAL-001' => [2, 106.39]]];
+            $plans[] = ["Sam's Club", 'card', false, ['LIM-JAB-001' => [2, 400], 'LIM-CLO-001' => [3, 400], 'ING-SAL-001' => [2, 106.39]]];
         }
 
-        foreach ($plans as $i => [$supplierId, $method, $fromCash, $items]) {
+        foreach ($plans as $i => [$supplierName, $method, $fromCash, $items]) {
             $this->at($day, 8, 10 + $i * 7);
             $manager = $this->managers[$this->matriz->id];
             $purchase = $this->api($manager, $this->matriz, 'POST', 'purchases-v2/upsert-draft', [
-                'supplier_id' => $supplierId,
+                'supplier_id' => $this->suppliers[$supplierName],
                 'payment_method' => $method,
                 'paid_from_cash' => $fromCash,
                 'items' => collect($items)->map(fn($qp, $code) => [
@@ -339,82 +363,213 @@ class DemoDataSeeder extends Seeder
 
     // ─── Producción (matriz) ─────────────────────────────────────────────────
 
+    /**
+     * Un día de planta, como se registra en la app: se abren los cocos y se
+     * envasa el agua en el mismo registro; horchata y tuba igual; los dulces
+     * cada dos días; el rallado cada tres, y se envasa al día siguiente
+     * (envasado aparte). En la tarde se envasa el agua que quedó en la mañana.
+     */
     private function production(Carbon $day, int $d): void
     {
-        $lines = [[
-            'Bebidas',
-            ['BEB-AC-1L' => 45, 'BEB-AC-500' => 35, 'BEB-AC-GAL' => 6, 'BEB-HC-1L' => 20, 'BEB-HC-500' => 16, 'BEB-TB-1L' => 14,
-                'BEB-TB-500' => 12, 'BEB-HSA-1L' => 10, 'BEB-HSA-500' => 8, 'BEB-VAC-1L' => 12, 'BEB-VAC-500' => 12, 'BEB-CT-001' => 25],
-        ]];
-        if ($d % 2 === 0) {
-            $lines[] = ['Dulces', ['CCD-NZ-1P' => 40, 'CCD-LM-1P' => 40, 'CCD-GR-1P' => 30, 'CCD-MG-1P' => 30, 'CCD-MC-1P' => 30, 'CCD-BL-1P' => 30,
+        $scale = fn() => mt_rand(85, 115) / 100;
+
+        // Abrir cocos: sale agua y pulpa; casi toda el agua se envasa ya.
+        $this->at($day, 6, 30);
+        $cocos = (int) min($this->stock($this->matriz, 'COC-ENT-001') - 150, mt_rand(200, 240));
+        if ($cocos >= 50) {
+            $agua = round($cocos * mt_rand(55, 65) / 100, 1);
+            $pulpa = round($cocos * mt_rand(13, 17) / 100, 1);
+            // A veces se tira un poco del agua (no se puede envasar).
+            $spilled = mt_rand(1, 5) === 1 ? round(mt_rand(5, 20) / 10, 1) : 0;
+            $wastes = $spilled > 0 ? ['GRA-AGUA' => [$spilled, 'spill', 'Se derramó al envasar']] : [];
+            $packagings = $this->fitPackaging([
+                'BEB-AC-1L' => (int) round(45 * $scale()), 'BEB-AC-500' => (int) round(35 * $scale()),
+                'BEB-AC-GAL' => (int) round(6 * $scale()), 'BEB-VAC-1L' => 12, 'BEB-VAC-500' => 12,
+            ], $agua - $spilled);
+            $this->registerProduction('Abrir cocos', ['COC-ENT-001' => $cocos], ['GRA-AGUA' => $agua, 'GRA-PULPA' => $pulpa], $packagings, $wastes);
+        }
+
+        // Cocos para tomar en la sucursal.
+        $this->at($day, 6, 50);
+        $paraTomar = (int) min($this->stock($this->matriz, 'COC-ENT-001') - 150, mt_rand(20, 30));
+        if ($paraTomar > 0) {
+            $this->registerProduction('Coco para tomar', ['COC-ENT-001' => $paraTomar], ['BEB-CT-001' => $paraTomar]);
+        }
+
+        // Horchata con azúcar todos los días; sin azúcar, un día sí y uno no.
+        $this->at($day, 7, 10);
+        $sinAzucar = $d % 2 === 1;
+        $pulpaHorchata = 6 + ($sinAzucar ? 2.5 : 0);
+        if ($this->stock($this->matriz, 'GRA-PULPA') >= $pulpaHorchata && $this->stock($this->matriz, 'ING-AZU-KG') >= 3) {
+            $horchata = round(24 * $scale(), 1);
+            $outputs = ['GRA-HORCH' => $horchata];
+            $targets = ['BEB-HC-1L' => 12, 'BEB-HC-500' => 12, 'BEB-HC-GAL' => 1];
+            if ($sinAzucar) {
+                $outputs['GRA-HORCH-SA'] = round(10 * $scale(), 1);
+            }
+            // Las dos horchatas usan las mismas botellas y tapas: un solo presupuesto.
+            $materials = [];
+            $packagings = $this->fitPackaging($targets, $horchata, $materials);
+            if ($sinAzucar) {
+                $packagings += $this->fitPackaging(['BEB-HSA-1L' => 6, 'BEB-HSA-500' => 6], $outputs['GRA-HORCH-SA'], $materials);
+            }
+            $this->registerProduction('Horchata', ['GRA-PULPA' => $pulpaHorchata, 'ING-AZU-KG' => round(2.4 * $scale(), 1)], $outputs, $packagings);
+        }
+
+        // Tuba: la savia de la palma, colada, y se envasa ya.
+        $this->at($day, 7, 30);
+        $savia = min($this->stock($this->matriz, 'ING-SAVIA-L'), 35);
+        if ($savia >= 10) {
+            $tuba = round($savia * mt_rand(92, 97) / 100, 1);
+            $packagings = $this->fitPackaging(['BEB-TB-1L' => 14, 'BEB-TB-500' => 12, 'BEB-TB-GAL' => 1], $tuba);
+            $this->registerProduction('Tuba', ['ING-SAVIA-L' => $savia], ['GRA-TUBA' => $tuba], $packagings);
+        }
+
+        // Dulces cada dos días.
+        if ($d % 2 === 0 && $this->stock($this->matriz, 'GRA-PULPA') >= 15) {
+            $this->at($day, 8, 0);
+            $outputs = array_map(fn($q) => max(1, (int) round($q * $scale())), [
+                'CCD-NZ-1P' => 40, 'CCD-LM-1P' => 40, 'CCD-GR-1P' => 30, 'CCD-MG-1P' => 30, 'CCD-MC-1P' => 30, 'CCD-BL-1P' => 30,
                 'BAR-MX-1P' => 40, 'BAR-NZ-CH' => 25, 'BAR-CC-001' => 25, 'BAR-CF-001' => 20, 'BAR-RP-001' => 20, 'BAR-CN-001' => 20,
-                'DUR-DZ-1P' => 30, 'DUR-LM-1P' => 30, 'PEL-1P' => 25, 'POS-DL-001' => 30, 'POS-CU-001' => 20, 'POS-CU-GDE' => 8]];
-        }
-        if ($d % 4 === 1 || $d === 0) {
-            $lines[] = ['Rallado', ['RAL-CR-1K' => 12, 'RAL-CR-500' => 16, 'RAL-CT-1K' => 8, 'RAL-CT-500' => 12, 'RAL-HJ-500' => 8, 'DER-PULPA-BOL' => 20]];
-        }
-
-        foreach ($lines as $i => [$name, $outputs]) {
-            $this->at($day, 6, 30 + $i * 20);
-            $outputs = array_filter($outputs, fn($code) => isset($this->products[$code]), ARRAY_FILTER_USE_KEY);
-            $scale = mt_rand(85, 115) / 100;
-            $outputs = array_map(fn($q) => max(1, (int) round($q * $scale)), $outputs);
-
-            $liters1 = $liters05 = $gallons = 0;
-            foreach ($outputs as $code => $q) {
-                if (str_starts_with($code, 'BEB-') && $code !== 'BEB-CT-001') {
-                    str_ends_with($code, 'GAL') ? $gallons += $q : (str_ends_with($code, '500') ? $liters05 += $q : $liters1 += $q);
-                }
-            }
-            $cocos = (int) ceil(match ($name) {
-                'Bebidas' => ($liters1 + $liters05 * 0.5 + $gallons * 4) * 1.2 + ($outputs['BEB-CT-001'] ?? 0),
-                'Dulces' => array_sum($outputs) * 0.15,
-                default => array_sum($outputs) * 1.5,
-            });
-            $consumptions = array_filter([
-                'COC-ENT-001' => $cocos,
-                'PET-BOT-1LT' => $liters1,
-                'PET-BOT-500T' => $liters05,
-                'PET-TAP-R28' => $liters1 + $liters05,
-                'PET-GAL-4L' => $gallons,
-                'PET-TAP-GAL' => $gallons,
+                'DUR-DZ-1P' => 30, 'DUR-LM-1P' => 30, 'PEL-1P' => 25, 'POS-DL-001' => 30, 'POS-CU-001' => 20, 'POS-CU-GDE' => 8,
             ]);
+            $inputs = array_filter([
+                'GRA-PULPA' => 15,
+                'ING-AZU-KG' => min(7, $this->stock($this->matriz, 'ING-AZU-KG')),
+                'ING-LCL-LATA' => min(6, $this->stock($this->matriz, 'ING-LCL-LATA')),
+                'ING-NUEZ-KG' => min(2, $this->stock($this->matriz, 'ING-NUEZ-KG')),
+                'DER-RP-001' => min(2, max(0, $this->stock($this->matriz, 'DER-RP-001') - 10)),
+            ]);
+            $this->registerProduction('Dulces', $inputs, $outputs);
+        }
 
-            // Si falta insumo, se produce lo que alcance.
-            $fit = 1;
-            foreach ($consumptions as $code => $q) {
-                $fit = min($fit, $this->stock($this->matriz, $code) / $q);
+        // Rallado y tostado cada tres días: el granel se envasa al día siguiente.
+        if ($d % 3 === 1 && $this->stock($this->matriz, 'GRA-PULPA') >= 30) {
+            $this->at($day, 9, 0);
+            $this->registerProduction('Rallado y tostado', ['GRA-PULPA' => 30], [
+                'GRA-RAL' => round(8 * $scale(), 1), 'GRA-TOS' => round(4 * $scale(), 1),
+                'GRA-RAL-NAT' => 2, 'GRA-TOS-NAT' => 1, 'GRA-HOJ' => 1,
+            ]);
+        }
+        if ($d % 3 === 2) {
+            $this->at($day, 9, 0);
+            $this->packLater([
+                'RAL-CR-1K' => 3, 'RAL-CR-500' => 4, 'RAL-CT-1K' => 2, 'RAL-CT-500' => 2,
+                'RAL-CRN-1K' => 1, 'RAL-CRN-500' => 1, 'RAL-CTN-500' => 1, 'RAL-HJ-1K' => 0, 'RAL-HJ-500' => 2,
+                'DER-PULPA-BOL' => 20,
+            ]);
+        }
+
+        // En la tarde se envasa lo que quedó de la mañana (deja un poco).
+        foreach ([
+            'GRA-AGUA' => ['BEB-AC-GAL' => 3, 'BEB-AC-1L' => 15],
+            'GRA-TUBA' => ['BEB-TB-GAL' => 2, 'BEB-TB-1L' => 6],
+            'GRA-HORCH' => ['BEB-HC-GAL' => 1, 'BEB-HC-1L' => 6],
+        ] as $bulk => $targets) {
+            $this->at($day, 15, 0);
+            $leftover = $this->stock($this->matriz, $bulk) - 5;
+            if ($leftover >= 8) {
+                $this->packLater($targets, $leftover);
             }
-            if ($fit < 0.3) {
+        }
+    }
+
+    /** Registra una producción completa (con su envasado) como lo hace la app. */
+    private function registerProduction(string $process, array $inputs, array $outputs, array $packagings = [], array $wastes = []): void
+    {
+        $manager = $this->managers[$this->matriz->id];
+        $this->api($manager, $this->matriz, 'POST', 'production-orders', [
+            'kind' => 'process',
+            'formula_id' => $this->formulas[$process] ?? null,
+            'production_date' => now()->toDateString(),
+            'responsible_user_id' => $manager->id,
+            'consumptions' => $this->lines($inputs),
+            'outputs' => $this->lines($outputs),
+            'packagings' => $this->packagingLines($packagings),
+            'wastes' => collect($wastes)->map(fn($w, $code) => [
+                'product_id' => $this->products[$code]->id,
+                'unit_id' => $this->products[$code]->unit_id,
+                'quantity' => $w[0],
+                'reason' => $w[1],
+                'notes' => $w[2] ?? null,
+            ])->values()->all(),
+            'affect_stock' => true,
+        ]);
+        $this->count('producciones');
+        if ($packagings) {
+            $this->count('producciones con envasado');
+        }
+    }
+
+    /**
+     * Envasado aparte, con el granel que hay en la sucursal. $limit acota el
+     * granel a usar (el agua de la tarde deja un poco para el día siguiente).
+     */
+    private function packLater(array $targets, ?float $limit = null): void
+    {
+        $byBulk = [];
+        foreach (array_filter($targets) as $code => $quantity) {
+            $byBulk[$this->recipes[$code]['bulk']][$code] = $quantity;
+        }
+
+        $packagings = [];
+        $materials = [];
+        foreach ($byBulk as $bulk => $group) {
+            $available = $this->stock($this->matriz, $bulk);
+            $packagings += $this->fitPackaging($group, $limit !== null ? min($limit, $available) : $available, $materials);
+        }
+        if (!$packagings) {
+            return;
+        }
+
+        $manager = $this->managers[$this->matriz->id];
+        $this->api($manager, $this->matriz, 'POST', 'production-orders', [
+            'kind' => 'packaging',
+            'production_date' => now()->toDateString(),
+            'responsible_user_id' => $manager->id,
+            'packagings' => $this->packagingLines($packagings),
+            'affect_stock' => true,
+        ]);
+        $this->count('envasados aparte');
+    }
+
+    /**
+     * Cuánto de cada presentación alcanza con el granel y el material que hay:
+     * se envasa en orden y lo que no alcanza se recorta. $materials es lo que
+     * queda de cada material; se comparte entre llamadas del mismo registro.
+     *
+     * @return array<string, int>
+     */
+    private function fitPackaging(array $targets, float $bulk, array &$materials = []): array
+    {
+        $fit = [];
+        foreach ($targets as $code => $wanted) {
+            $recipe = $this->recipes[$code];
+            $max = $recipe['content'] > 0 ? (int) floor(($bulk + 0.0001) / $recipe['content']) : 0;
+            foreach ($recipe['materials'] as $material => $perUnit) {
+                $materials[$material] ??= $this->stock($this->matriz, $material);
+                $max = min($max, (int) floor($materials[$material] / $perUnit));
+            }
+            $quantity = max(0, min((int) $wanted, $max));
+            if ($quantity === 0) {
                 continue;
             }
-            if ($fit < 1) {
-                $outputs = array_map(fn($q) => max(1, (int) floor($q * $fit)), $outputs);
-                $consumptions = array_map(fn($q) => (int) floor($q * $fit), $consumptions);
-                $consumptions = array_filter($consumptions);
+            $fit[$code] = $quantity;
+            $bulk -= $quantity * $recipe['content'];
+            foreach ($recipe['materials'] as $material => $perUnit) {
+                $materials[$material] -= $quantity * $perUnit;
             }
-
-            $manager = $this->managers[$this->matriz->id];
-            $order = $this->api($manager, $this->matriz, 'POST', 'production-orders', [
-                'production_date' => $day->toDateString(),
-                'responsible_user_id' => $manager->id,
-                'notes' => "Producción de {$name}",
-                'consumptions' => $this->lines($consumptions),
-                'outputs' => $this->lines($outputs),
-                // La merma sale del mismo coco: solo si sobra después de producir.
-                'wastes' => mt_rand(1, 6) === 1 && $this->stock($this->matriz, 'COC-ENT-001') - ($consumptions['COC-ENT-001'] ?? 0) >= 10 ? [[
-                    'product_id' => $this->products['COC-ENT-001']->id,
-                    'unit_id' => $this->products['COC-ENT-001']->unit_id,
-                    'quantity' => mt_rand(2, 6),
-                    'reason' => 'quality',
-                    'notes' => 'Cocos pasados',
-                ]] : [],
-            ])['data'];
-            $this->at($day, 7, 30 + $i * 20);
-            $this->api($manager, $this->matriz, 'POST', "production-orders/{$order['id']}/complete");
-            $this->count('órdenes de producción');
         }
+
+        return $fit;
+    }
+
+    private function packagingLines(array $packagings): array
+    {
+        return collect($packagings)->map(fn($q, $code) => [
+            'product_id' => $this->products[$code]->id,
+            'quantity' => $q,
+        ])->values()->all();
     }
 
     // ─── Transferencias matriz → sucursal ────────────────────────────────────

@@ -75,6 +75,10 @@ class PackageSeeder extends Seeder
             ['PET-TAP-GAL',  'PAQ TAPA PARA GALONES',         '0093', 40,  10.80,  40],
             ['PET-TAP-R28',  'PAQ TAPA R-28 CORTA 98 PZ',     '0095', 98,  26.46,  60],
 
+            // ── Ingredientes que se compran por paquete de 8 latas ──
+            ['ING-CAL-LATA', 'PAQ 8 LATAS CREMA DE COCO CALAHUA', 'ING-CAL-8P', 8, 351, 0],
+            ['ING-LCL-LATA', 'PAQ 8 LATAS LECHE CLAVEL',          'ING-LCL-8P', 8, 335, 0],
+
             // ── Limpieza / insumos ──
             ['LIM-CONT-GLAD', 'CONTENEDOR GLAD', '0102', 1, 377, 0],
         ];

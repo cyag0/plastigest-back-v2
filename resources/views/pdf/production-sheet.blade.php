@@ -67,22 +67,31 @@
                     <tr><td class="k">Fecha</td><td>{{ ucfirst($date) }}</td></tr>
                     <tr><td class="k">Sucursal</td><td>{{ $order->location?->name ?? '—' }}</td></tr>
                     <tr><td class="k">Responsable</td><td>{{ $order->responsible?->name ?? '—' }}</td></tr>
-                    <tr><td class="k">Fórmula</td><td>{{ $order->formula ? $order->formula->name . ' (v' . $order->formula->version . ')' : 'Sin fórmula' }}</td></tr>
+                    @if($is_packaging)
+                        <tr><td class="k">Tipo</td><td>Envasado de granel</td></tr>
+                    @else
+                        <tr><td class="k">Proceso</td><td>{{ $order->formula ? $order->formula->name : 'Sin proceso' }}</td></tr>
+                    @endif
                 </table>
             </td>
         </tr>
     </table>
 
-    @if($draft)
+    @if($draft && $is_packaging)
+        <div class="box small">
+            Envasa las presentaciones de la lista y anota cuántas salieron de verdad, y entrega la hoja para capturarla en la app.
+        </div>
+    @elseif($draft)
         <div class="box small">
             Saca del almacén los insumos de la lista y palomea cada uno. Al terminar anota lo que realmente se produjo,
-            lo que se usó de cada insumo y la merma, y entrega la hoja para capturarla en la app.
+            lo que se usó de cada insumo, lo que se envasó y la merma, y entrega la hoja para capturarla en la app.
             @if($short_count > 0)
                 <br><strong class="down">{{ $short_count }} {{ $short_count === 1 ? 'insumo no alcanza' : 'insumos no alcanzan' }} con la existencia de la sucursal (marcados en rojo).</strong>
             @endif
         </div>
     @endif
 
+    @unless($is_packaging)
     {{-- 1. Qué producir ─────────────────────────────────────────────────── --}}
     <h2 class="step"><span class="n">1.</span>{{ $closed ? 'Producido contra lo esperado' : 'Qué producir' }}</h2>
     @if(empty($outputs))
@@ -168,26 +177,25 @@
         </table>
     @endif
 
-    {{-- 3. Merma ─────────────────────────────────────────────────────────── --}}
-    <h2 class="step"><span class="n">3.</span>Merma</h2>
-    @if($closed)
-        <table class="summary">
-            <tr>
-                <td>
-                    <div class="label">Total usado</div>
-                    <div class="value">{{ F::qty((float) $order->total_consumed_quantity) }}</div>
-                </td>
-                <td>
-                    <div class="label">Total producido</div>
-                    <div class="value">{{ F::qty((float) $order->total_produced_quantity) }}</div>
-                </td>
-                <td>
-                    <div class="label">Merma del proceso</div>
-                    <div class="value {{ (float) $order->waste_percentage > 0 ? 'down' : '' }}">{{ F::pct((float) $order->waste_percentage / 100) }}</div>
-                </td>
-            </tr>
-        </table>
-        <div class="hint">La merma del proceso compara lo usado contra lo producido sumando cantidades, como en la app.</div>
+    {{-- 3. Rendimiento y merma ──────────────────────────────────────────── --}}
+    <h2 class="step"><span class="n">3.</span>{{ $closed ? 'Rendimiento y merma' : 'Merma' }}</h2>
+    @if($closed && !empty($yields))
+        @foreach(array_chunk($yields, 3) as $row)
+            <table class="summary">
+                <tr>
+                    @foreach($row as $y)
+                        <td>
+                            <div class="label">{{ $y['product_name'] }} por {{ $y['input_unit_abbreviation'] }} de {{ $y['input_product_name'] }}</div>
+                            <div class="value">{{ F::qty($y['per_input']) }} {{ $y['unit_abbreviation'] }}</div>
+                            @if($y['expected_per_input'] !== null)
+                                <div class="small">Esperado {{ F::qty($y['expected_per_input']) }} {{ $y['unit_abbreviation'] }} · {!! $variance($y['variance_pct'] !== null ? $y['variance_pct'] / 100 : null) !!}</div>
+                            @endif
+                        </td>
+                    @endforeach
+                </tr>
+            </table>
+        @endforeach
+        <div class="hint">Cuánto salió de cada producto por unidad del insumo principal, contra lo que espera el proceso.</div>
     @endif
 
     @if(!empty($wastes))
@@ -231,15 +239,17 @@
         </table>
     @endunless
 
+    @endunless
+
     @if(!empty($packagings))
-        <h2 class="step"><span class="n">4.</span>Empaque</h2>
+        <h2 class="step"><span class="n">{{ $is_packaging ? '1.' : '4.' }}</span>Envasado</h2>
         <table>
             <thead>
                 <tr>
-                    <th>Producto terminado</th>
-                    <th class="text-right" style="width: 14%">Empacado</th>
+                    <th>Presentación</th>
+                    <th class="text-right" style="width: 14%">Envasado</th>
                     <th>Granel usado</th>
-                    <th style="width: 16%">Fecha</th>
+                    <th>Material</th>
                 </tr>
             </thead>
             <tbody>
@@ -247,8 +257,30 @@
                     <tr>
                         <td>{{ $p['name'] }}</td>
                         <td class="qty">{{ F::qty($p['quantity']) }} {{ $p['unit'] }}</td>
-                        <td>{{ $p['source'] ? $p['source'] . ' · ' . F::qty($p['source_quantity']) . ' ' . $p['source_unit'] : '—' }}</td>
-                        <td class="nowrap">{{ F::dateTime($p['packed_at']) }}</td>
+                        <td>{{ $p['source'] ? F::qty($p['source_quantity']) . ' ' . $p['source_unit'] . ' de ' . $p['source'] : '—' }}</td>
+                        <td class="small">{{ $p['materials'] ?: '—' }}</td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
+    @elseif(!empty($planned_packagings))
+        <h2 class="step"><span class="n">{{ $is_packaging ? '1.' : '4.' }}</span>Qué envasar</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Presentación</th>
+                    <th class="text-right" style="width: 14%">Planeado</th>
+                    <th>Granel</th>
+                    <th class="text-right" style="width: 16%">Envasado real</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($planned_packagings as $p)
+                    <tr>
+                        <td><strong>{{ $p['name'] }}</strong></td>
+                        <td class="qty">{{ F::qty($p['quantity']) }} {{ $p['unit'] }}</td>
+                        <td>{{ $p['source'] ? F::qty($p['source_quantity']) . ' ' . $p['source_unit'] . ' de ' . $p['source'] : '—' }}</td>
+                        <td class="text-right">{!! $blank !!}</td>
                     </tr>
                 @endforeach
             </tbody>

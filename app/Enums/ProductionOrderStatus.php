@@ -3,15 +3,20 @@
 namespace App\Enums;
 
 /**
- * Estados de una orden de producción.
+ * Estados de una orden de producción (o de envasado).
  *
- * El empaque es un paso posterior: hasta que la producción no se completa el
- * granel no existe en inventario, así que no hay nada que empacar. De ahí que
- * PACKAGING y PACKED sólo se alcancen desde COMPLETED.
+ *   draft ──► completed
+ *     │            │
+ *     └────────────┴──► cancelled
  *
- *   draft ──► completed ──► packaging ──► packed
- *     │            │             │           │
- *     └────────────┴─────────────┴───────────┴──► cancelled
+ * Un borrador ("Pendiente") todavía no mueve inventario: se guardó para
+ * terminarlo después. Al registrarse se descuentan los insumos, se suman los
+ * productos y se aplica el envasado, todo junto.
+ *
+ * PACKAGING y PACKED son del flujo anterior, en el que el empaque era una
+ * etapa aparte de la orden ("En empaque" → "Empacada"). Ya nada transiciona a
+ * ellos: el envasado se registra junto con la producción o como una orden de
+ * envasado propia. Se conservan para poder leer órdenes viejas.
  */
 enum ProductionOrderStatus: string
 {
@@ -24,8 +29,8 @@ enum ProductionOrderStatus: string
     public function label(): string
     {
         return match ($this) {
-            self::DRAFT => 'Borrador',
-            self::COMPLETED => 'Producción terminada',
+            self::DRAFT => 'Pendiente',
+            self::COMPLETED => 'Registrada',
             self::PACKAGING => 'En empaque',
             self::PACKED => 'Empacada',
             self::CANCELLED => 'Cancelada',
@@ -35,22 +40,18 @@ enum ProductionOrderStatus: string
     public function color(): string
     {
         return match ($this) {
-            self::DRAFT => '#9CA3AF',     // gris
-            self::COMPLETED => '#10B981', // verde
-            self::PACKAGING => '#3B82F6', // azul
-            self::PACKED => '#6A1B9A',    // morado
-            self::CANCELLED => '#EF4444', // rojo
+            self::DRAFT => '#C47F12',     // ocre (aviso)
+            self::COMPLETED, self::PACKAGING, self::PACKED => '#3F8A3A', // verde
+            self::CANCELLED => '#B9412C', // ladrillo
         };
     }
 
     public function icon(): string
     {
         return match ($this) {
-            self::DRAFT => 'file-document-outline',
-            self::COMPLETED => 'check-circle',
-            self::PACKAGING => 'package-variant',
-            self::PACKED => 'package-check',
-            self::CANCELLED => 'close-circle',
+            self::DRAFT => 'progress-clock',
+            self::COMPLETED, self::PACKAGING, self::PACKED => 'check-circle-outline',
+            self::CANCELLED => 'close-circle-outline',
         };
     }
 
@@ -58,15 +59,13 @@ enum ProductionOrderStatus: string
     {
         return match ($this) {
             self::DRAFT => in_array($next, [self::COMPLETED, self::CANCELLED], true),
-            self::COMPLETED => in_array($next, [self::PACKAGING, self::PACKED, self::CANCELLED], true),
-            self::PACKAGING => in_array($next, [self::PACKED, self::CANCELLED], true),
-            self::PACKED => $next === self::CANCELLED,
+            self::COMPLETED, self::PACKAGING, self::PACKED => $next === self::CANCELLED,
             self::CANCELLED => false,
         };
     }
 
     /**
-     * La producción ya afectó inventario: el granel existe y se puede empacar.
+     * La orden ya afectó inventario.
      */
     public function isProduced(): bool
     {
@@ -74,15 +73,8 @@ enum ProductionOrderStatus: string
     }
 
     /**
-     * Se pueden registrar (o revertir) empaques en este estado.
-     */
-    public function allowsPackaging(): bool
-    {
-        return in_array($this, [self::COMPLETED, self::PACKAGING], true);
-    }
-
-    /**
-     * Devuelve un array listo para selects en frontend.
+     * Devuelve un array listo para selects en frontend (sin los estados del
+     * flujo anterior, que ya no se pueden alcanzar).
      */
     public static function options(): array
     {
@@ -93,7 +85,7 @@ enum ProductionOrderStatus: string
                 'color' => $s->color(),
                 'icon' => $s->icon(),
             ],
-            self::cases()
+            [self::DRAFT, self::COMPLETED, self::CANCELLED]
         );
     }
 }

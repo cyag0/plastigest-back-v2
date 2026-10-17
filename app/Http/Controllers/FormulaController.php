@@ -27,10 +27,12 @@ class FormulaController extends CrudController
     protected function indexRelations(): array
     {
         return [
-            'items.product',
+            'items.product.inventoryType',
             'items.unit',
             'outputs.product.mainImage',
             'outputs.product.unit',
+            'outputs.product.inventoryType',
+            'outputs.product.packagedProducts',
             'outputs.unit',
         ];
     }
@@ -38,10 +40,15 @@ class FormulaController extends CrudController
     protected function getShowRelations(): array
     {
         return [
-            'items.product',
+            'items.product.inventoryType',
             'items.unit',
             'outputs.product.mainImage',
             'outputs.product.unit',
+            'outputs.product.inventoryType',
+            // Las presentaciones de cada granel, con su receta.
+            'outputs.product.packagedProducts.packagingSourceUnit',
+            'outputs.product.packagedProducts.packagingMaterials.material',
+            'outputs.product.packagedProducts.packagingMaterials.unit',
             'outputs.unit',
             'createdBy',
             'updatedBy',

@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Constants\Files;
+use App\Models\InventoryType;
 use App\Models\Operations\Formula;
 use App\Models\Operations\FormulaOutput;
 use App\Utils\AppUploadUtil;
@@ -31,6 +32,7 @@ class FormulaResource extends Resources
                 'product_id' => $i->product_id,
                 'product_name' => $i->relationLoaded('product') ? ($i->product?->name) : null,
                 'product_code' => $i->relationLoaded('product') ? ($i->product?->code) : null,
+                'inventory_type_code' => $this->typeCode($i->relationLoaded('product') ? $i->product : null),
                 'unit_id' => $i->unit_id,
                 'unit_name' => $i->relationLoaded('unit') ? ($i->unit?->name) : null,
                 'unit_abbreviation' => $i->relationLoaded('unit') ? ($i->unit?->abbreviation) : null,
@@ -67,11 +69,18 @@ class FormulaResource extends Resources
 
     private function formatOutput(FormulaOutput $output): array
     {
+        $product = $output->relationLoaded('product') ? $output->product : null;
+        $typeCode = $this->typeCode($product);
+
         return [
             'id' => $output->id,
             'product_id' => $output->product_id,
-            'product_name' => $output->relationLoaded('product') ? ($output->product?->name) : null,
-            'product_code' => $output->relationLoaded('product') ? ($output->product?->code) : null,
+            'product_name' => $product?->name,
+            'product_code' => $product?->code,
+            'inventory_type_code' => $typeCode,
+            // Granel: se guarda en inventario y se envasa en sus presentaciones.
+            'is_bulk' => $typeCode === InventoryType::SEMI_FINISHED,
+            'presentations' => $this->presentations($product, $output),
             'unit_id' => $output->unit_id,
             'unit_name' => $output->relationLoaded('unit') ? ($output->unit?->name) : null,
             'unit_abbreviation' => $output->relationLoaded('unit') ? ($output->unit?->abbreviation) : null,
@@ -84,6 +93,49 @@ class FormulaResource extends Resources
                 ? $this->formatProduct($output->product)
                 : null,
         ];
+    }
+
+    private function typeCode($product): ?string
+    {
+        if (!$product || !$product->relationLoaded('inventoryType')) {
+            return null;
+        }
+
+        return $product->inventoryType?->code;
+    }
+
+    /**
+     * Presentaciones que se envasan de un granel (botella de 1 L, de ½ L…), con
+     * su contenido y su material, para mostrarlas junto al proceso.
+     */
+    private function presentations($product, FormulaOutput $output): array
+    {
+        if (!$product || !$product->relationLoaded('packagedProducts')) {
+            return [];
+        }
+
+        return $product->packagedProducts
+            ->where('requires_packaging', true)
+            ->sortBy('name')
+            ->map(fn($presentation) => [
+                'product_id' => $presentation->id,
+                'product_name' => $presentation->name,
+                'product_code' => $presentation->code,
+                'content' => (float) $presentation->packaging_source_quantity,
+                'content_unit_abbreviation' => $presentation->relationLoaded('packagingSourceUnit')
+                    ? ($presentation->packagingSourceUnit?->abbreviation ?? $output->unit?->abbreviation)
+                    : null,
+                'materials' => $presentation->relationLoaded('packagingMaterials')
+                    ? $presentation->packagingMaterials->map(fn($m) => [
+                        'product_id' => $m->material_product_id,
+                        'product_name' => $m->relationLoaded('material') ? $m->material?->name : null,
+                        'quantity' => (float) $m->quantity,
+                        'unit_abbreviation' => $m->relationLoaded('unit') ? $m->unit?->abbreviation : null,
+                    ])->values()->all()
+                    : [],
+            ])
+            ->values()
+            ->all();
     }
 
     /**

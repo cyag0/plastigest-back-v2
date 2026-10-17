@@ -102,27 +102,23 @@ class ComprasProduccionProductionTest extends TestCase
     }
 
     /**
-     * Acciones por id sobre una orden (y uno de sus empaques), con lo que
-     * piden. Todas deben responder 404 si la orden no es del usuario.
+     * Acciones por id sobre una orden, con lo que piden. Todas deben responder
+     * 404 si la orden no es del usuario.
      *
      * @return array<string, array{0: string, 1: string, 2: array}>
      */
-    private function actionsOn(int $orderId, ?int $packagingId = null, ?Product $jar = null): array
+    private function actionsOn(int $orderId): array
     {
         $base = "/api/auth/admin/production-orders/{$orderId}";
 
-        return array_filter([
+        return [
             'ver' => ['getJson', $base, []],
             'editar' => ['putJson', $base, ['notes' => 'ajena']],
             'eliminar' => ['deleteJson', $base, []],
             'completar' => ['postJson', "{$base}/complete", []],
             'cancelar' => ['postJson', "{$base}/cancel", []],
             'variación' => ['getJson', "{$base}/variance", []],
-            'plan de empaque' => ['getJson', "{$base}/packaging", []],
-            'empacar' => $jar ? ['postJson', "{$base}/packaging", ['packagings' => [['product_id' => $jar->id, 'quantity' => 1]]]] : null,
-            'revertir empaque' => $packagingId ? ['deleteJson', "{$base}/packaging/{$packagingId}", []] : null,
-            'cerrar empaque' => ['postJson', "{$base}/packaging/finish", []],
-        ]);
+        ];
     }
 
     // ─── Aislamiento ────────────────────────────────────────────────────────
@@ -131,20 +127,23 @@ class ComprasProduccionProductionTest extends TestCase
     {
         $jar = $this->jar();
         $draft = $this->draft($this->pitillal);
-        $packed = $this->completed($this->pitillal);
-        $this->actingInBranch($this->user, $this->pitillal)
-            ->postJson("/api/auth/admin/production-orders/{$packed}/packaging", ['packagings' => [['product_id' => $jar->id, 'quantity' => 4]]])
-            ->assertOk();
-        $packaging = ProductionOrderPackaging::where('production_order_id', $packed)->value('id');
+        // Registrada con su envasado en el mismo paso.
+        $packed = $this->actingInBranch($this->user, $this->pitillal)
+            ->postJson('/api/auth/admin/production-orders', $this->payload([
+                'packagings' => [['product_id' => $jar->id, 'quantity' => 4]],
+                'affect_stock' => true,
+            ]))
+            ->assertCreated()
+            ->json('data.id');
 
         $stock = fn() => [$this->stockOf($this->coco, $this->pitillal), $this->stockOf($this->granel, $this->pitillal), $this->stockOf($jar, $this->pitillal)];
         $before = $stock();
         $producer = $this->producer();
 
-        foreach ([$draft => null, $packed => $packaging] as $orderId => $packagingId) {
+        foreach ([$draft, $packed] as $orderId) {
             $status = ProductionOrder::findOrFail($orderId)->status;
 
-            foreach ($this->actionsOn($orderId, $packagingId, $jar) as $action => [$method, $url, $payload]) {
+            foreach ($this->actionsOn($orderId) as $action => [$method, $url, $payload]) {
                 $this->actingInBranch($producer)->{$method}($url, $payload)
                     ->assertNotFound("{$action} una orden de otra sucursal");
             }
@@ -175,22 +174,30 @@ class ComprasProduccionProductionTest extends TestCase
         $this->assertEquals(10, $this->stockOf($granel, $branch));
     }
 
-    public function test_a_packaging_is_only_reverted_through_its_own_order(): void
+    public function test_packaging_later_is_limited_to_the_branch_stock(): void
     {
+        // La matriz no tiene granel; Pitillal sí (30 kg).
+        $this->setStock($this->granel, $this->location, 0);
         $jar = $this->jar();
-        $first = $this->completed();
-        $second = $this->completed();
-        $this->actingInBranch($this->user)
-            ->postJson("/api/auth/admin/production-orders/{$first}/packaging", ['packagings' => [['product_id' => $jar->id, 'quantity' => 4]]])
-            ->assertOk();
-        $packaging = ProductionOrderPackaging::where('production_order_id', $first)->value('id');
+        $payload = [
+            'kind' => ProductionOrder::KIND_PACKAGING,
+            'production_date' => now()->toDateString(),
+            'packagings' => [['product_id' => $jar->id, 'quantity' => 4]],
+            'affect_stock' => true,
+        ];
 
         $this->actingInBranch($this->user)
-            ->deleteJson("/api/auth/admin/production-orders/{$second}/packaging/{$packaging}")
-            ->assertNotFound();
+            ->postJson('/api/auth/admin/production-orders', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'insufficient_bulk');
 
-        $this->assertEquals(4, $this->stockOf($jar));
-        $this->assertNotNull(ProductionOrderPackaging::find($packaging));
+        $this->actingInBranch($this->user, $this->pitillal)
+            ->postJson('/api/auth/admin/production-orders', $payload)
+            ->assertCreated();
+
+        $this->assertEquals(4, $this->stockOf($jar, $this->pitillal));
+        $this->assertEquals(29, $this->stockOf($this->granel, $this->pitillal));
+        $this->assertSame(1, ProductionOrderPackaging::count());
     }
 
     public function test_an_all_branches_admin_can_still_complete_another_branch_order(): void
@@ -219,13 +226,14 @@ class ComprasProduccionProductionTest extends TestCase
             ->assertStatus(422)
             ->assertJsonValidationErrors(['consumptions.0.product_id', 'formula_id']);
 
-        $order = $this->completed();
         $this->actingInBranch($this->user)
-            ->postJson("/api/auth/admin/production-orders/{$order}/packaging", ['packagings' => [['product_id' => $foreign->id, 'quantity' => 1]]])
+            ->postJson('/api/auth/admin/production-orders', $this->payload([
+                'packagings' => [['product_id' => $foreign->id, 'quantity' => 1]],
+            ]))
             ->assertStatus(422)
             ->assertJsonValidationErrors('packagings.0.product_id');
 
-        $this->assertSame(1, ProductionOrder::count());
+        $this->assertSame(0, ProductionOrder::count());
     }
 
     // ─── Motivo de los errores ──────────────────────────────────────────────
@@ -254,10 +262,12 @@ class ComprasProduccionProductionTest extends TestCase
             ->assertJsonPath('code', 'invalid_status')
             ->assertJsonPath('message', 'La producción ya está cancelada.');
 
+        // Registrar una cancelada: el motivo en palabras de la app.
         $this->actingInBranch($this->user)
-            ->postJson("/api/auth/admin/production-orders/{$order}/packaging", ['packagings' => [['product_id' => $this->jar()->id, 'quantity' => 1]]])
+            ->postJson("/api/auth/admin/production-orders/{$order}/complete")
             ->assertStatus(422)
-            ->assertJsonPath('code', 'invalid_status');
+            ->assertJsonPath('code', 'invalid_status')
+            ->assertJsonPath('message', 'Solo se puede registrar una producción pendiente (esta está «Cancelada»).');
     }
 
     public function test_registering_without_stock_explains_the_reason_and_keeps_errors_stock(): void

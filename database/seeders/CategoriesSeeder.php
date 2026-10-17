@@ -96,6 +96,12 @@ class CategoriesSeeder extends Seeder
                 'is_active' => true,
             ],
             [
+                'name' => 'Granel',
+                'description' => 'Lo que sale de un proceso y todavía no se envasa: agua de coco, pulpa, horchata, tuba, coco rallado y tostado',
+                'company_id' => $cocosfrancisco->id,
+                'is_active' => true,
+            ],
+            [
                 'name' => 'Envases y PET',
                 'description' => 'Botellas, galones y tapas de PET usados para envasar las bebidas',
                 'company_id' => $cocosfrancisco->id,
@@ -103,7 +109,7 @@ class CategoriesSeeder extends Seeder
             ],
             [
                 'name' => 'Ingredientes',
-                'description' => 'Insumos de compra para producción: calahua, leche, sal y similares',
+                'description' => 'Insumos de compra para producción: savia de palma, azúcar, nuez, crema de coco, leche, sal',
                 'company_id' => $cocosfrancisco->id,
                 'is_active' => true,
             ],

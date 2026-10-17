@@ -7,7 +7,6 @@ use App\Exceptions\BusinessRuleException;
 use App\Http\Resources\ProductionOrderResource;
 use App\Models\Operations\ProductionOrder;
 use App\Services\ProductionOrderService;
-use App\Services\ProductionPackagingService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
@@ -32,19 +31,27 @@ class ProductionOrderController extends CrudController
     protected ?string $locationColumn = 'location_id';
     protected string $dateColumn = 'production_date';
 
-    public function __construct(
-        private readonly ProductionOrderService $service,
-        private readonly ProductionPackagingService $packagingService,
-    ) {}
+    public function __construct(private readonly ProductionOrderService $service) {}
 
+    /**
+     * La lista dice qué entró y qué salió de cada orden (con nombres y
+     * unidades) y su rendimiento: antes mostraba "+11 · +14" sin productos.
+     */
     protected function indexRelations(): array
     {
         return [
             'location',
             'responsible',
-            'formula',
-            'consumptions',
-            'outputs',
+            'formula.items',
+            'formula.outputs',
+            'consumptions.product.unit',
+            'consumptions.unit',
+            'outputs.product.unit',
+            'outputs.unit',
+            'packagings.product',
+            'packagings.unit',
+            'packagings.sourceProduct.unit',
+            'packagings.sourceUnit',
         ];
     }
 
@@ -54,15 +61,17 @@ class ProductionOrderController extends CrudController
             'location',
             'responsible',
             'formula.items.product',
-            'consumptions.product',
+            'formula.outputs',
+            'consumptions.product.unit',
             'consumptions.unit',
-            'outputs.product',
+            'outputs.product.unit',
+            'outputs.product.inventoryType',
             'outputs.unit',
             'wastes.product',
             'wastes.unit',
             'packagings.product',
             'packagings.unit',
-            'packagings.sourceProduct',
+            'packagings.sourceProduct.unit',
             'packagings.sourceUnit',
             'packagings.materials.product',
             'packagings.materials.unit',
@@ -106,18 +115,26 @@ class ProductionOrderController extends CrudController
         if (!empty($params['formula_id'])) {
             $query->where('formula_id', (int) $params['formula_id']);
         }
+        if (!empty($params['kind']) && in_array($params['kind'], ProductionOrder::KINDS, true)) {
+            $query->where('kind', $params['kind']);
+        }
         if (!empty($params['product_id'])) {
             $productId = (int) $params['product_id'];
             $query->where(function ($q) use ($productId) {
                 $q->whereHas('consumptions', fn($qq) => $qq->where('product_id', $productId))
-                    ->orWhereHas('outputs', fn($qq) => $qq->where('product_id', $productId));
+                    ->orWhereHas('outputs', fn($qq) => $qq->where('product_id', $productId))
+                    ->orWhereHas('packagings', fn($qq) => $qq->where('product_id', $productId)
+                        ->orWhere('source_product_id', $productId));
             });
         }
         if (!empty($params['search'])) {
             $search = $params['search'];
             $query->where(function ($q) use ($search) {
                 $q->where('folio', 'like', "%{$search}%")
-                    ->orWhere('notes', 'like', "%{$search}%");
+                    ->orWhere('notes', 'like', "%{$search}%")
+                    ->orWhereHas('formula', fn($qq) => $qq->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('outputs.product', fn($qq) => $qq->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('packagings.product', fn($qq) => $qq->where('name', 'like', "%{$search}%"));
             });
         }
     }
@@ -132,6 +149,9 @@ class ProductionOrderController extends CrudController
         return $request->validate($this->rules([
             //'location_id' => 'nullable|exists:locations,id',
             'production_date' => 'required|date',
+            // Una producción o un envasado de granel que ya estaba en inventario.
+            'kind' => ['nullable', Rule::in(ProductionOrder::KINDS)],
+            'packagings' => 'required_if:kind,' . ProductionOrder::KIND_PACKAGING . '|nullable|array',
         ], $request), $this->messages());
     }
 
@@ -150,11 +170,12 @@ class ProductionOrderController extends CrudController
             'consumptions_empty' => 'nullable|boolean',
             'outputs_empty' => 'nullable|boolean',
             'wastes_empty' => 'nullable|boolean',
+            'packagings_empty' => 'nullable|boolean',
         ], $request), $this->messages());
     }
 
     /** Listas de renglones de la orden. */
-    private const LISTS = ['consumptions', 'outputs', 'wastes'];
+    private const LISTS = ['consumptions', 'outputs', 'wastes', 'packagings'];
 
     /**
      * Reglas comunes de alta y edición.
@@ -199,6 +220,12 @@ class ProductionOrderController extends CrudController
             'wastes.*.quantity' => 'required_with:wastes|numeric|min:0.0001',
             'wastes.*.reason' => 'required_with:wastes|in:damage,quality,expired,process_loss,spill,other',
             'wastes.*.notes' => 'nullable|string',
+            // Envasado: presentación y cuántas unidades. El granel y el material
+            // salen de la receta de la presentación.
+            'packagings' => 'nullable|array',
+            'packagings.*.product_id' => ['required_with:packagings', ...$product],
+            'packagings.*.quantity' => 'required_with:packagings|numeric|min:0.0001',
+            'packagings.*.unit_id' => 'nullable|exists:units,id',
         ];
     }
 
@@ -206,6 +233,7 @@ class ProductionOrderController extends CrudController
     {
         return [
             'responsible_user_id.exists' => 'El responsable tiene que ser un usuario de la empresa.',
+            'packagings.required_if' => 'Indica qué presentaciones se envasaron.',
         ];
     }
 
@@ -261,6 +289,9 @@ class ProductionOrderController extends CrudController
             }
 
             $order = DB::transaction(fn() => $this->service->complete($save()));
+            // complete() devuelve la orden releída: sin esto el alta respondía
+            // 200 en vez de 201.
+            $order->wasRecentlyCreated = $method === 'create';
         } catch (ValidationException $e) {
             throw $e;
         } catch (Throwable $e) {
@@ -456,141 +487,5 @@ class ProductionOrderController extends CrudController
 
         $report = $this->service->getVarianceReport($order);
         return response()->json(['success' => true, 'data' => $report]);
-    }
-
-    /**
-     * GET /production-orders/{id}/packaging
-     *
-     * Plan de empaque: qué se puede empacar de cada salida de la orden, cuánto
-     * granel queda y qué material haría falta.
-     */
-    public function packagingPlan(int $id)
-    {
-        if (!CurrentWorker::hasPermission('production_orders_read')) {
-            return $this->forbiddenResponse('ver el empaque de esta producción');
-        }
-
-        $order = $this->findOrder($id, ['outputs.product', 'outputs.unit']);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        return response()->json([
-            'success' => true,
-            'data' => $this->packagingService->getPlan($order),
-        ]);
-    }
-
-    /**
-     * POST /production-orders/{id}/packaging
-     *
-     * Registra empaques. Sólo se permite cuando la producción ya se completó:
-     * antes de eso el granel no existe en inventario.
-     */
-    public function pack(Request $request, int $id)
-    {
-        if (!CurrentWorker::hasPermission('production_orders_update')) {
-            return $this->forbiddenResponse('empacar esta producción');
-        }
-
-        // Terminado, granel y material tienen que ser productos de la empresa.
-        $product = Rule::exists('products', 'id')->where('company_id', CurrentCompany::id());
-
-        $data = $request->validate([
-            'packagings' => 'required|array|min:1',
-            'packagings.*.product_id' => ['required', $product],
-            'packagings.*.quantity' => 'required|numeric|min:0.0001',
-            'packagings.*.unit_id' => 'nullable|exists:units,id',
-            // Permiten sobrescribir la receta del producto en un empaque puntual.
-            'packagings.*.source_product_id' => ['nullable', $product],
-            'packagings.*.source_unit_id' => 'nullable|exists:units,id',
-            'packagings.*.source_quantity_per_unit' => 'nullable|numeric|min:0',
-            'packagings.*.materials' => 'nullable|array',
-            'packagings.*.materials.*.product_id' => ['required_with:packagings.*.materials', $product],
-            'packagings.*.materials.*.unit_id' => 'required_with:packagings.*.materials|exists:units,id',
-            'packagings.*.materials.*.quantity' => 'required_with:packagings.*.materials|numeric|min:0',
-            'packagings.*.notes' => 'nullable|string',
-        ], [
-            'packagings.required' => 'Indica al menos un producto a empacar.',
-        ]);
-
-        $order = $this->findOrder($id);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        try {
-            $order = $this->packagingService->pack($order, $data['packagings']);
-
-            return response()->json([
-                'success' => true,
-                'message' => "Empaque registrado en la producción {$order->folio}",
-                'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
-            ]);
-        } catch (Throwable $e) {
-            return $this->failure($e, 'No se pudo registrar el empaque.');
-        }
-    }
-
-    /**
-     * DELETE /production-orders/{id}/packaging/{packagingId}
-     */
-    public function revertPackaging(int $id, int $packagingId)
-    {
-        if (!CurrentWorker::hasPermission('production_orders_update')) {
-            return $this->forbiddenResponse('revertir el empaque de esta producción');
-        }
-
-        $order = $this->findOrder($id);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        // El empaque se busca dentro de la orden: no se revierte el de otra.
-        $packaging = $order->packagings()->with('materials')->find($packagingId);
-        if (!$packaging) {
-            return response()->json(['success' => false, 'message' => 'Empaque no encontrado'], 404);
-        }
-
-        try {
-            $order = $this->packagingService->revert($order, $packaging);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Empaque revertido y stock devuelto',
-                'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
-            ]);
-        } catch (Throwable $e) {
-            return $this->failure($e, 'No se pudo revertir el empaque.');
-        }
-    }
-
-    /**
-     * POST /production-orders/{id}/packaging/finish
-     *
-     * Cierra el empaque: la orden queda como empacada y ya no admite más.
-     */
-    public function finishPackaging(int $id)
-    {
-        if (!CurrentWorker::hasPermission('production_orders_update')) {
-            return $this->forbiddenResponse('cerrar el empaque de esta producción');
-        }
-
-        $order = $this->findOrder($id);
-        if (!$order) {
-            return $this->orderNotFound();
-        }
-
-        try {
-            $order = $this->packagingService->finish($order);
-
-            return response()->json([
-                'success' => true,
-                'message' => "Empaque de la producción {$order->folio} cerrado",
-                'data' => new ProductionOrderResource($order->load($this->getShowRelations()), ['editing' => true]),
-            ]);
-        } catch (Throwable $e) {
-            return $this->failure($e, 'No se pudo cerrar el empaque.');
-        }
     }
 }
