@@ -655,6 +655,6 @@ class AdjustmentUndoCountTest extends TestCase
         $this->assertSame(1, $data['totals']['loss_count']);
         $this->assertEqualsWithDelta(16.0, $data['totals']['loss_cost'], 0.001);
         $this->assertCount(1, $data['detail']);
-        $this->assertSame('Vencimiento', $data['by_reason'][0]['name']);
+        $this->assertSame('Caducidad', $data['by_reason'][0]['name']);
     }
 }

@@ -14,19 +14,20 @@ enum AdjustmentReasonCode: string
     case PRODUCTION_WASTE = 'production_waste';
 
     /**
-     * Obtener la etiqueta legible de la razón
+     * Etiqueta del motivo, como la dice la app (en oración; "Caducidad" en vez
+     * de "Vencimiento"). La usan la lista, los avisos, el reporte y el kárdex.
      */
     public function label(): string
     {
         return match ($this) {
             self::LOSS => 'Pérdida',
             self::DAMAGE => 'Daño',
-            self::COUNT_DIFF => 'Diferencia de Conteo',
-            self::EXPIRY => 'Vencimiento',
+            self::COUNT_DIFF => 'Diferencia de conteo',
+            self::EXPIRY => 'Caducidad',
             self::THEFT => 'Robo',
             self::FOUND => 'Encontrado',
             self::OTHER => 'Otro',
-            self::PRODUCTION_WASTE => 'Merma de Producción',
+            self::PRODUCTION_WASTE => 'Merma de producción',
         };
     }
 

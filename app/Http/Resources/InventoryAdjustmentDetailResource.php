@@ -45,7 +45,10 @@ class InventoryAdjustmentDetailResource extends JsonResource
             'product' => $this->whenLoaded('product', [
                 'id' => $this->product->id,
                 'name' => $this->product->name,
-                'sku' => $this->product->sku,
+                // Los productos no tienen columna sku: el código es `code`. `sku`
+                // se queda (con el código) para quien ya lo leía.
+                'code' => $this->product->code,
+                'sku' => $this->product->code,
                 'main_image' => $this->product->mainImage ? [
                     'id' => $this->product->mainImage->id,
                     'uri' => $this->product->mainImage->uri,
@@ -60,7 +63,10 @@ class InventoryAdjustmentDetailResource extends JsonResource
             'unit_id' => $this->unit_id,
             'unit' => $this->whenLoaded('unit', $this->unit ? [
                 'id' => $this->unit->id,
-                'code' => $this->unit->code,
+                // Las unidades no tienen columna code: la abreviatura ("pz",
+                // "kg") es lo que se muestra junto a la cantidad.
+                'code' => $this->unit->abbreviation,
+                'abbreviation' => $this->unit->abbreviation,
                 'name' => $this->unit->name,
             ] : null),
 

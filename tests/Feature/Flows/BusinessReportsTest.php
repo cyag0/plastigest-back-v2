@@ -315,7 +315,7 @@ class BusinessReportsTest extends TestCase
         $this->assertEqualsWithDelta(58.0, $data['totals']['loss_cost'], 0.001);
         $this->assertEqualsWithDelta(16.0, $data['totals']['gain_cost'], 0.001);
         $this->assertEqualsWithDelta(-42.0, $data['totals']['net'], 0.001);
-        $this->assertSame('Vencimiento', $data['by_reason'][0]['name']);
+        $this->assertSame('Caducidad', $data['by_reason'][0]['name']);
         $this->assertSame('Coco', $data['by_product'][0]['name']);
         $this->assertEquals(6.0, $data['by_product'][0]['quantity']);
         $this->assertEqualsWithDelta(0.5, collect($data['by_product'])->firstWhere('name', 'Azúcar')['quantity'], 0.0001);
