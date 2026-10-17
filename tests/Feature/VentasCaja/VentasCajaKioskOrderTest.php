@@ -156,6 +156,43 @@ class VentasCajaKioskOrderTest extends KioskTestCase
         $this->assertEquals(2, $this->reservedStock($coco));
     }
 
+    public function test_resending_a_cancelled_or_expired_order_asks_for_a_new_one(): void
+    {
+        $this->travelTo(now()->setTime(9, 0));
+        $coco = $this->createProduct(['sale_price' => 30], 100);
+        $kiosk = $this->kioskUser();
+        $send = fn(string $key) => $this->kioskOrder($kiosk, [$this->item($coco, 2)], ['client_request_id' => $key]);
+
+        $send('k-expired')->assertCreated();
+        $this->travel(121)->minutes();
+        $this->artisan('kiosk:expire-orders')->assertExitCode(0);
+
+        $cancelled = $send('k-cancelled')->assertCreated()->json('data.id');
+        $this->actingInBranch($this->cashier([], false))
+            ->postJson("/api/auth/admin/pos/kiosk-orders/{$cancelled}/cancel")
+            ->assertOk();
+        $charged = $send('k-charged')->assertCreated()->json('data.id');
+        $this->posSale($this->cashier(), [['product_id' => $coco->id, 'quantity' => 2]], [['method' => 'card', 'amount' => 60]], ['kiosk_order_id' => $charged])
+            ->assertCreated();
+        $pending = $send('k-pending')->assertCreated()->json('data.id');
+
+        // Vencido o cancelado en caja: ya no se responde como recién
+        // registrado (el cliente pasaría a caja con un número que ya no
+        // existe); el kiosko renueva su llave y lo vuelve a enviar.
+        foreach (['k-expired', 'k-cancelled'] as $key) {
+            $send($key)->assertStatus(422)->assertExactJson([
+                'message' => 'Ese pedido ya no está vigente. Revisa tu pedido y vuelve a enviarlo.',
+                'code' => 'kiosk_order_cancelled',
+            ]);
+        }
+        $this->assertSame(4, SalesOrder::count(), 'no se creó otro');
+        $this->assertEquals(2, $this->reservedStock($coco), 'solo el pendiente sigue apartado');
+
+        // Pendiente o ya cobrado: el mismo pedido (200).
+        $send('k-pending')->assertOk()->assertJsonPath('data.id', $pending);
+        $send('k-charged')->assertOk()->assertJsonPath('data.id', $charged);
+    }
+
     public function test_a_simultaneous_duplicate_answers_with_the_order_that_won(): void
     {
         $coco = $this->createProduct(['sale_price' => 30], 10);
@@ -305,7 +342,9 @@ class VentasCajaKioskOrderTest extends KioskTestCase
         $this->kioskOrder($kiosk, [$this->item($coco, 1)], ['client_request_id' => null])
             ->assertStatus(422)->assertJsonValidationErrors('client_request_id');
         $this->kioskOrder($kiosk, [])->assertStatus(422)->assertJsonValidationErrors('items');
-        $this->kioskOrder($kiosk, [$this->item($coco, 100)])->assertStatus(422)->assertJsonValidationErrors('items.0.quantity');
+        $this->kioskOrder($kiosk, [$this->item($coco, 31)])->assertStatus(422)->assertJsonValidationErrors([
+            'items.0.quantity' => 'Puedes pedir hasta 30 de cada producto; si necesitas más, pide en caja.',
+        ]);
         $this->kioskOrder($kiosk, [$this->item($coco, 0)])->assertStatus(422)->assertJsonValidationErrors('items.0.quantity');
         $this->kioskOrder($kiosk, [['product_id' => $coco->id, 'quantity' => 1.5]])->assertStatus(422)->assertJsonValidationErrors('items.0.quantity');
         $this->kioskOrder($kiosk, array_fill(0, 41, $this->item($coco, 1)))->assertStatus(422)->assertJsonValidationErrors('items');
@@ -313,13 +352,35 @@ class VentasCajaKioskOrderTest extends KioskTestCase
             ->assertStatus(422)->assertJsonValidationErrors('customer_name');
         $this->assertSame(0, SalesOrder::count());
 
-        // 40 renglones, 99 de uno y un nombre de 60: sí.
-        $this->kioskOrder($kiosk, array_merge([$this->item($coco, 99)], array_fill(0, 39, $this->item($coco, 1))), ['customer_name' => str_repeat('a', 60)])
+        // 40 renglones, 30 de uno y un nombre de 60: sí.
+        $this->kioskOrder($kiosk, array_merge([$this->item($coco, 30)], array_fill(0, 39, $this->item($coco, 1))), ['customer_name' => str_repeat('a', 60)])
             ->assertCreated()
             ->assertJsonCount(40, 'data.items');
         // Un nombre en blanco no se guarda.
         $this->kioskOrder($kiosk, [$this->item($coco, 1)], ['customer_name' => '   '])
             ->assertCreated()
             ->assertJsonPath('data.customer_name', null);
+    }
+
+    public function test_the_quantity_per_item_comes_from_the_config(): void
+    {
+        // Un solo pedido ya no aparta toda la existencia de un producto.
+        config(['kiosk.max_quantity_per_item' => 5]);
+        $coco = $this->createProduct(['sale_price' => 30], 100);
+        $twelve = $this->package($coco, 12, 300);
+        $kiosk = $this->kioskUser();
+
+        foreach ([$this->item($coco, 6), $this->item($coco, 6, $twelve)] as $line) {
+            $this->kioskOrder($kiosk, [$this->item($coco, 1), $line])
+                ->assertStatus(422)
+                ->assertJsonValidationErrors([
+                    'items.1.quantity' => 'Puedes pedir hasta 5 de cada producto; si necesitas más, pide en caja.',
+                ]);
+        }
+        $this->assertSame(0, SalesOrder::count());
+        $this->assertEquals(0, $this->reservedStock($coco));
+
+        $this->kioskOrder($kiosk, [$this->item($coco, 5), $this->item($coco, 5, $twelve)])->assertCreated();
+        $this->assertEquals(65, $this->reservedStock($coco));
     }
 }

@@ -8,6 +8,8 @@ use App\Models\Sale;
 use App\Models\SalesOrder;
 use App\Models\User;
 use App\Services\KioskOrderService;
+use App\Services\SaleService;
+use Illuminate\Database\DeadlockException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -127,6 +129,7 @@ class VentasCajaKioskPosTest extends KioskTestCase
         $this->assertSame(1, $sale->content['ticket_number']);
         $this->assertSame('Juan', $sale->content['customer_name']);
         $this->assertSame('cash', $sale->content['payment_method']);
+        $this->assertEquals(830, $sale->content['kiosk_order_total'], 'lo que pidió el cliente; la venta llevó un coco más');
 
         // El reintento con la misma llave devuelve la misma venta, igual que la consulta por llave.
         $replay = $this->posSale($cashier, $cart, $cash, ['kiosk_order_id' => $orderId, 'client_request_id' => $key])->assertOk();
@@ -139,21 +142,69 @@ class VentasCajaKioskPosTest extends KioskTestCase
         // con el pedido bloqueado y responde la venta que este dejó ligada.
         $shift = CashRegisterSession::where('user_id', $cashier->id)->sole();
         [$again, $created] = app(KioskOrderService::class)
-            ->chargeAtPos($orderId, $shift, $key, fn() => $this->fail('No debe cobrar otra vez.'));
+            ->chargeAtPos($orderId, $shift, $key, [$water->id], fn() => $this->fail('No debe cobrar otra vez.'));
         $this->assertFalse($created);
         $this->assertSame($sale->id, $again->id);
 
-        // Cobrarlo otra vez (otro cajero, otra llave): 422 y nada se mueve.
+        // Cobrarlo otra vez (otro cajero, otra llave) o cancelarlo: 422 y nada se mueve.
         $this->posSale($this->cashier(), [['product_id' => $water->id, 'quantity' => 2]], [['method' => 'card', 'amount' => 130]], [
             'kiosk_order_id' => $orderId,
             'client_request_id' => (string) Str::uuid(),
         ])
             ->assertStatus(422)
             ->assertJsonPath('code', 'kiosk_order_unavailable')
-            ->assertJsonPath('message', 'Ese pedido ya se cobró o se canceló.');
+            ->assertJsonPath('message', 'Ese pedido ya se cobró o se canceló.')
+            ->assertJsonPath('details', ['reason' => 'charged']);
+        $this->cancelKioskOrder($cashier, $orderId)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'kiosk_order_unavailable')
+            ->assertJsonPath('details', ['reason' => 'charged']);
+        $this->assertSame('delivered', SalesOrder::find($orderId)->status->value);
         $this->assertSame(1, Sale::count());
         $this->assertEquals(16, $this->stockOf($water));
         $this->kioskOrders($cashier)->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public function test_the_order_records_what_the_sale_really_delivered(): void
+    {
+        $water = $this->createProduct(['name' => 'Agua de coco', 'sale_price' => 65], 50, 'Litro');
+        $twelve = $this->package($water, 12, 700);
+        $coco = $this->createProduct(['name' => 'Coco entero', 'sale_price' => 30], 20);
+        // 2 litros, un paquete de 12 y dos renglones de cocos (3 y 2): $980.
+        $orderId = $this->placeKioskOrder([
+            $this->item($water, 2),
+            $this->item($water, 1, $twelve),
+            $this->item($coco, 3),
+            $this->item($coco, 2),
+        ]);
+
+        // En caja: 3 litros (uno más de lo pedido), sin el paquete y 4 cocos.
+        $this->posSale($this->cashier(), [
+            ['product_id' => $water->id, 'quantity' => 3],
+            ['product_id' => $coco->id, 'quantity' => 4],
+        ], [['method' => 'card', 'amount' => 315]], ['kiosk_order_id' => $orderId])
+            ->assertCreated()
+            ->assertJsonPath('data.total', 315);
+
+        // Cada renglón, con lo que llevó la venta hasta lo pedido: los litros
+        // topan en 2, el paquete no se entregó y los cocos llenan el primer
+        // renglón y uno del segundo.
+        $order = SalesOrder::find($orderId);
+        $this->assertSame('delivered', $order->status->value);
+        $this->assertEquals([2, 0, 3, 1], $order->details()->orderBy('id')->get()->map(fn($d) => (float) $d->delivered_quantity)->all());
+        $this->assertEquals([2, 1, 3, 2], $order->details()->orderBy('id')->get()->map(fn($d) => (float) $d->requested_quantity)->all());
+
+        // La venta guarda el total del pedido junto a sus datos.
+        $sale = Sale::sole();
+        $this->assertEquals(315, $sale->total);
+        $this->assertEquals(980, $order->total_amount);
+        $this->assertEquals(980, $sale->content['kiosk_order_total']);
+
+        // Se descontó lo vendido y se liberó todo lo apartado.
+        $this->assertEquals(47, $this->stockOf($water));
+        $this->assertEquals(16, $this->stockOf($coco));
+        $this->assertEquals(0, $this->reservedStock($water));
+        $this->assertEquals(0, $this->reservedStock($coco));
     }
 
     public function test_its_own_reservation_does_not_block_the_charge(): void
@@ -219,10 +270,13 @@ class VentasCajaKioskPosTest extends KioskTestCase
         $charge($orderId)
             ->assertStatus(422)
             ->assertJsonPath('code', 'kiosk_order_unavailable')
-            ->assertJsonPath('message', 'Ese pedido es de otra sucursal.');
+            ->assertJsonPath('message', 'Ese pedido es de otra sucursal.')
+            ->assertJsonPath('details', ['reason' => 'other_location']);
         $this->cancelKioskOrder($cashier, $orderId)
             ->assertStatus(422)
-            ->assertJsonPath('code', 'kiosk_order_unavailable');
+            ->assertJsonPath('code', 'kiosk_order_unavailable')
+            ->assertJsonPath('message', 'Ese pedido es de otra sucursal.')
+            ->assertJsonPath('details', ['reason' => 'other_location']);
 
         $this->assertSame(0, Sale::count());
         $this->assertSame('pending', SalesOrder::find($orderId)->status->value);
@@ -231,8 +285,13 @@ class VentasCajaKioskPosTest extends KioskTestCase
 
         // Un pedido que no es del kiosko, o que no existe, tampoco se cobra así.
         $phoneOrder = $this->makeOrder($coco, 2, 30);
-        $charge($phoneOrder->id)->assertStatus(422)->assertJsonPath('code', 'kiosk_order_unavailable');
-        $charge(999999)->assertStatus(422)->assertJsonPath('code', 'kiosk_order_unavailable');
+        foreach ([$phoneOrder->id, 999999] as $id) {
+            $charge($id)
+                ->assertStatus(422)
+                ->assertJsonPath('code', 'kiosk_order_unavailable')
+                ->assertJsonPath('message', 'Ese pedido del kiosko ya no existe.')
+                ->assertJsonPath('details', ['reason' => 'missing']);
+        }
         $this->cancelKioskOrder($cashier, $phoneOrder->id)->assertNotFound();
         $this->assertSame('pending', $phoneOrder->fresh()->status->value);
         $this->assertSame(0, Sale::count());
@@ -265,14 +324,92 @@ class VentasCajaKioskPosTest extends KioskTestCase
         $this->cancelKioskOrder($cashier, $orderId)
             ->assertStatus(422)
             ->assertJsonPath('code', 'kiosk_order_unavailable')
-            ->assertJsonPath('message', 'Ese pedido ya se cobró o se canceló.');
+            ->assertJsonPath('message', 'Ese pedido ya se cobró o se canceló.')
+            ->assertJsonPath('details', ['reason' => 'cancelled']);
         $this->posSale($this->cashier(), [['product_id' => $coco->id, 'quantity' => 4]], [['method' => 'card', 'amount' => 120]], ['kiosk_order_id' => $orderId])
             ->assertStatus(422)
-            ->assertJsonPath('code', 'kiosk_order_unavailable');
+            ->assertJsonPath('code', 'kiosk_order_unavailable')
+            ->assertJsonPath('message', 'Ese pedido ya se cobró o se canceló.')
+            ->assertJsonPath('details', ['reason' => 'cancelled']);
         $this->assertEquals(0, $this->reservedStock($coco));
         $this->assertSame(0, Sale::count());
 
         $this->cancelKioskOrder($cashier, 999999)->assertNotFound()->assertJsonPath('message', 'Pedido no encontrado');
+    }
+
+    public function test_the_order_and_counter_products_are_locked_at_once_in_product_order(): void
+    {
+        // El cajero agrega en el mostrador un producto de id menor que el del
+        // pedido: antes se bloqueaba después del otro y podía cruzarse con un
+        // alta del kiosko que llevara los dos (deadlock).
+        $coco = $this->createProduct(['name' => 'Coco entero', 'sale_price' => 30], 10);
+        $water = $this->createProduct(['name' => 'Agua de coco', 'sale_price' => 65], 10);
+        $this->assertLessThan($water->id, $coco->id);
+        $orderId = $this->placeKioskOrder([$this->item($water, 2)]);
+        $cashier = $this->cashier();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $this->posSale($cashier, [
+            ['product_id' => $coco->id, 'quantity' => 1],
+            ['product_id' => $water->id, 'quantity' => 2],
+        ], [['method' => 'card', 'amount' => 160]], ['kiosk_order_id' => $orderId])->assertCreated();
+        $stockLocks = collect(DB::getQueryLog())
+            ->filter(fn($query) => str_contains($query['query'], '`product_location`') && str_contains($query['query'], 'for update'))
+            ->values();
+        DB::disableQueryLog();
+
+        // La primera toma las del pedido y las del mostrador juntas, en orden.
+        $this->assertStringContainsString('order by `product_id` asc', $stockLocks->first()['query']);
+        $this->assertSame([$this->location->id, $coco->id, $water->id], $stockLocks->first()['bindings']);
+
+        $this->assertEquals(9, $this->stockOf($coco));
+        $this->assertEquals(8, $this->stockOf($water));
+        $this->assertEquals(0, $this->reservedStock($water));
+        $this->assertSame('delivered', SalesOrder::find($orderId)->status->value);
+    }
+
+    public function test_a_charge_that_keeps_colliding_with_another_operation_is_a_busy_retry(): void
+    {
+        $coco = $this->createProduct(['sale_price' => 30], 10);
+        $orderId = $this->placeKioskOrder([$this->item($coco, 2)]);
+        $cashier = $this->cashier();
+        $cart = [['product_id' => $coco->id, 'quantity' => 2]];
+        $card = [['method' => 'card', 'amount' => 60]];
+
+        // La venta pierde contra otra operación sobre los mismos productos
+        // (deadlock) aun después de reintentar.
+        $sales = new class extends SaleService {
+            public bool $twinWinsFirst = false;
+
+            public function create(array $data, ?CashRegisterSession $session = null): Sale
+            {
+                if ($this->twinWinsFirst) {
+                    // Otra petición con la misma llave alcanzó a cobrar.
+                    (new SaleService())->create($data, $session);
+                }
+
+                throw new DeadlockException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock; try restarting transaction');
+            }
+        };
+        $this->app->instance(SaleService::class, $sales);
+
+        // Se revirtió completa: es un rechazo para volver a cobrar, no un 500.
+        foreach ([[], ['kiosk_order_id' => $orderId]] as $extra) {
+            $this->posSale($cashier, $cart, $card, $extra + ['client_request_id' => (string) Str::uuid()])
+                ->assertStatus(422)
+                ->assertExactJson([
+                    'message' => 'No se pudo cobrar porque otra operación estaba usando los mismos productos. Intenta cobrar de nuevo.',
+                    'code' => 'busy_retry',
+                ]);
+        }
+        $this->assertSame(0, Sale::count());
+
+        // Si la misma llave ya quedó cobrada por la otra petición, esa venta (200).
+        $sales->twinWinsFirst = true;
+        $key = (string) Str::uuid();
+        $response = $this->posSale($cashier, $cart, $card, ['client_request_id' => $key])->assertOk();
+        $this->assertSame(Sale::where('client_request_id', $key)->sole()->id, $response->json('data.id'));
     }
 
     public function test_it_needs_sales_pos(): void

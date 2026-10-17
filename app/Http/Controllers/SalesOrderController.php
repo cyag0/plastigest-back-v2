@@ -331,45 +331,58 @@ class SalesOrderController extends CrudController
         return $validatedData;
     }
 
+    /**
+     * GET sales-orders/initial-data: catálogos de la pantalla de pedidos.
+     *
+     * - Con sales_orders_create (quien arma pedidos): todo, también los
+     *   clientes (RFC, teléfono, correo) y los productos con su costo.
+     * - Solo con sales_orders_list (la lista de Pedidos): canales, modos,
+     *   estados y la sucursal; `customers` y `products` van vacíos.
+     * - Sin ninguno de los dos (p. ej. la cuenta del kiosko): 403. Antes
+     *   cualquier usuario con sesión bajaba los clientes y los costos.
+     */
     public function getInitialData(Request $request)
     {
-        // Lleva clientes (RFC, teléfono, correo) y costos: solo para quien
-        // arma pedidos. Antes cualquier usuario con sesión podía bajarlo.
-        if (!$this->canStore()) {
-            return $this->forbiddenResponse('armar pedidos');
+        $canCreate = $this->canStore();
+        if (!$canCreate && !$this->canIndex()) {
+            return $this->forbiddenResponse('ver los pedidos');
         }
 
         $location = CurrentLocation::get();
         $companyId = CurrentCompany::id();
+        $products = collect();
+        $customers = collect();
 
-        // Productos a la venta y también los que no se venden sueltos pero
-        // tienen paquetes con precio: de esos solo se vende el paquete
-        // (for_sale = false le dice a la app que no ofrezca la pieza). Antes
-        // esos paquetes no aparecían en el kiosco. Solo de la empresa del
-        // contexto (antes no se filtraba por empresa).
-        $products = Product::with([
-            'category',
-            'unit',
-            'mainImage',
-            'activePackages',
-            'locations',
-        ])
-            ->where('company_id', $companyId)
-            ->where(fn($query) => $query->where('for_sale', true)->orWhereHas('activePackages'))
-            ->when($location, function ($query) use ($location) {
-                $query->whereHas('locations', function ($locationQuery) use ($location) {
-                    $locationQuery->where('locations.id', $location->id);
-                });
-            })
-            ->get()
-            ->filter(fn(Product $product) => SalePricing::onlySellablePackages($product))
-            ->values();
+        if ($canCreate) {
+            // Productos a la venta y también los que no se venden sueltos pero
+            // tienen paquetes con precio: de esos solo se vende el paquete
+            // (for_sale = false le dice a la app que no ofrezca la pieza). Antes
+            // esos paquetes no aparecían en el kiosco. Solo de la empresa del
+            // contexto (antes no se filtraba por empresa).
+            $products = Product::with([
+                'category',
+                'unit',
+                'mainImage',
+                'activePackages',
+                'locations',
+            ])
+                ->where('company_id', $companyId)
+                ->where(fn($query) => $query->where('for_sale', true)->orWhereHas('activePackages'))
+                ->when($location, function ($query) use ($location) {
+                    $query->whereHas('locations', function ($locationQuery) use ($location) {
+                        $locationQuery->where('locations.id', $location->id);
+                    });
+                })
+                ->get()
+                ->filter(fn(Product $product) => SalePricing::onlySellablePackages($product))
+                ->values();
 
-        // Clientes de la empresa del contexto (antes salían los de todas).
-        $customers = Customer::where('company_id', $companyId)
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get();
+            // Clientes de la empresa del contexto (antes salían los de todas).
+            $customers = Customer::where('company_id', $companyId)
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get();
+        }
 
         return response()->json([
             'data' => [
@@ -389,8 +402,8 @@ class SalesOrderController extends CrudController
                     ],
                     SalesOrderStatus::cases(),
                 ),
-                'customers' => CustomerResource::collection($customers),
-                'products' => ProductResource::collection($products),
+                'customers' => $canCreate ? CustomerResource::collection($customers) : [],
+                'products' => $canCreate ? ProductResource::collection($products) : [],
                 'location' => $location,
             ],
         ]);

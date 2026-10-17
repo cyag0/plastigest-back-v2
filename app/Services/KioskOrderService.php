@@ -15,6 +15,7 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderDetail;
 use App\Support\ClientRequest;
 use App\Support\DocumentSequence;
+use App\Support\Money;
 use App\Support\SalePricing;
 use Carbon\CarbonInterface;
 use Closure;
@@ -42,10 +43,21 @@ use Illuminate\Support\Facades\Log;
  */
 class KioskOrderService
 {
-    /** code de los 422 cuando el pedido ya no se puede cobrar ni cancelar. */
+    /**
+     * code de los 422 cuando el pedido ya no se puede cobrar ni cancelar. Su
+     * details.reason dice por qué: charged (ya se cobró), cancelled (se
+     * canceló o venció), other_location (es de otra sucursal) o missing (no
+     * existe, o no es un pedido del kiosko).
+     */
     public const UNAVAILABLE = 'kiosk_order_unavailable';
 
     private const CHARGED_OR_CANCELLED = 'Ese pedido ya se cobró o se canceló.';
+
+    /**
+     * Intentos del alta y del cobro si chocan con otra operación (deadlock):
+     * MySQL revierte la transacción completa y se repite desde el principio.
+     */
+    private const ATTEMPTS = 3;
 
     public function __construct(
         private readonly KioskCatalog $catalog,
@@ -60,6 +72,12 @@ class KioskOrderService
         return max(1, (int) config('kiosk.order_ttl_minutes', 120));
     }
 
+    /** Piezas (o paquetes) que puede llevar cada renglón de un pedido. */
+    public static function maxQuantityPerItem(): int
+    {
+        return max(1, (int) config('kiosk.max_quantity_per_item', 30));
+    }
+
     public static function expiresAt(SalesOrder $order): ?CarbonInterface
     {
         return $order->created_at?->copy()->addMinutes(self::ttlMinutes());
@@ -67,7 +85,9 @@ class KioskOrderService
 
     /**
      * POST kiosk/orders. Con la llave (client_request_id) de un pedido del
-     * kiosko que ya existe en la sucursal devuelve ese pedido y no crea otro.
+     * kiosko que ya existe en la sucursal devuelve ese pedido y no crea otro;
+     * si ese pedido ya se canceló (en caja o venció), 422
+     * kiosk_order_cancelled para que el kiosko lo vuelva a enviar con otra.
      *
      * @param array<int, array{product_id: int, package_id?: int|null, quantity: int}> $items
      * @return array{0: SalesOrder, 1: bool} El pedido y si se creó en esta llamada.
@@ -120,7 +140,7 @@ class KioskOrderService
                 $this->stock->reserveOrder($order);
 
                 return $order;
-            });
+            }, self::ATTEMPTS);
         } catch (QueryException $e) {
             // Otro envío con la misma llave se registró primero: este se
             // revirtió completo (pedido, número y apartado) y se responde aquel.
@@ -163,23 +183,28 @@ class KioskOrderService
      *     turno, pendiente y sin venta. Si no, 422 kiosk_order_unavailable.
      *  2. Turno → folio de la venta → existencias: el mismo orden de
      *     bloqueos que cualquier cobro (al revés podían bloquearse con una
-     *     venta del punto de venta que vende lo mismo).
+     *     venta del punto de venta que vende lo mismo). Las existencias del
+     *     pedido y del carrito se bloquean juntas, en orden de producto (ver
+     *     lockStock()).
      *  3. Se libera lo apartado antes de validar el stock de la venta (si no,
      *     su propio apartado la bloquea) y se crea la venta con los renglones
-     *     del cajero, que pueden diferir del pedido.
-     *  4. Se liga: el pedido queda entregado con su venta.
+     *     del cajero, que pueden diferir del pedido. La venta guarda el total
+     *     del pedido (content.kiosk_order_total) junto a sus datos.
+     *  4. Se liga: el pedido queda entregado con su venta y cada renglón con
+     *     lo que de verdad llevó la venta (ver markDelivered()).
      *
      * Si algo falla se revierte todo y el pedido conserva su apartado. Un
      * reintento con la llave del cobro que ya lo ligó devuelve esa venta.
      *
+     * @param int[] $productIds Productos del carrito (los renglones de la venta).
      * @param Closure(array<string, mixed>): Sale $createSale Crea la venta del
      *   punto de venta (SaleService::create) con estos datos extra: sale_number,
      *   customer_name y content.
      * @return array{0: Sale, 1: bool} La venta y si se creó en esta llamada.
      */
-    public function chargeAtPos(int $orderId, CashRegisterSession $session, ?string $requestId, Closure $createSale): array
+    public function chargeAtPos(int $orderId, CashRegisterSession $session, ?string $requestId, array $productIds, Closure $createSale): array
     {
-        return DB::transaction(function () use ($orderId, $session, $requestId, $createSale): array {
+        return DB::transaction(function () use ($orderId, $session, $requestId, $productIds, $createSale): array {
             $order = SalesOrder::query()
                 ->kiosk()
                 ->where('company_id', $session->company_id)
@@ -187,7 +212,7 @@ class KioskOrderService
                 ->find($orderId);
 
             if (!$order) {
-                throw self::unavailable('Ese pedido del kiosko ya no existe.');
+                throw self::unavailable('Ese pedido del kiosko ya no existe.', 'missing');
             }
 
             // Reintento de este mismo cobro: con el pedido bloqueado el segundo
@@ -200,14 +225,19 @@ class KioskOrderService
             }
 
             if ((int) $order->location_id !== (int) $session->location_id) {
-                throw self::unavailable('Ese pedido es de otra sucursal.');
+                throw self::unavailable('Ese pedido es de otra sucursal.', 'other_location');
             }
             if ($order->status !== SalesOrderStatus::PENDING || $order->sale_id) {
-                throw self::unavailable(self::CHARGED_OR_CANCELLED);
+                throw self::unavailable(self::CHARGED_OR_CANCELLED, self::closedReason($order));
             }
 
             $this->sessions->lockOpen((int) $session->id, (int) $session->location_id);
             $saleNumber = Sale::generateSaleNumber((int) $order->company_id);
+
+            $this->lockStock((int) $order->location_id, array_merge(
+                $order->details()->pluck('product_id')->all(),
+                $productIds,
+            ));
 
             $this->stock->releaseOrder($order);
 
@@ -219,6 +249,9 @@ class KioskOrderService
                     'sales_order_id' => $order->id,
                     'sales_order_number' => $order->order_number,
                     'ticket_number' => $order->ticket_number,
+                    // Lo que pidió el cliente; la venta puede diferir (el cajero
+                    // quitó o agregó algo).
+                    'kiosk_order_total' => Money::round($order->total_amount),
                 ],
             ]);
 
@@ -229,12 +262,10 @@ class KioskOrderService
                 'updated_by' => $sale->user_id ?? $order->updated_by,
             ])->save();
 
-            foreach ($order->details as $detail) {
-                $detail->forceFill(['delivered_quantity' => $detail->requested_quantity])->save();
-            }
+            $this->markDelivered($order, $sale);
 
             return [$sale, true];
-        });
+        }, self::ATTEMPTS);
     }
 
     /**
@@ -254,10 +285,10 @@ class KioskOrderService
                 throw (new ModelNotFoundException())->setModel(SalesOrder::class, [$orderId]);
             }
             if ((int) $order->location_id !== $locationId) {
-                throw self::unavailable('Ese pedido es de otra sucursal.');
+                throw self::unavailable('Ese pedido es de otra sucursal.', 'other_location');
             }
             if ($order->status !== SalesOrderStatus::PENDING || $order->sale_id) {
-                throw self::unavailable(self::CHARGED_OR_CANCELLED);
+                throw self::unavailable(self::CHARGED_OR_CANCELLED, self::closedReason($order));
             }
 
             $this->cancelLocked($order, 'pos', $userId);
@@ -480,6 +511,37 @@ class KioskOrderService
     }
 
     /**
+     * Bloquea las existencias de esos productos en la sucursal en UNA
+     * sentencia y en orden de producto, como toda salida de stock.
+     *
+     * El cobro de un pedido las toma por partes: primero las del pedido (al
+     * liberar lo apartado) y luego las de la venta. Si el cajero agregó en el
+     * mostrador un producto de id menor que uno del pedido, lo bloqueaba
+     * después de uno mayor y podía cruzarse con un alta del kiosko, una
+     * cancelación o un vencimiento que llevaran los dos (deadlock: uno de
+     * los dos respondía 500). Con todas tomadas aquí de una vez, liberar y
+     * vender ya no piden filas nuevas.
+     *
+     * @param int[] $productIds
+     */
+    private function lockStock(int $locationId, array $productIds): void
+    {
+        $productIds = array_values(array_unique(array_map('intval', $productIds)));
+        sort($productIds);
+
+        if ($productIds === []) {
+            return;
+        }
+
+        DB::table('product_location')
+            ->where('location_id', $locationId)
+            ->whereIn('product_id', $productIds)
+            ->orderBy('product_id')
+            ->lockForUpdate()
+            ->get(['product_id']);
+    }
+
+    /**
      * Siguiente número corto de la sucursal en el día (1, 2, 3…), serie
      * kiosk_ticket:{sucursal}:{Ymd}. Se revierte con el pedido si este no se
      * registra.
@@ -500,6 +562,11 @@ class KioskOrderService
      * cosa (un pedido que no es del kiosko o de otra sucursal) no se devuelve
      * ni se crea otro: 422 client_request_conflict, con un mensaje sin jerga
      * porque lo lee el cliente.
+     *
+     * Si ese pedido ya se canceló (el cajero lo canceló o venció), 422
+     * kiosk_order_cancelled: antes se respondía como recién registrado y el
+     * kiosko le daba al cliente un número que en caja ya no existía. Con ese
+     * code el kiosko renueva su llave y lo vuelve a enviar.
      */
     protected function orderForRequest(int $companyId, int $locationId, string $requestId): ?SalesOrder
     {
@@ -516,6 +583,13 @@ class KioskOrderService
             || $order->channel !== SalesOrderChannel::KIOSK
             || $order->ticket_number === null) {
             throw new BusinessRuleException('No pudimos registrar tu pedido. Pide ayuda en caja.', 'client_request_conflict');
+        }
+
+        if ($order->status === SalesOrderStatus::CANCELLED) {
+            throw new BusinessRuleException(
+                'Ese pedido ya no está vigente. Revisa tu pedido y vuelve a enviarlo.',
+                'kiosk_order_cancelled',
+            );
         }
 
         return $order->load(self::presentRelations());
@@ -562,8 +636,46 @@ class KioskOrderService
         $this->stock->releaseOrder($order);
     }
 
-    private static function unavailable(string $message): BusinessRuleException
+    /**
+     * Lo que se entregó de cada renglón del pedido: lo que llevó la venta del
+     * mismo producto y paquete, hasta lo pedido. Dos renglones iguales se
+     * llenan en orden; lo que el cajero quitó del carrito queda en 0 y lo que
+     * agregó en el mostrador no cuenta. Antes cada renglón quedaba entregado
+     * completo aunque la venta no lo llevara.
+     *
+     * Las cantidades se comparan tal cual: un renglón suelto va en la unidad
+     * del producto y uno de paquete en paquetes, igual en el pedido y en la
+     * venta del punto de venta.
+     */
+    private function markDelivered(SalesOrder $order, Sale $sale): void
     {
-        return new BusinessRuleException($message, self::UNAVAILABLE);
+        $sold = [];
+        foreach ($sale->details()->get(['product_id', 'package_id', 'quantity']) as $line) {
+            $key = $line->product_id . ':' . (int) $line->package_id;
+            $sold[$key] = ($sold[$key] ?? 0.0) + (float) $line->quantity;
+        }
+
+        foreach ($order->details->sortBy('id') as $detail) {
+            $key = $detail->product_id . ':' . (int) $detail->package_id;
+            $delivered = Money::roundQuantity(max(0.0, min((float) $detail->requested_quantity, $sold[$key] ?? 0.0)));
+            $sold[$key] = ($sold[$key] ?? 0.0) - $delivered;
+
+            $detail->forceFill(['delivered_quantity' => $delivered])->save();
+        }
+    }
+
+    /** Por qué un pedido ya no se cobra ni se cancela: se canceló (o venció) o ya se cobró. */
+    private static function closedReason(SalesOrder $order): string
+    {
+        return $order->status === SalesOrderStatus::CANCELLED ? 'cancelled' : 'charged';
+    }
+
+    /**
+     * 422 kiosk_order_unavailable con details.reason: charged, cancelled,
+     * other_location o missing.
+     */
+    private static function unavailable(string $message, string $reason): BusinessRuleException
+    {
+        return new BusinessRuleException($message, self::UNAVAILABLE, ['reason' => $reason]);
     }
 }

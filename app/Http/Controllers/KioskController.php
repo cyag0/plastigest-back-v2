@@ -47,7 +47,8 @@ class KioskController extends Controller
      * POST kiosk/orders — pedido para pagar en caja, con su mercancía apartada
      * y su número corto. Los precios son los del catálogo (los que mande la
      * app no cuentan). La misma llave (client_request_id) responde 200 con el
-     * mismo pedido; el alta, 201.
+     * mismo pedido (o 422 kiosk_order_cancelled si ya se canceló o venció);
+     * el alta, 201.
      */
     public function storeOrder(Request $request): JsonResponse
     {
@@ -55,19 +56,23 @@ class KioskController extends Controller
             return $denied;
         }
 
+        // Tope por renglón (kiosk.max_quantity_per_item): lo que aparta un
+        // solo pedido. Más que eso se pide en caja.
+        $maxQuantity = KioskOrderService::maxQuantityPerItem();
+
         $validated = $request->validate([
             'client_request_id' => ClientRequest::rules(true),
             'customer_name' => 'nullable|string|max:60',
             'items' => 'required|array|min:1|max:40',
             'items.*.product_id' => 'required|integer',
             'items.*.package_id' => 'nullable|integer',
-            'items.*.quantity' => 'required|integer|min:1|max:99',
+            'items.*.quantity' => "required|integer|min:1|max:{$maxQuantity}",
         ], [
             'items.required' => 'Agrega al menos un producto a tu pedido.',
             'items.min' => 'Agrega al menos un producto a tu pedido.',
             'items.max' => 'Tu pedido puede llevar hasta 40 productos distintos.',
             'items.*.quantity.min' => 'La cantidad mínima es 1.',
-            'items.*.quantity.max' => 'Puedes pedir hasta 99 de cada producto.',
+            'items.*.quantity.max' => "Puedes pedir hasta {$maxQuantity} de cada producto; si necesitas más, pide en caja.",
             'customer_name.max' => 'El nombre puede tener hasta 60 letras.',
         ]);
 
