@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 
@@ -66,8 +67,8 @@ class RolesController extends CrudController
     protected function validateStoreData(Request $request): array
     {
         $validated = $request->validate([
-            'name' => 'required|string',
-            'description' => 'nullable|string',
+            'name' => $this->nameRules(),
+            'description' => 'nullable|string|max:255',
             'is_active' => 'sometimes|boolean',
             'permissions' => $this->permissionsRule(),
         ], $this->permissionsMessages());
@@ -114,7 +115,24 @@ class RolesController extends CrudController
 
     private function permissionsMessages(): array
     {
-        return ['permissions.array' => self::PERMISSIONS_SHAPE_MESSAGE];
+        return [
+            'permissions.array' => self::PERMISSIONS_SHAPE_MESSAGE,
+            'name.unique' => 'Ya existe un rol con ese nombre.',
+            'name.max' => 'El nombre puede tener hasta 100 caracteres.',
+            'description.max' => 'La descripción puede tener hasta 255 caracteres.',
+        ];
+    }
+
+    /**
+     * Nombre del rol: cabe en la columna (100) y no se repite en la empresa.
+     * Antes un nombre repetido o muy largo llegaba a MySQL y respondía 500.
+     */
+    private function nameRules(?Model $ignore = null): array
+    {
+        $unique = Rule::unique('roles', 'name')
+            ->where(fn($query) => $query->where('company_id', CurrentCompany::id()));
+
+        return ['required', 'string', 'max:100', $ignore ? $unique->ignore($ignore->getKey()) : $unique];
     }
 
     /**
@@ -129,8 +147,8 @@ class RolesController extends CrudController
         }
 
         $validated = $request->validate([
-            'name' => 'required|string',
-            'description' => 'nullable|string',
+            'name' => $this->nameRules($model),
+            'description' => 'nullable|string|max:255',
             'is_active' => 'sometimes|boolean',
             'permissions' => $this->permissionsRule(),
         ], $this->permissionsMessages());

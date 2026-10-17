@@ -129,4 +129,25 @@ class RevisionRolePermissionsPayloadTest extends TestCase
             ->assertOk();
         $this->assertSame([], $this->permissionNames($formRole));
     }
+
+    public function test_a_repeated_or_too_long_name_is_a_validation_error(): void
+    {
+        $this->actingInBranch($this->user)->postJson('/api/auth/admin/roles', ['name' => 'Cajero'])->assertCreated();
+
+        // Antes las dos llegaban a MySQL y respondían 500.
+        $this->actingInBranch($this->user)->postJson('/api/auth/admin/roles', ['name' => 'Cajero'])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.name.0', 'Ya existe un rol con ese nombre.');
+        $this->actingInBranch($this->user)->postJson('/api/auth/admin/roles', ['name' => str_repeat('a', 101)])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('name');
+        $this->actingInBranch($this->user)->postJson('/api/auth/admin/roles', ['name' => 'Otro', 'description' => str_repeat('a', 256)])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('description');
+
+        // Guardar el mismo rol sin cambiarle el nombre no choca consigo mismo.
+        $id = DB::table('roles')->where('name', 'Cajero')->value('id');
+        $this->actingInBranch($this->user)->putJson("/api/auth/admin/roles/{$id}", ['name' => 'Cajero', 'description' => 'Cobra en caja'])
+            ->assertOk();
+    }
 }
