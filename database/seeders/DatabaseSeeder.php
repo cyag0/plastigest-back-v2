@@ -50,6 +50,8 @@ class DatabaseSeeder extends Seeder
             SupplierSeeder::class,
             CategoriesSeeder::class,
             ProductsSeeder::class,
+            PackageSeeder::class,
+            FormulasSeeder::class,
         ]);
 
         $this->command->info('✅ Seeders completados exitosamente');

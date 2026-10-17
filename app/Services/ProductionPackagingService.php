@@ -503,8 +503,8 @@ class ProductionPackagingService
     }
 
     /**
-     * Granel de un producto que esta orden produjo y aún no se ha envasado, en
-     * la unidad base del granel. Null si el producto no es salida de la orden.
+     * Granel de un producto que esta orden produjo y aún no se ha envasado ni
+     * tirado, en la unidad base del granel. Null si no es salida de la orden.
      */
     private function remainingSourceBaseQuantity(ProductionOrder $order, int $sourceProductId): ?float
     {
@@ -528,7 +528,15 @@ class ProductionPackagingService
                 (float) $p->source_quantity
             ));
 
-        return max(0.0, round($produced - $packed, 4));
+        // Lo que se tiró de ese granel en la misma orden tampoco se envasa.
+        $wasted = 0.0;
+        foreach ($order->getAttribute('wastes') ?? [] as $waste) {
+            if ((int) ($waste['product_id'] ?? 0) === $sourceProductId) {
+                $wasted += $this->toBaseUnit($sourceProductId, (int) ($waste['unit_id'] ?? 0), (float) ($waste['quantity'] ?? 0));
+            }
+        }
+
+        return max(0.0, round($produced - $packed - $wasted, 4));
     }
 
     private function currentStock(int $locationId, int $productId): float

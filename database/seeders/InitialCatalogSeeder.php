@@ -8,14 +8,15 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Catálogo inicial real de Cocos Francisco para producción: categorías,
- * proveedores, productos (stock en 0 en todas las sucursales) y paquetes.
+ * proveedores, productos (stock en 0 en todas las sucursales, con sus recetas
+ * de envasado), paquetes y los procesos de producción.
  *
  * Se corre UNA vez, después de CompaniesSeeder y de `db:seed`:
  *   php artisan db:seed --class=InitialCatalogSeeder --force
  *
  * Se niega si la empresa ya tiene productos: ProductsSeeder sobrescribe
  * nombres y precios, y no debe pisar lo que ya se cambió desde la app.
- * No incluye fórmulas (FormulasSeeder borra las existentes) ni datos demo.
+ * No incluye datos demo.
  */
 class InitialCatalogSeeder extends Seeder
 {
@@ -65,6 +66,7 @@ class InitialCatalogSeeder extends Seeder
                 SupplierSeeder::class,
                 ProductsSeeder::class,
                 PackageSeeder::class,
+                FormulasSeeder::class,
             ]);
         } finally {
             self::$running = false;
