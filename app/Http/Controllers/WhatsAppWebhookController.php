@@ -6,6 +6,7 @@ use App\Models\PurchaseV2;
 use App\Services\TaskService;
 use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class WhatsAppWebhookController extends Controller
@@ -134,11 +135,17 @@ class WhatsAppWebhookController extends Controller
             'type' => $messageType,
         ]);
 
-        // Buscar compras pendientes del proveedor que envió el mensaje
-        // Compras v2 ordenadas del proveedor. Antes se consultaban las compras
-        // del sistema anterior (tabla movements), que la app ya no crea: el
-        // webhook nunca encontraba nada.
-        $purchases = PurchaseV2::whereHas('supplier', function ($query) use ($from) {
+        // El último pedido que se le hizo al proveedor que escribe (compras
+        // v2; antes se consultaban las del sistema anterior, tabla movements,
+        // que la app ya no crea, y el webhook nunca encontraba nada).
+        //
+        // Es el más reciente que pasó por «pedida», esté como esté ahora, y
+        // abajo solo se marca si sigue pedido. Antes se buscaba solo entre las
+        // pedidas: si el último pedido ya se había recibido directo (sin «en
+        // tránsito») o cancelado, la respuesta tardía caía en otro pedido viejo
+        // del proveedor, que pasaba a «en tránsito» con su tarea de recibirlo.
+        // Las compras registradas ya recibidas no cuentan: nunca se le pidieron.
+        $purchase = PurchaseV2::whereHas('supplier', function ($query) use ($from) {
             $formattedPhone = WhatsAppService::formatPhoneNumber($from);
             // Buscar por los últimos 10 dígitos (número sin código de país)
             $lastDigits = substr($formattedPhone, -10);
@@ -146,11 +153,17 @@ class WhatsAppWebhookController extends Controller
             // "322 123 4567" o "(322) 123-4567" y no coincidía.
             $query->whereRaw("REGEXP_REPLACE(phone, '[^0-9]', '') LIKE ?", ['%' . $lastDigits]);
         })
-            ->where('status', PurchaseV2::STATUS_ORDERED)
+            ->where(function ($query) {
+                $query->whereIn('status', [PurchaseV2::STATUS_ORDERED, PurchaseV2::STATUS_IN_TRANSIT])
+                    ->orWhere(fn($ordered) => $ordered
+                        ->whereIn('status', [PurchaseV2::STATUS_RECEIVED, PurchaseV2::STATUS_CANCELLED])
+                        ->whereJsonContains('metadata', ['to' => PurchaseV2::STATUS_ORDERED]));
+            })
             ->orderBy('created_at', 'desc')
-            ->get();
+            ->orderBy('id', 'desc')
+            ->first();
 
-        if ($purchases->isEmpty()) {
+        if (!$purchase) {
             Log::info('No pending purchases found for WhatsApp message', ['message_id' => $messageId]);
             return;
         }
@@ -179,15 +192,37 @@ class WhatsAppWebhookController extends Controller
             'saliendo'
         ];
 
-        // Solo la compra más reciente. La recepción no se marca por WhatsApp:
-        // recibir en v2 requiere capturar cantidades y mover stock, así que se
-        // crea la tarea "Recibir compra" para hacerlo en la app.
-        $purchase = $purchases->first();
-
+        // Solo esa compra. La recepción no se marca por WhatsApp: recibir en
+        // v2 requiere capturar cantidades y mover stock, así que se crea la
+        // tarea "Recibir compra" para hacerlo en la app.
         foreach ($transitKeywords as $keyword) {
             if (str_contains($messageTextLower, $keyword)) {
-                $purchase->appendStatusLog(PurchaseV2::STATUS_IN_TRANSIT, null);
-                $purchase->update(['status' => PurchaseV2::STATUS_IN_TRANSIT]);
+                // Con la fila bloqueada y el estado releído: solo se marca si
+                // sigue pedida. Una compra pedida ya se puede recibir sin pasar
+                // por tránsito, y si se recibió (o se canceló) antes o entre la
+                // búsqueda de arriba y este cambio, la respuesta del proveedor
+                // la regresaba a «en tránsito» y se podía recibir dos veces
+                // (stock y caja duplicados).
+                $marked = DB::transaction(function () use ($purchase) {
+                    $locked = PurchaseV2::query()->lockForUpdate()->find($purchase->id);
+                    if (!$locked || $locked->status !== PurchaseV2::STATUS_ORDERED) {
+                        return null;
+                    }
+
+                    $locked->appendStatusLog(PurchaseV2::STATUS_IN_TRANSIT, null);
+                    $locked->update(['status' => PurchaseV2::STATUS_IN_TRANSIT]);
+
+                    return $locked;
+                });
+
+                if (!$marked) {
+                    Log::info('WhatsApp: the purchase is no longer ordered, not marked in_transit', [
+                        'purchase_id' => $purchase->id,
+                        'message_id' => $messageId,
+                    ]);
+                    return;
+                }
+                $purchase = $marked;
 
                 Log::info('Purchase marked as in_transit via WhatsApp', [
                     'purchase_id' => $purchase->id,
@@ -203,7 +238,7 @@ class WhatsAppWebhookController extends Controller
         // Si no se detectó ninguna palabra clave, solo registrar
         Log::info('WhatsApp message received but no action taken', [
             'message_id' => $messageId,
-            'purchases_count' => $purchases->count()
+            'purchase_id' => $purchase->id,
         ]);
     }
 

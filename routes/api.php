@@ -214,6 +214,9 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('stats', [PurchaseV2Controller::class, 'stats']);
                 Route::post('upsert-draft', [PurchaseV2Controller::class, 'upsertDraft']);
                 Route::get('draft', [PurchaseV2Controller::class, 'getDraft']);
+                // Antes que {id} y que el apiResource de abajo: show la tomaría
+                // como el id de una compra.
+                Route::get('last-prices', [PurchaseV2Controller::class, 'lastPrices']);
                 Route::post('add-detail', [PurchaseV2Controller::class, 'addDetail']);
                 Route::post('details/{detailId}/update', [PurchaseV2Controller::class, 'updateDetail']);
                 Route::delete('details/{detailId}', [PurchaseV2Controller::class, 'removeDetail']);
