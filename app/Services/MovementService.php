@@ -22,6 +22,21 @@ class MovementService
     }
 
     /**
+     * Existencia de un producto en una sucursal, con su fila bloqueada hasta
+     * el fin de la transacción (si no tiene fila, la crea en 0). Llamar dentro
+     * de una transacción.
+     *
+     * Para quien decide cuánto mover según la existencia (un ajuste por
+     * conteo: "hay 12" con 15 en sistema es una salida de 3): entre leerla y
+     * moverla no se cuela otro movimiento, y el renglón del ajuste guarda la
+     * existencia exacta de antes.
+     */
+    public function lockStock(int $locationId, int $productId): float
+    {
+        return $this->lockOrCreateStockRow($locationId, $productId);
+    }
+
+    /**
      * Incrementar stock en una ubicación
      *
      * @param int $locationId ID de la ubicación

@@ -28,7 +28,7 @@ class AdjustmentScopeTest extends TestCase
         Storage::fake('public');
     }
 
-    /** Merma de $qty piezas registrada por el administrador en $location. */
+    /** Merma (o entrada «Encontrado») de $qty piezas registrada por el administrador en $location. */
     private function adjustmentAt(Location $location, Product $product, float $qty, string $direction = 'out'): InventoryAdjustmentDetail
     {
         $id = $this->actingInBranch($this->user, $location)
@@ -38,7 +38,8 @@ class AdjustmentScopeTest extends TestCase
                     'direction' => $direction,
                     'quantity' => $qty,
                     'unit_id' => $product->unit_id,
-                    'reason_code' => 'damage',
+                    // «Daño» solo resta.
+                    'reason_code' => $direction === 'in' ? 'found' : 'damage',
                 ]],
             ])->assertCreated()->json('data.0.id');
 

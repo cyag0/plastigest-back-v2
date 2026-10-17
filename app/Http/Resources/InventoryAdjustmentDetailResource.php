@@ -2,6 +2,10 @@
 
 namespace App\Http\Resources;
 
+use App\Support\AdjustmentOrigins;
+use App\Support\CurrentCompany;
+use App\Support\CurrentLocation;
+use App\Support\CurrentWorker;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -75,9 +79,31 @@ class InventoryAdjustmentDetailResource extends JsonResource
             'evidence_files' => $evidenceFiles,
             'applied_at' => $this->applied_at?->toISOString(),
 
+            // De dónde salió (manual, orden de producción, conteo o
+            // transferencia) y si ya se deshizo. El listado los carga en lote
+            // (AdjustmentOrigins::load) antes de armar los renglones.
+            'origin' => AdjustmentOrigins::origin($this->resource),
+            'reverted_at' => $this->resource->isReverted() ? (string) $this->resource->contentArray()['reverted_at'] : null,
+            'reverted_by_user' => AdjustmentOrigins::revertedBy($this->resource),
+            'can_undo' => $this->canUndo(),
+
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];
+    }
+
+    /**
+     * Si quien pide puede deshacerlo: las mismas reglas que
+     * InventoryAdjustmentController::undo() (permiso, empresa y sucursal,
+     * manual, sin deshacer y del día). No mira la existencia: si una entrada
+     * ya se usó, el 422 de undo() dice cuánto queda.
+     */
+    private function canUndo(): bool
+    {
+        return $this->resource->isUndoable()
+            && (int) $this->company_id === (int) CurrentCompany::id()
+            && CurrentWorker::hasPermission('inventory_manage')
+            && (CurrentWorker::canAccessAllLocations() || (int) $this->location_id === (int) CurrentLocation::id());
     }
 
     /**

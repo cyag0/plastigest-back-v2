@@ -321,6 +321,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Adjustment Management Routes (Ajustes de inventario: mermas, extravíos, etc.)
             Route::apiResource('inventory-adjustments', InventoryAdjustmentController::class);
+            // Deshacer un ajuste del día registrado por error (no lo borra).
+            Route::post('inventory-adjustments/{id}/undo', [InventoryAdjustmentController::class, 'undo'])->whereNumber('id');
 
             // Existencia puntual (la usa la tabla editable de la app)
             Route::get('inventory/stock/current', [InventoryController::class, 'getCurrentStock']);

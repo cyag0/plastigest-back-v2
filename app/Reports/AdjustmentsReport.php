@@ -15,6 +15,11 @@ use Illuminate\Support\Facades\DB;
  * conteos físicos. Las salidas son pérdidas; las entradas (producto
  * encontrado, conteo que sobró) se muestran aparte y se restan en el neto.
  *
+ * No cuenta lo que se revirtió (content.reverted_at): los ajustes que se
+ * deshicieron el mismo día y las mermas de una orden de producción que se
+ * canceló. Su existencia regresó, así que no son pérdida (antes las mermas
+ * revertidas seguían sumando).
+ *
  * El costo es el de la última compra hasta el fin del periodo (ver
  * ProductCosts), llevado a la unidad en que se capturó el ajuste.
  */
@@ -61,6 +66,7 @@ final class AdjustmentsReport implements BusinessReport
             ->leftJoin('units AS product_units', 'product_units.id', '=', 'products.unit_id')
             ->where('inventory_adjustment_details.company_id', $this->scope->companyId())
             ->when($this->scope->locationId(), fn($q, $id) => $q->where('inventory_adjustment_details.location_id', $id))
+            ->whereNull('inventory_adjustment_details.content->reverted_at')
             ->whereRaw('COALESCE(inventory_adjustment_details.applied_at, inventory_adjustment_details.created_at) BETWEEN ? AND ?', [
                 $this->period->fromDateTime(), $this->period->toDateTime(),
             ])

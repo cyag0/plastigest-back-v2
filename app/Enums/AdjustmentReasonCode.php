@@ -31,6 +31,22 @@ enum AdjustmentReasonCode: string
     }
 
     /**
+     * Hacia dónde mueve siempre la existencia este motivo: 'out' (lo que se
+     * perdió, dañó, venció o robaron), 'in' (lo que apareció) o null si puede
+     * ser cualquiera (diferencia de conteo, otro). El alta de ajustes lo valida
+     * aunque la app ya no deje elegir mal: un «Encontrado» que restaba
+     * contaba como pérdida en el reporte de mermas.
+     */
+    public function direction(): ?string
+    {
+        return match ($this) {
+            self::LOSS, self::DAMAGE, self::EXPIRY, self::THEFT, self::PRODUCTION_WASTE => 'out',
+            self::FOUND => 'in',
+            self::COUNT_DIFF, self::OTHER => null,
+        };
+    }
+
+    /**
      * Obtener el icono para la razón
      */
     public function icon(): string
