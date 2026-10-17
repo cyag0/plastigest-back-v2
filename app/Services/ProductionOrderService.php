@@ -7,13 +7,13 @@ use App\Enums\ProductionOrderStatus;
 use App\Enums\StockLedgerReason;
 use App\Exceptions\BusinessRuleException;
 use App\Models\InventoryAdjustmentDetail;
+use App\Models\InventoryType;
 use App\Models\Operations\Formula;
+use App\Models\Operations\FormulaOutput;
 use App\Models\Operations\ProductionOrder;
 use App\Models\Operations\ProductionOrderConsumption;
 use App\Models\Operations\ProductionOrderOutput;
-use App\Models\Product;
 use App\Support\StockContext;
-use App\Models\Unit;
 use App\Models\User;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -23,11 +23,13 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Servicio central para gestión de Órdenes de Producción.
+ * Servicio central de producción.
  *
- * Concentra toda la lógica transaccional: creación de borradores, edición,
- * completación (que impacta stock y kardex), cancelación (que revierte
- * movimientos) y reportería de KPIs en tiempo real.
+ * Una orden es una producción (`process`: cocos → agua y pulpa, y en el mismo
+ * registro su envasado) o un envasado posterior (`packaging`: el agua que
+ * quedó en la mañana se embotella en la tarde). Concentra la lógica
+ * transaccional: borradores ("Pendiente"), registro (que mueve stock y kárdex),
+ * cancelación (que lo revierte) y el rendimiento de cada producción.
  */
 class ProductionOrderService
 {
@@ -58,22 +60,32 @@ class ProductionOrderService
             $user = Auth::user();
             $userId = $user?->id ?? $data['responsible_user_id'] ?? null;
 
+            $kind = ($data['kind'] ?? null) === ProductionOrder::KIND_PACKAGING
+                ? ProductionOrder::KIND_PACKAGING
+                : ProductionOrder::KIND_PROCESS;
+            $isPackaging = $kind === ProductionOrder::KIND_PACKAGING;
+
             $order = ProductionOrder::create([
                 'company_id' => $company?->id,
                 'location_id' => $data['location_id'] ?? $location?->id,
-                'formula_id' => $data['formula_id'] ?? null,
+                // Un envasado no corre un proceso: no lleva fórmula.
+                'formula_id' => $isPackaging ? null : ($data['formula_id'] ?? null),
+                'kind' => $kind,
                 'folio' => ProductionOrder::nextFolio($company?->id),
                 'production_date' => $data['production_date'] ?? Carbon::today()->toDateString(),
                 'responsible_user_id' => $data['responsible_user_id'] ?? $userId,
                 'status' => ProductionOrderStatus::DRAFT,
                 'notes' => $data['notes'] ?? null,
                 'wastes' => $this->normalizeWastes($data['wastes'] ?? []),
+                'planned_packagings' => $this->packagingService->normalize($data['packagings'] ?? []) ?: null,
                 'created_by' => $user?->id,
                 'updated_by' => $user?->id,
             ]);
 
-            $this->syncConsumptions($order, $data['consumptions'] ?? []);
-            $this->syncOutputs($order, $data['outputs'] ?? []);
+            // Un envasado sólo tiene empaques: el granel y el material salen de
+            // la receta de cada presentación.
+            $this->syncConsumptions($order, $isPackaging ? [] : ($data['consumptions'] ?? []));
+            $this->syncOutputs($order, $isPackaging ? [] : ($data['outputs'] ?? []));
 
             $this->recalculateTotals($order);
 
@@ -96,20 +108,27 @@ class ProductionOrderService
                 throw new BusinessRuleException('Solo se pueden editar órdenes en borrador.', 'invalid_status');
             }
 
+            $isPackaging = $order->isPackaging();
+
             $order->fill([
-                'formula_id' => array_key_exists('formula_id', $data) ? $data['formula_id'] : $order->formula_id,
+                'formula_id' => $isPackaging
+                    ? null
+                    : (array_key_exists('formula_id', $data) ? $data['formula_id'] : $order->formula_id),
                 'production_date' => $data['production_date'] ?? $order->production_date->toDateString(),
                 'responsible_user_id' => $data['responsible_user_id'] ?? $order->responsible_user_id,
                 'notes' => array_key_exists('notes', $data) ? $data['notes'] : $order->notes,
-                'wastes' => array_key_exists('wastes', $data) ? $this->normalizeWastes($data['wastes']) : $order->wastes,
+                'wastes' => array_key_exists('wastes', $data) ? $this->normalizeWastes($data['wastes'] ?? []) : $order->wastes,
+                'planned_packagings' => array_key_exists('packagings', $data)
+                    ? ($this->packagingService->normalize($data['packagings'] ?? []) ?: null)
+                    : $order->planned_packagings,
                 'updated_by' => Auth::id(),
             ])->save();
 
-            if (array_key_exists('consumptions', $data)) {
-                $this->syncConsumptions($order, $data['consumptions']);
+            if (!$isPackaging && array_key_exists('consumptions', $data)) {
+                $this->syncConsumptions($order, $data['consumptions'] ?? []);
             }
-            if (array_key_exists('outputs', $data)) {
-                $this->syncOutputs($order, $data['outputs']);
+            if (!$isPackaging && array_key_exists('outputs', $data)) {
+                $this->syncOutputs($order, $data['outputs'] ?? []);
             }
 
             $this->recalculateTotals($order);
@@ -119,8 +138,9 @@ class ProductionOrderService
     }
 
     /**
-     * Completa la orden: descuenta consumos, suma productos, registra mermas
-     * y marca la orden como COMPLETED. Todo en una sola transacción.
+     * Registra la orden: descuenta consumos, suma productos, registra mermas,
+     * aplica el envasado y la marca como COMPLETED. Todo en una sola
+     * transacción: si algo no alcanza no se mueve nada.
      */
     public function complete(ProductionOrder $order): ProductionOrder
     {
@@ -131,6 +151,7 @@ class ProductionOrderService
             // veces. Ahora el segundo espera aquí y ve la orden ya completada.
             $order = $this->lockOrder($order);
             $order->assertCanTransitionTo(ProductionOrderStatus::COMPLETED);
+            $this->assertHasSomethingToRegister($order);
 
             $locationId = (int) $order->location_id;
 
@@ -159,27 +180,33 @@ class ProductionOrderService
             }
 
             // 3. Registrar mermas como ajustes de inventario
-            $wastes = $order->wastes ?? [];
+            $wastes = $order->getAttribute('wastes') ?? [];
             foreach ($wastes as $waste) {
                 $this->registerWaste($order, $waste);
             }
 
-            // 4. Recalcular totales y transición de estado
+            // 4. Envasar: granel + material → producto terminado. En una
+            // producción, con el granel que acaba de salir; en un envasado,
+            // con el del inventario.
+            $this->packagingService->apply($order, $order->planned_packagings ?? []);
+
+            // 5. Recalcular totales y transición de estado
             $this->recalculateTotals($order);
+            $order->planned_packagings = null;
             $order->status = ProductionOrderStatus::COMPLETED;
             $order->completed_at = now();
             $order->updated_by = Auth::id();
             $order->save();
 
-            return $order->fresh(['consumptions.product', 'outputs.product', 'wastes']);
+            return $order->fresh(['consumptions.product', 'outputs.product', 'wastes', 'packagings']);
         });
     }
 
     /**
-     * Cancela la producción y revierte el impacto en stock.
-     * Si está en DRAFT, simplemente la marca cancelada.
-     * Si ya afectó inventario (completada, en empaque o empacada), deshace
-     * primero el empaque y después los movimientos de producción y las mermas.
+     * Cancela la orden y revierte el impacto en stock.
+     * Si está pendiente (borrador), simplemente la marca cancelada.
+     * Si ya afectó inventario, deshace primero el envasado, después las mermas
+     * y al final lo producido y lo consumido.
      */
     public function cancel(ProductionOrder $order): ProductionOrder
     {
@@ -197,35 +224,14 @@ class ProductionOrderService
                 // de revertir los outputs para que el granel exista al restarlo.
                 $this->packagingService->revertAll($order);
 
-                // Revertir outputs (decrementar)
-                foreach ($order->outputs()->get() as $output) {
-                    $this->movementService->decrement(
-                        $locationId,
-                        (int) $output->product_id,
-                        (int) $output->unit_id,
-                        (float) $output->quantity,
-                        null,
-                        StockContext::for(StockLedgerReason::PRODUCTION_OUTPUT, $order, 'Cancelación de la orden')
-                    );
-                }
-
-                // Revertir consumptions (incrementar - devolver al stock)
-                foreach ($order->consumptions()->get() as $consumption) {
-                    $this->movementService->increment(
-                        $locationId,
-                        (int) $consumption->product_id,
-                        (int) $consumption->unit_id,
-                        (float) $consumption->quantity,
-                        null,
-                        StockContext::for(StockLedgerReason::PRODUCTION_CONSUMPTION, $order, 'Cancelación de la orden')
-                    );
-                }
-
                 // Mermas (inventory_adjustment_details): se devuelve su salida y
                 // quedan marcadas como revertidas (content.reverted_at). Una merma
                 // ya revertida no se vuelve a revertir, y los ajustes generados
                 // por producción no se editan ni eliminan desde Ajustes (antes,
                 // eliminarla ahí después de cancelar la revertía otra vez).
+                // Van antes que los productos: el sobrante de granel que se tiró
+                // tiene que volver antes de retirar lo producido, si no faltaría
+                // granel para retirarlo.
                 foreach ($order->wastes()->lockForUpdate()->get() as $waste) {
                     if (!empty($waste->content['reverted_at'])) {
                         continue;
@@ -249,6 +255,30 @@ class ProductionOrderService
                             'reverted_reason' => 'production_order_cancelled',
                         ]),
                     ]);
+                }
+
+                // Revertir outputs (decrementar)
+                foreach ($order->outputs()->get() as $output) {
+                    $this->movementService->decrement(
+                        $locationId,
+                        (int) $output->product_id,
+                        (int) $output->unit_id,
+                        (float) $output->quantity,
+                        null,
+                        StockContext::for(StockLedgerReason::PRODUCTION_OUTPUT, $order, 'Cancelación de la orden')
+                    );
+                }
+
+                // Revertir consumptions (incrementar - devolver al stock)
+                foreach ($order->consumptions()->get() as $consumption) {
+                    $this->movementService->increment(
+                        $locationId,
+                        (int) $consumption->product_id,
+                        (int) $consumption->unit_id,
+                        (float) $consumption->quantity,
+                        null,
+                        StockContext::for(StockLedgerReason::PRODUCTION_CONSUMPTION, $order, 'Cancelación de la orden')
+                    );
                 }
             }
 
@@ -435,32 +465,137 @@ class ProductionOrderService
     }
 
     /**
-     * Devuelve catálogos para la pantalla de captura.
+     * Rendimiento de una producción: cuánto salió de cada producto por unidad
+     * del insumo principal (litros de agua por coco, kilos de pulpa por coco),
+     * comparado con lo que espera el proceso.
+     *
+     * El insumo principal es el primer ingrediente del proceso que se haya
+     * usado; sin proceso, el primer consumo. Todo se compara en la unidad base
+     * de cada producto, así que da igual si se capturó en litros o mililitros.
+     * Un envasado no tiene rendimiento.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function yields(ProductionOrder $order): array
+    {
+        if ($order->isPackaging()) {
+            return [];
+        }
+
+        $order->loadMissing(['consumptions.product.unit', 'outputs.product.unit', 'formula.items', 'formula.outputs']);
+        if ($order->consumptions->isEmpty() || $order->outputs->isEmpty()) {
+            return [];
+        }
+
+        $reference = null;
+        $referenceItem = null;
+        foreach ($order->formula?->items ?? [] as $item) {
+            $reference = $order->consumptions->firstWhere('product_id', $item->product_id);
+            if ($reference) {
+                $referenceItem = $item;
+                break;
+            }
+        }
+        $reference ??= $order->consumptions->first();
+
+        $referenceBase = $this->toBase((int) $reference->product_id, (int) $reference->unit_id, (float) $reference->quantity);
+        if ($referenceBase <= 0) {
+            return [];
+        }
+        $referenceItemBase = $referenceItem
+            ? $this->toBase((int) $referenceItem->product_id, (int) $referenceItem->unit_id, (float) $referenceItem->expected_quantity)
+            : 0.0;
+
+        return $order->outputs->map(function (ProductionOrderOutput $output) use ($order, $reference, $referenceBase, $referenceItemBase) {
+            $outputBase = $this->toBase((int) $output->product_id, (int) $output->unit_id, (float) $output->quantity);
+            $perInput = $outputBase / $referenceBase;
+
+            $expectedPerInput = null;
+            $formulaOutput = $order->formula?->outputs->firstWhere('product_id', $output->product_id);
+            if ($formulaOutput && $referenceItemBase > 0 && (float) $formulaOutput->expected_quantity > 0) {
+                $expectedPerInput = $this->toBase(
+                    (int) $formulaOutput->product_id,
+                    (int) $formulaOutput->unit_id,
+                    (float) $formulaOutput->expected_quantity
+                ) / $referenceItemBase;
+            }
+
+            return [
+                'product_id' => (int) $output->product_id,
+                'product_name' => $output->product?->name,
+                'quantity' => round($outputBase, 4),
+                'unit_abbreviation' => $output->product?->unit?->abbreviation,
+                'input_product_id' => (int) $reference->product_id,
+                'input_product_name' => $reference->product?->name,
+                'input_quantity' => round($referenceBase, 4),
+                'input_unit_abbreviation' => $reference->product?->unit?->abbreviation,
+                'per_input' => round($perInput, 4),
+                'expected_per_input' => $expectedPerInput !== null ? round($expectedPerInput, 4) : null,
+                'variance_pct' => $expectedPerInput ? round((($perInput - $expectedPerInput) / $expectedPerInput) * 100, 1) : null,
+            ];
+        })->values()->all();
+    }
+
+    /**
+     * Catálogos de la pantalla de registro: los procesos activos con sus
+     * insumos y resultados (y la existencia de la sucursal), los graneles que
+     * se envasan con sus presentaciones, los responsables y los motivos de
+     * merma.
      */
     public function getInitialData(?int $locationId): array
     {
         $companyId = CurrentCompany::get()?->id;
 
-        $products = Product::query()
-            ->when($companyId, fn($q) => $q->where('company_id', $companyId))
-            ->with('unit')
-            ->orderBy('name')
-            ->get(['id', 'name', 'code', 'inventory_type_id', 'unit_id']);
-
         $formulas = Formula::query()
             ->when($companyId, fn($q) => $q->where('company_id', $companyId))
             ->where('is_active', true)
-            ->with(['outputs.product:id,name,code,unit_id', 'outputs.unit:id,name,abbreviation'])
+            ->with([
+                'items.product.unit', 'items.product.inventoryType', 'items.unit',
+                'outputs.product.unit', 'outputs.product.inventoryType', 'outputs.unit',
+            ])
             ->orderBy('name')
-            ->get(['id', 'name', 'version']);
+            ->get();
 
-        // Unidades globales y las de la empresa (no las de otras empresas).
-        $units = Unit::query()
-            ->where(fn($q) => $q->whereNull('company_id')->when($companyId, fn($w) => $w->orWhere('company_id', $companyId)))
-            ->orderBy('name')
-            ->get(['id', 'name', 'unit_type', 'factor_to_base']);
+        $bulks = $this->packagingService->bulkCatalog($companyId, $locationId);
+        $bulkIds = array_column($bulks, 'product_id');
 
-        $responsibles = $this->responsibles($companyId, $locationId);
+        $productIds = $formulas
+            ->flatMap(fn(Formula $f) => $f->items->pluck('product_id')->merge($f->outputs->pluck('product_id')))
+            ->unique()
+            ->all();
+        $stock = $locationId && $productIds
+            ? DB::table('product_location')
+                ->where('location_id', $locationId)
+                ->whereIn('product_id', $productIds)
+                ->pluck('current_stock', 'product_id')
+                ->map(fn($value) => (float) $value)
+                ->all()
+            : [];
+
+        $line = fn($row) => [
+            'product_id' => (int) $row->product_id,
+            'product_name' => $row->product?->name,
+            'product_code' => $row->product?->code,
+            'unit_id' => (int) $row->unit_id,
+            'unit_abbreviation' => $row->unit?->abbreviation,
+            'unit_type' => $row->unit?->unit_type,
+            'expected_quantity' => (float) $row->expected_quantity,
+            'stock' => $stock[$row->product_id] ?? 0.0,
+            'stock_unit_abbreviation' => $row->product?->unit?->abbreviation,
+            'inventory_type_code' => $row->product?->inventoryType?->code,
+        ];
+
+        $processes = $formulas->map(fn(Formula $formula) => [
+            'id' => (int) $formula->id,
+            'name' => $formula->name,
+            'description' => $formula->description,
+            'items' => $formula->items->map($line)->values()->all(),
+            'outputs' => $formula->outputs->map(fn(FormulaOutput $output) => $line($output) + [
+                'is_primary' => (bool) $output->is_primary,
+                'is_bulk' => $output->product?->inventoryType?->code === InventoryType::SEMI_FINISHED,
+                'has_presentations' => in_array((int) $output->product_id, $bulkIds, true),
+            ])->values()->all(),
+        ])->values()->all();
 
         $wasteReasons = array_map(
             fn($value, $label) => ['value' => $value, 'label' => $label],
@@ -469,12 +604,11 @@ class ProductionOrderService
         );
 
         return [
-            'statuses' => ProductionOrderStatus::options(),
+            'processes' => $processes,
+            'bulks' => $bulks,
+            'responsibles' => $this->responsibles($companyId, $locationId),
             'waste_reasons' => $wasteReasons,
-            'products' => $products,
-            'formulas' => $formulas,
-            'units' => $units,
-            'responsibles' => $responsibles,
+            'statuses' => ProductionOrderStatus::options(),
         ];
     }
 
@@ -571,21 +705,86 @@ class ProductionOrderService
         }
     }
 
+    /**
+     * Totales de la orden. Sólo se suman cantidades de la misma clase (todo
+     * en kilos, todo en litros): sumar cocos con litros daba "merma" de
+     * −566 %. Con insumos y resultados de clases distintas no hay total ni
+     * porcentaje de merma; para eso está el rendimiento (yields()).
+     */
     private function recalculateTotals(ProductionOrder $order): void
     {
-        $order->load(['consumptions', 'outputs']);
-        $totalConsumed = (float) $order->consumptions->sum('quantity');
-        $totalProduced = (float) $order->outputs->sum('quantity');
+        $order->load(['consumptions.product.unit', 'outputs.product.unit']);
 
-        $wastePct = 0.0;
-        if ($totalConsumed > 0) {
-            $wastePct = (($totalConsumed - $totalProduced) / $totalConsumed) * 100;
+        [$consumed, $consumedType] = $this->sumInBaseUnits($order->consumptions);
+        [$produced, $producedType] = $this->sumInBaseUnits($order->outputs);
+
+        $order->total_consumed_quantity = $consumedType !== null ? round($consumed, 3) : null;
+        $order->total_produced_quantity = $producedType !== null ? round($produced, 3) : null;
+
+        $comparable = $consumedType !== null && $consumedType === $producedType && $consumed > 0;
+        $order->waste_percentage = $comparable
+            ? round(max(-999.99, min(999.99, (($consumed - $produced) / $consumed) * 100)), 2)
+            : null;
+        $order->save();
+    }
+
+    /**
+     * Suma de renglones en la unidad base de cada producto y la clase de
+     * unidad común (mass, volume, quantity), o null si se mezclan clases.
+     *
+     * @return array{0: float, 1: ?string}
+     */
+    private function sumInBaseUnits($rows): array
+    {
+        if ($rows->isEmpty()) {
+            return [0.0, null];
         }
 
-        $order->total_consumed_quantity = $totalConsumed;
-        $order->total_produced_quantity = $totalProduced;
-        $order->waste_percentage = round($wastePct, 2);
-        $order->save();
+        $sum = 0.0;
+        $type = null;
+        foreach ($rows as $row) {
+            $rowType = $row->product?->unit?->unit_type;
+            if ($rowType === null || ($type !== null && $rowType !== $type)) {
+                return [0.0, null];
+            }
+            $type = $rowType;
+            $sum += $this->toBase((int) $row->product_id, (int) $row->unit_id, (float) $row->quantity);
+        }
+
+        return [$sum, $type];
+    }
+
+    /**
+     * Una orden sin nada que mover no se registra: una producción necesita al
+     * menos un insumo o un resultado, y un envasado al menos una presentación.
+     */
+    private function assertHasSomethingToRegister(ProductionOrder $order): void
+    {
+        if ($order->isPackaging()) {
+            if (!$this->packagingService->normalize($order->planned_packagings ?? [])) {
+                throw new BusinessRuleException('Indica cuánto se envasó de al menos una presentación.', 'nothing_to_pack');
+            }
+
+            return;
+        }
+
+        if (!$order->consumptions()->exists() && !$order->outputs()->exists()) {
+            throw new BusinessRuleException('Indica qué se usó y qué salió antes de registrar la producción.', 'nothing_to_register');
+        }
+    }
+
+    /** Cantidad en la unidad base del producto; con una unidad incompatible, tal cual. */
+    private function toBase(int $productId, int $unitId, float $quantity): float
+    {
+        if ($quantity <= 0 || !$productId || !$unitId) {
+            return 0.0;
+        }
+
+        try {
+            return $this->movementService->quantityInProductUnit($productId, $unitId, $quantity);
+        } catch (\Throwable) {
+            return $quantity;
+        }
     }
 
     private function registerWaste(ProductionOrder $order, array $waste): void

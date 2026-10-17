@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Enums\ProductionOrderStatus;
 use App\Enums\StockLedgerReason;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Operations\ProductionOrder;
@@ -10,298 +9,150 @@ use App\Models\Operations\ProductionOrderPackaging;
 use App\Models\Operations\ProductionOrderPackagingMaterial;
 use App\Models\Product;
 use App\Support\StockContext;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Paso de empaque de una orden de producción.
+ * Envasado: granel + material de empaque → producto terminado.
  *
- * El empaque es posterior a la producción a propósito: la fórmula entrega
- * granel ("Dulce de coco granel") y hasta que la orden no se completa ese
- * granel no existe en inventario. Sólo entonces se puede empacar, consumiendo
- * granel + material (frasco, tapa, etiqueta) para generar producto terminado.
+ * La receta vive en la presentación (el producto terminado): de qué granel
+ * sale, cuánto granel lleva cada unidad (`packaging_source_*`) y qué material
+ * consume (`product_packaging_materials`: botella, tapa). Al envasar se copia
+ * a la orden con las cantidades reales, para que el histórico no cambie si
+ * después se edita el producto.
  *
- * La receta de empaque vive en el producto terminado
- * (`packaging_source_product_id`, `packaging_source_quantity` y
- * `product_packaging_materials`); aquí se copia a la orden con las cantidades
- * reales, para que el histórico no cambie si después se edita el producto.
+ * Se envasa en dos momentos:
+ *  - Al registrar una producción, con el granel que esa misma orden produjo
+ *    (cocos → 120 L de agua → 51 botellas de 1 L…). Sólo se puede envasar lo
+ *    que la orden produjo.
+ *  - Después, en una orden de envasado (kind = packaging), con el granel que
+ *    está en inventario: el agua que quedó en la mañana se embotella en la
+ *    tarde.
+ *
+ * Todo corre dentro de la transacción de ProductionOrderService::complete();
+ * la cancelación de la orden lo revierte con revertAll().
  */
 class ProductionPackagingService
 {
     public function __construct(private readonly MovementService $movementService) {}
 
     /**
-     * Plan de empaque de la orden: qué se puede empacar de cada salida, cuánto
-     * granel queda disponible y qué material haría falta.
+     * Líneas de envasado tal como se guardan en el borrador: producto
+     * terminado, cantidad mayor que cero y, si viene, la unidad.
+     *
+     * @return array<int, array{product_id:int, quantity:float, unit_id:?int}>
      */
-    public function getPlan(ProductionOrder $order): array
+    public function normalize(array $lines): array
     {
-        $status = $this->status($order);
-        $order->loadMissing(['outputs.product', 'outputs.unit', 'packagings.materials']);
+        $rows = [];
 
-        $lines = [];
+        foreach ($lines as $line) {
+            $productId = (int) ($line['product_id'] ?? 0);
+            $quantity = (float) ($line['quantity'] ?? 0);
 
-        foreach ($order->outputs as $output) {
-            $candidates = $this->packageableProducts((int) $output->product_id, $order->company_id);
-
-            if ($candidates->isEmpty()) {
+            if (!$productId || $quantity <= 0) {
                 continue;
             }
 
-            // Granel de esta salida que todavía no se ha empacado en esta orden.
-            $producedBase = $this->toBaseUnit((int) $output->product_id, (int) $output->unit_id, (float) $output->quantity);
-            $packedBase = $this->packedSourceBaseQuantity($order, (int) $output->product_id);
-            $remainingBase = max(0, round($producedBase - $packedBase, 4));
-
-            $lines[] = [
-                'source_product_id' => (int) $output->product_id,
-                'source_product_name' => $output->product?->name,
-                'source_unit_id' => (int) $output->unit_id,
-                'source_unit_name' => $output->unit?->name,
-                'produced_quantity' => round($producedBase, 4),
-                'packed_quantity' => round($packedBase, 4),
-                'remaining_quantity' => $remainingBase,
-                'available_stock' => $this->currentStock((int) $order->location_id, (int) $output->product_id),
-                'products' => $candidates
-                    ->map(fn(Product $product) => $this->describePackagingOption($product, $order, $remainingBase))
-                    ->values()
-                    ->all(),
+            $rows[] = [
+                'product_id' => $productId,
+                'quantity' => $quantity,
+                'unit_id' => !empty($line['unit_id']) ? (int) $line['unit_id'] : null,
             ];
         }
 
-        return [
-            'can_pack' => $status->allowsPackaging(),
-            'status' => $status->value,
-            'status_label' => $status->label(),
-            'lines' => $lines,
-            'packagings' => $this->describeRegistered($order),
-        ];
+        return $rows;
     }
 
     /**
-     * Registra empaques. Cada línea es `product_id` (terminado) + `quantity`
-     * (unidades a empacar); el granel y el material salen de la receta del
-     * producto salvo que la línea los sobrescriba.
+     * Envasa: por cada línea descuenta el granel y el material de la receta y
+     * da de alta el producto terminado. Tiene que llamarse dentro de una
+     * transacción, con la orden ya bloqueada.
+     *
+     * Antes de mover nada revisa que alcance todo (granel y material, sumando
+     * lo que piden todas las líneas), para responder en palabras de la planta
+     * qué falta en vez de fallar a la mitad.
      */
-    public function pack(ProductionOrder $order, array $lines): ProductionOrder
+    public function apply(ProductionOrder $order, array $lines): void
     {
-        $rows = array_values(array_filter(
-            $lines,
-            fn($row) => !empty($row['product_id']) && (float) ($row['quantity'] ?? 0) > 0
-        ));
-
+        $rows = $this->normalize($lines);
         if (!$rows) {
-            throw new BusinessRuleException('No hay nada que empacar: indica al menos un producto y su cantidad.', 'nothing_to_pack');
+            return;
         }
 
-        return DB::transaction(function () use ($order, $rows) {
-            // Estado y granel restante se leen con la orden bloqueada: dos
-            // empaques simultáneos (o un empaque y una cancelación) tienen que
-            // verse entre sí, si no ambos consumirían el mismo granel.
-            $order = $this->lockOrder($order);
-            $this->assertAllowsPackaging($order);
-            $order->load(['outputs', 'packagings']);
+        $order->loadMissing(['outputs', 'packagings']);
+        $locationId = (int) $order->location_id;
+        $nextSort = (int) $order->packagings->max('sort_order') + 1;
 
-            $locationId = (int) $order->location_id;
-            $nextSort = (int) $order->packagings->max('sort_order') + 1;
+        $plan = array_map(fn(array $row) => $this->planLine($order, $row), $rows);
 
-            // Granel de esta orden que todavía se puede empacar, por producto y
-            // en su unidad base. Se va descontando con cada renglón.
-            $remainingBySource = [];
+        $this->assertBulkIsEnough($order, $plan);
+        $this->assertMaterialsAreEnough($locationId, $plan);
 
-            foreach ($rows as $row) {
-                $product = Product::with('packagingMaterials')->findOrFail((int) $row['product_id']);
-                $quantity = (float) $row['quantity'];
-                $unitId = (int) ($row['unit_id'] ?? $product->unit_id);
+        foreach ($plan as $line) {
+            /** @var Product $product */
+            $product = $line['product'];
 
-                // La receta (granel y material) es por unidad base del terminado:
-                // empacar 2 docenas de un producto por pieza son 24 piezas, no 2.
-                $units = $this->movementService->quantityInProductUnit((int) $product->id, $unitId, $quantity);
+            $packaging = ProductionOrderPackaging::create([
+                'production_order_id' => $order->id,
+                'product_id' => $product->id,
+                'unit_id' => $line['unit_id'],
+                'quantity' => $line['quantity'],
+                'source_product_id' => $line['source_product_id'],
+                'source_unit_id' => $line['source_unit_id'],
+                'source_quantity' => $line['source_quantity'],
+                'packed_at' => now(),
+                'packed_by' => Auth::id(),
+                'sort_order' => $nextSort++,
+            ]);
 
-                $sourceProductId = $row['source_product_id'] ?? $product->packaging_source_product_id;
-                // Sólo se sobrescribe la receta si la línea manda un valor real:
-                // un null suelto no debe convertirse en "no consume granel".
-                $sourcePerUnit = isset($row['source_quantity_per_unit'])
-                    ? (float) $row['source_quantity_per_unit']
-                    : (float) ($product->packaging_source_quantity ?? 0);
-                $sourceUnitId = $row['source_unit_id']
-                    ?? $product->packaging_source_unit_id
-                    ?? ($sourceProductId ? Product::whereKey($sourceProductId)->value('unit_id') : null);
+            // 1. El granel del que se envasa.
+            $this->movementService->decrement(
+                $locationId,
+                $line['source_product_id'],
+                $line['source_unit_id'],
+                $line['source_quantity'],
+                null,
+                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel envasado')
+            );
 
-                // Un empaque sin granel (receta en cero o sin producto de origen)
-                // daba de alta producto terminado sin consumir nada de la orden.
-                if (!$sourceProductId) {
-                    throw new BusinessRuleException("{$product->name} no tiene granel de origen: configura su receta de empaque.", 'packaging_recipe_missing');
-                }
-                if ($sourcePerUnit <= 0) {
-                    throw new BusinessRuleException("La receta de empaque de {$product->name} no consume granel: indica cuánto lleva cada unidad.", 'packaging_recipe_missing');
-                }
-
-                $sourceProductId = (int) $sourceProductId;
-
-                if (!array_key_exists($sourceProductId, $remainingBySource)) {
-                    $remaining = $this->remainingSourceBaseQuantity($order, $sourceProductId);
-                    if ($remaining === null) {
-                        $sourceName = Product::whereKey($sourceProductId)->value('name') ?? "producto {$sourceProductId}";
-                        throw new BusinessRuleException("{$sourceName} no es una salida de esta producción: no se puede empacar aquí.", 'packaging_source_invalid');
-                    }
-                    $remainingBySource[$sourceProductId] = $remaining;
-                }
-
-                $sourceTotal = round($sourcePerUnit * $units, 4);
-                $sourceTotalBase = $this->movementService->quantityInProductUnit($sourceProductId, (int) $sourceUnitId, $sourceTotal);
-
-                // Sólo se empaca lo que produjo esta orden. Antes bastaba con que
-                // la sucursal tuviera granel de producciones anteriores.
-                if ($sourceTotalBase > $remainingBySource[$sourceProductId] + 0.0001) {
-                    throw new BusinessRuleException(sprintf(
-                        'No alcanza el granel de esta producción para empacar %s: quedan %s y se necesitan %s.',
-                        $product->name,
-                        $this->formatQuantity($remainingBySource[$sourceProductId]),
-                        $this->formatQuantity($sourceTotalBase)
-                    ), 'insufficient_bulk');
-                }
-                $remainingBySource[$sourceProductId] -= $sourceTotalBase;
-
-                $packaging = ProductionOrderPackaging::create([
-                    'production_order_id' => $order->id,
-                    'product_id' => $product->id,
-                    'unit_id' => $unitId,
-                    'quantity' => $quantity,
-                    'source_product_id' => $sourceProductId,
-                    'source_unit_id' => $sourceUnitId,
-                    'source_quantity' => $sourceTotal,
-                    'packed_at' => now(),
-                    'packed_by' => Auth::id(),
-                    'sort_order' => $nextSort++,
-                    'notes' => $row['notes'] ?? null,
-                ]);
-
-                // 1. Consumir el granel del que se empaca.
+            // 2. El material de empaque.
+            foreach ($line['materials'] as $material) {
                 $this->movementService->decrement(
                     $locationId,
-                    $sourceProductId,
-                    (int) $sourceUnitId,
-                    $sourceTotal,
+                    $material['product_id'],
+                    $material['unit_id'],
+                    $material['quantity'],
                     null,
-                    StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel consumido al empacar')
+                    StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Material de empaque')
                 );
 
-                // 2. Consumir el material de empaque.
-                foreach ($this->materialsFor($product, $row) as $material) {
-                    $materialQty = round((float) $material['quantity'] * $units, 4);
-                    if ($materialQty <= 0) {
-                        continue;
-                    }
-
-                    $this->movementService->decrement(
-                        $locationId,
-                        (int) $material['product_id'],
-                        (int) $material['unit_id'],
-                        $materialQty,
-                        null,
-                        StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Material de empaque')
-                    );
-
-                    ProductionOrderPackagingMaterial::create([
-                        'production_order_packaging_id' => $packaging->id,
-                        'product_id' => (int) $material['product_id'],
-                        'unit_id' => (int) $material['unit_id'],
-                        'quantity' => $materialQty,
-                    ]);
-                }
-
-                // 3. Dar de alta el producto terminado.
-                $this->movementService->increment(
-                    $locationId,
-                    (int) $product->id,
-                    (int) $packaging->unit_id,
-                    $quantity,
-                    null,
-                    StockContext::for(StockLedgerReason::PACKAGING_OUTPUT, $order)
-                );
+                ProductionOrderPackagingMaterial::create([
+                    'production_order_packaging_id' => $packaging->id,
+                    'product_id' => $material['product_id'],
+                    'unit_id' => $material['unit_id'],
+                    'quantity' => $material['quantity'],
+                ]);
             }
 
-            if ($this->status($order) === ProductionOrderStatus::COMPLETED) {
-                $order->status = ProductionOrderStatus::PACKAGING;
-                $order->updated_by = Auth::id();
-                $order->save();
-            }
+            // 3. El producto terminado.
+            $this->movementService->increment(
+                $locationId,
+                (int) $product->id,
+                $line['unit_id'],
+                $line['quantity'],
+                null,
+                StockContext::for(StockLedgerReason::PACKAGING_OUTPUT, $order)
+            );
+        }
 
-            return $order->fresh(['packagings.materials', 'outputs']);
-        });
+        $order->unsetRelation('packagings');
     }
 
     /**
-     * Revierte un empaque: devuelve granel y material, y retira el terminado.
-     */
-    public function revert(ProductionOrder $order, ProductionOrderPackaging $packaging): ProductionOrder
-    {
-        return DB::transaction(function () use ($order, $packaging) {
-            $order = $this->lockOrder($order);
-            $status = $this->status($order);
-
-            if (!$status->allowsPackaging()) {
-                throw new BusinessRuleException("No se puede revertir un empaque de una orden en estado {$status->label()}.", 'invalid_status');
-            }
-
-            // Se relee el empaque bloqueado: si otra petición ya lo revirtió, ya
-            // no existe. Antes el delete "funcionaba" con 0 filas y el stock se
-            // devolvía dos veces.
-            $packaging = ProductionOrderPackaging::query()
-                ->with('materials')
-                ->lockForUpdate()
-                ->find($packaging->getKey());
-
-            if (!$packaging) {
-                throw new BusinessRuleException('Ese empaque ya fue revertido.', 'already_reverted');
-            }
-
-            if ((int) $packaging->production_order_id !== (int) $order->id) {
-                throw new BusinessRuleException('El empaque no pertenece a esta orden de producción.', 'packaging_not_in_order');
-            }
-
-            $this->reverseStock($order, $packaging);
-            $packaging->materials()->delete();
-            $packaging->delete();
-
-            // Sin empaques la orden vuelve a estar sólo producida.
-            if (!$order->packagings()->exists()) {
-                $order->status = ProductionOrderStatus::COMPLETED;
-                $order->packed_at = null;
-                $order->updated_by = Auth::id();
-                $order->save();
-            }
-
-            return $order->fresh(['packagings.materials', 'outputs']);
-        });
-    }
-
-    /**
-     * Cierra el empaque de la orden. Ya no se pueden registrar más empaques.
-     */
-    public function finish(ProductionOrder $order): ProductionOrder
-    {
-        return DB::transaction(function () use ($order) {
-            // Con la orden bloqueada: un empaque que llega al mismo tiempo no
-            // puede colarse en una orden que ya se cerró (ni al revés).
-            $order = $this->lockOrder($order);
-            $order->assertCanTransitionTo(ProductionOrderStatus::PACKED);
-
-            $order->status = ProductionOrderStatus::PACKED;
-            $order->packed_at = now();
-            $order->updated_by = Auth::id();
-            $order->save();
-
-            return $order->fresh(['packagings.materials', 'outputs']);
-        });
-    }
-
-    /**
-     * Revierte TODOS los empaques de la orden. Lo usa la cancelación de la
-     * orden: primero se deshace el empaque y después la producción, en ese
-     * orden, para que el granel exista cuando se devuelva.
+     * Revierte TODO el envasado de la orden. Lo usa la cancelación: primero se
+     * deshace el envasado y después la producción, para que el granel exista
+     * cuando se devuelva.
      */
     public function revertAll(ProductionOrder $order): void
     {
@@ -312,13 +163,248 @@ class ProductionPackagingService
         }
     }
 
+    /**
+     * Graneles que se envasan, con sus presentaciones, la receta de cada una y
+     * las existencias de la sucursal. Es lo que necesita la app para armar el
+     * envasado (el de una producción y el de después) sin hacer cuentas de
+     * unidades: `content_in_bulk_unit` ya viene en la unidad del granel (una
+     * botella de 500 ml de un granel en litros dice 0.5).
+     *
+     * @param  int[]|null  $onlyBulkIds  Sólo esos graneles (null = todos los que tienen presentaciones).
+     */
+    public function bulkCatalog(?int $companyId, ?int $locationId, ?array $onlyBulkIds = null): array
+    {
+        $presentations = Product::query()
+            ->with(['unit', 'packagingSourceUnit', 'packagingMaterials.material.unit', 'packagingMaterials.unit', 'activePackages'])
+            ->where('requires_packaging', true)
+            ->whereNotNull('packaging_source_product_id')
+            ->when($companyId, fn($q) => $q->where('company_id', $companyId))
+            ->when($onlyBulkIds !== null, fn($q) => $q->whereIn('packaging_source_product_id', $onlyBulkIds ?: [0]))
+            ->orderBy('name')
+            ->get()
+            ->groupBy('packaging_source_product_id');
+
+        if ($presentations->isEmpty()) {
+            return [];
+        }
+
+        $bulks = Product::query()
+            ->with('unit')
+            ->whereIn('id', $presentations->keys())
+            ->orderBy('name')
+            ->get();
+
+        $materialIds = $presentations->flatten()
+            ->flatMap(fn(Product $p) => $p->packagingMaterials->pluck('material_product_id'))
+            ->all();
+        $stock = $this->stockMap($locationId, [
+            ...$bulks->pluck('id')->all(),
+            ...$presentations->flatten()->pluck('id')->all(),
+            ...$materialIds,
+        ]);
+
+        return $bulks->map(fn(Product $bulk) => [
+            'product_id' => (int) $bulk->id,
+            'product_name' => $bulk->name,
+            'product_code' => $bulk->code,
+            'unit_id' => (int) $bulk->unit_id,
+            'unit_name' => $bulk->unit?->name,
+            'unit_abbreviation' => $bulk->unit?->abbreviation,
+            'unit_type' => $bulk->unit?->unit_type,
+            'stock' => $stock[$bulk->id] ?? 0.0,
+            'presentations' => $presentations->get($bulk->id, collect())
+                ->map(fn(Product $presentation) => $this->describePresentation($presentation, $bulk, $stock))
+                ->values()
+                ->all(),
+        ])->values()->all();
+    }
+
     // -----------------------------------------------------------------
     // Helpers privados
     // -----------------------------------------------------------------
 
     /**
-     * Deshace el movimiento de stock de un empaque, en orden inverso al de
-     * `pack()`: primero se retira el terminado y después se devuelven insumos.
+     * Una línea con todo resuelto: unidades, granel de origen (de la receta) y
+     * material, ya multiplicados por la cantidad envasada.
+     */
+    private function planLine(ProductionOrder $order, array $row): array
+    {
+        $product = Product::with(['packagingMaterials', 'unit'])
+            ->where('company_id', $order->company_id)
+            ->find($row['product_id']);
+
+        if (!$product) {
+            throw new BusinessRuleException('Uno de los productos a envasar ya no existe.', 'packaging_product_missing');
+        }
+
+        $quantity = (float) $row['quantity'];
+        $unitId = (int) ($row['unit_id'] ?? $product->unit_id);
+
+        // La receta es por unidad base del terminado: envasar 2 docenas de un
+        // producto por pieza son 24 piezas, no 2.
+        $units = $this->movementService->quantityInProductUnit((int) $product->id, $unitId, $quantity);
+
+        $sourceProductId = (int) $product->packaging_source_product_id;
+        $sourcePerUnit = (float) ($product->packaging_source_quantity ?? 0);
+
+        if (!$product->requires_packaging || !$sourceProductId) {
+            throw new BusinessRuleException(
+                "{$product->name} no tiene receta de envasado: indica en el producto de qué granel sale.",
+                'packaging_recipe_missing'
+            );
+        }
+        if ($sourcePerUnit <= 0) {
+            throw new BusinessRuleException(
+                "La receta de {$product->name} no dice cuánto granel lleva cada unidad.",
+                'packaging_recipe_missing'
+            );
+        }
+
+        // En una producción sólo se envasa lo que salió de la orden; el resto
+        // se envasa después, desde «Envasar».
+        if (!$order->isPackaging() && !$order->outputs->contains('product_id', $sourceProductId)) {
+            $sourceName = Product::whereKey($sourceProductId)->value('name') ?? "producto {$sourceProductId}";
+            throw new BusinessRuleException(
+                "{$sourceName} no salió en esta producción: agrégalo a lo que salió o envásalo después desde «Envasar».",
+                'packaging_source_invalid'
+            );
+        }
+
+        $sourceUnitId = (int) ($product->packaging_source_unit_id
+            ?: Product::whereKey($sourceProductId)->value('unit_id'));
+        $sourceQuantity = round($sourcePerUnit * $units, 4);
+        $sourceBase = $this->convertForRecipe($product, $sourceProductId, $sourceUnitId, $sourceQuantity);
+
+        $materials = [];
+        foreach ($product->packagingMaterials as $material) {
+            $materialQuantity = round((float) $material->quantity * $units, 4);
+            if ($materialQuantity <= 0) {
+                continue;
+            }
+            $materials[] = [
+                'product_id' => (int) $material->material_product_id,
+                'unit_id' => (int) $material->unit_id,
+                'quantity' => $materialQuantity,
+                'base' => $this->convertForRecipe($product, (int) $material->material_product_id, (int) $material->unit_id, $materialQuantity),
+            ];
+        }
+
+        return [
+            'product' => $product,
+            'quantity' => $quantity,
+            'unit_id' => $unitId,
+            'source_product_id' => $sourceProductId,
+            'source_unit_id' => $sourceUnitId,
+            'source_quantity' => $sourceQuantity,
+            'source_base' => $sourceBase,
+            'materials' => $materials,
+        ];
+    }
+
+    /**
+     * Cantidad de la receta en la unidad base del insumo. Una receta con una
+     * unidad de otra clase (granel en kg de un producto que se mide en
+     * piezas) se explica en vez de fallar con un error técnico.
+     */
+    private function convertForRecipe(Product $presentation, int $productId, int $unitId, float $quantity): float
+    {
+        try {
+            return $this->movementService->quantityInProductUnit($productId, $unitId, $quantity);
+        } catch (BusinessRuleException $e) {
+            throw $e;
+        } catch (\Throwable) {
+            $name = Product::whereKey($productId)->value('name') ?? "el producto {$productId}";
+            throw new BusinessRuleException(
+                "La receta de {$presentation->name} tiene a {$name} en una unidad que no le corresponde: corrígela en el producto.",
+                'packaging_recipe_invalid'
+            );
+        }
+    }
+
+    /**
+     * Alcanza el granel para todas las líneas juntas.
+     *
+     * En una producción sólo cuenta lo que la orden produjo (sin lo ya
+     * envasado); en un envasado, lo que hay en la sucursal.
+     */
+    private function assertBulkIsEnough(ProductionOrder $order, array $plan): void
+    {
+        $needed = [];
+        foreach ($plan as $line) {
+            $needed[$line['source_product_id']] = ($needed[$line['source_product_id']] ?? 0) + $line['source_base'];
+        }
+
+        foreach ($needed as $sourceId => $quantity) {
+            $source = Product::with('unit')->find($sourceId);
+            $name = $source?->name ?? "producto {$sourceId}";
+            $unit = $source?->unit?->abbreviation ?? '';
+
+            if ($order->isPackaging()) {
+                $available = $this->currentStock((int) $order->location_id, (int) $sourceId);
+            } else {
+                $available = $this->remainingSourceBaseQuantity($order, (int) $sourceId);
+                if ($available === null) {
+                    throw new BusinessRuleException(
+                        "{$name} no salió en esta producción: agrégalo a lo que salió o envásalo después desde «Envasar».",
+                        'packaging_source_invalid'
+                    );
+                }
+            }
+
+            if ($quantity > $available + 0.0001) {
+                throw new BusinessRuleException(sprintf(
+                    'No alcanza %s: %s %s %s y se quieren envasar %s %s.',
+                    $name,
+                    $order->isPackaging() ? 'hay' : 'salieron',
+                    $this->formatQuantity($available),
+                    $unit,
+                    $this->formatQuantity($quantity),
+                    $unit
+                ), 'insufficient_bulk', [
+                    'product_id' => (int) $sourceId,
+                    'available' => round($available, 4),
+                    'requested' => round($quantity, 4),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Alcanza el material de empaque para todas las líneas juntas: la misma
+     * tapa la usan la botella de 1 L y la de ½ L.
+     */
+    private function assertMaterialsAreEnough(int $locationId, array $plan): void
+    {
+        $needed = [];
+        foreach ($plan as $line) {
+            foreach ($line['materials'] as $material) {
+                $needed[$material['product_id']] = ($needed[$material['product_id']] ?? 0) + $material['base'];
+            }
+        }
+
+        foreach ($needed as $materialId => $quantity) {
+            $available = $this->currentStock($locationId, (int) $materialId);
+            if ($quantity <= $available + 0.0001) {
+                continue;
+            }
+
+            $material = Product::with('unit')->find($materialId);
+            throw new BusinessRuleException(sprintf(
+                'No alcanza %s: hay %s y se necesitan %s.',
+                $material?->name ?? "el material {$materialId}",
+                $this->formatQuantity($available),
+                $this->formatQuantity($quantity)
+            ), 'insufficient_material', [
+                'product_id' => (int) $materialId,
+                'available' => round($available, 4),
+                'requested' => round($quantity, 4),
+            ]);
+        }
+    }
+
+    /**
+     * Deshace el movimiento de stock de un envasado, en orden inverso al de
+     * `apply()`: primero se retira el terminado y después se devuelven insumos.
      */
     private function reverseStock(ProductionOrder $order, ProductionOrderPackaging $packaging): void
     {
@@ -330,7 +416,7 @@ class ProductionPackagingService
             (int) $packaging->unit_id,
             (float) $packaging->quantity,
             null,
-            StockContext::for(StockLedgerReason::PACKAGING_OUTPUT, $order, 'Reversa del empaque')
+            StockContext::for(StockLedgerReason::PACKAGING_OUTPUT, $order, 'Reversa del envasado')
         );
 
         if ($packaging->source_product_id && (float) $packaging->source_quantity > 0) {
@@ -340,7 +426,7 @@ class ProductionPackagingService
                 (int) $packaging->source_unit_id,
                 (float) $packaging->source_quantity,
                 null,
-                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel devuelto al revertir el empaque')
+                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Granel devuelto al revertir el envasado')
             );
         }
 
@@ -351,228 +437,74 @@ class ProductionPackagingService
                 (int) $material->unit_id,
                 (float) $material->quantity,
                 null,
-                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Material devuelto al revertir el empaque')
+                StockContext::for(StockLedgerReason::PACKAGING_CONSUMPTION, $order, 'Material devuelto al revertir el envasado')
             );
         }
     }
 
     /**
-     * Material a consumir: el de la línea si viene, o la receta del producto.
-     *
-     * @return array<int, array{product_id:int, unit_id:int, quantity:float}>
+     * Una presentación con su receta y existencias. El contenido viene en la
+     * unidad de la receta y también convertido a la del granel.
      */
-    private function materialsFor(Product $product, array $row): array
+    private function describePresentation(Product $presentation, Product $bulk, array $stock): array
     {
-        if (!empty($row['materials'])) {
-            return array_values(array_filter(array_map(fn($m) => [
-                'product_id' => (int) ($m['product_id'] ?? 0),
-                'unit_id' => (int) ($m['unit_id'] ?? 0),
-                'quantity' => (float) ($m['quantity'] ?? 0),
-            ], $row['materials']), fn($m) => $m['product_id'] && $m['unit_id']));
+        $contentUnitId = (int) ($presentation->packaging_source_unit_id ?: $bulk->unit_id);
+        $content = (float) ($presentation->packaging_source_quantity ?? 0);
+
+        return [
+            'product_id' => (int) $presentation->id,
+            'product_name' => $presentation->name,
+            'product_code' => $presentation->code,
+            'barcodes' => $presentation->activePackages->pluck('barcode')->filter()->values()->all(),
+            'unit_id' => (int) $presentation->unit_id,
+            'unit_name' => $presentation->unit?->name,
+            'unit_abbreviation' => $presentation->unit?->abbreviation,
+            'content' => $content,
+            'content_unit_id' => $contentUnitId,
+            'content_unit_abbreviation' => $presentation->packagingSourceUnit?->abbreviation ?? $bulk->unit?->abbreviation,
+            'content_in_bulk_unit' => round($this->toBaseUnit((int) $bulk->id, $contentUnitId, $content), 6),
+            'stock' => $stock[$presentation->id] ?? 0.0,
+            'materials' => $presentation->packagingMaterials->map(function ($material) use ($stock) {
+                $materialProduct = $material->material;
+
+                return [
+                    'product_id' => (int) $material->material_product_id,
+                    'product_name' => $materialProduct?->name,
+                    'product_code' => $materialProduct?->code,
+                    'unit_id' => (int) $material->unit_id,
+                    'unit_abbreviation' => $material->unit?->abbreviation,
+                    'quantity_per_unit' => (float) $material->quantity,
+                    // Para comparar contra la existencia, en la unidad base del material.
+                    'quantity_per_unit_base' => round($this->toBaseUnit(
+                        (int) $material->material_product_id,
+                        (int) $material->unit_id,
+                        (float) $material->quantity
+                    ), 6),
+                    'stock' => $stock[$material->material_product_id] ?? 0.0,
+                    'stock_unit_abbreviation' => $materialProduct?->unit?->abbreviation,
+                ];
+            })->values()->all(),
+        ];
+    }
+
+    /** @return array<int, float> */
+    private function stockMap(?int $locationId, array $productIds): array
+    {
+        if (!$locationId || !$productIds) {
+            return [];
         }
 
-        return $product->packagingMaterials
-            ->map(fn($m) => [
-                'product_id' => (int) $m->material_product_id,
-                'unit_id' => (int) $m->unit_id,
-                'quantity' => (float) $m->quantity,
-            ])
+        return DB::table('product_location')
+            ->where('location_id', $locationId)
+            ->whereIn('product_id', array_unique($productIds))
+            ->pluck('current_stock', 'product_id')
+            ->map(fn($value) => (float) $value)
             ->all();
     }
 
     /**
-     * Productos terminados que se empacan a partir de este granel.
-     */
-    private function packageableProducts(int $sourceProductId, ?int $companyId): Collection
-    {
-        return Product::query()
-            ->with(['packagingMaterials.material', 'packagingMaterials.unit', 'unit', 'packagingSourceUnit'])
-            ->where('requires_packaging', true)
-            ->where('packaging_source_product_id', $sourceProductId)
-            ->when($companyId, fn($q) => $q->where('company_id', $companyId))
-            ->orderBy('name')
-            ->get();
-    }
-
-    /**
-     * Una opción de empaque con lo que hace falta y cuánto alcanza.
-     */
-    private function describePackagingOption(Product $product, ProductionOrder $order, float $remainingSourceBase): array
-    {
-        $locationId = (int) $order->location_id;
-        $sourceProductId = (int) $product->packaging_source_product_id;
-
-        // Sin unidad capturada se asume la unidad base del granel.
-        $sourceUnitId = (int) ($product->packaging_source_unit_id
-            ?: Product::whereKey($sourceProductId)->value('unit_id'));
-
-        $perUnitBase = $this->toBaseUnit(
-            $sourceProductId,
-            $sourceUnitId,
-            (float) ($product->packaging_source_quantity ?? 0)
-        );
-
-        // Techo por granel disponible. Sin consumo de granel no hay techo.
-        $maxBySource = $perUnitBase > 0 ? (int) floor($remainingSourceBase / $perUnitBase) : null;
-
-        $materials = $product->packagingMaterials->map(function ($material) use ($locationId) {
-            $stock = $this->currentStock($locationId, (int) $material->material_product_id);
-            $perUnitBase = $this->toBaseUnit(
-                (int) $material->material_product_id,
-                (int) $material->unit_id,
-                (float) $material->quantity
-            );
-
-            return [
-                'product_id' => (int) $material->material_product_id,
-                'product_name' => $material->material?->name,
-                'product_code' => $material->material?->code,
-                'unit_id' => (int) $material->unit_id,
-                'unit_name' => $material->unit?->name,
-                'quantity_per_unit' => (float) $material->quantity,
-                'available_stock' => $stock,
-                'max_units' => $perUnitBase > 0 ? (int) floor($stock / $perUnitBase) : null,
-                'notes' => $material->notes,
-            ];
-        })->values()->all();
-
-        // Lo que de verdad se puede empacar: lo limita el insumo más escaso.
-        $limits = array_filter(
-            array_merge([$maxBySource], array_column($materials, 'max_units')),
-            fn($v) => $v !== null
-        );
-
-        return [
-            'product_id' => $product->id,
-            'product_name' => $product->name,
-            'product_code' => $product->code,
-            'unit_id' => $product->unit_id,
-            'unit_name' => $product->unit?->name,
-            'source_quantity_per_unit' => (float) ($product->packaging_source_quantity ?? 0),
-            'source_unit_id' => $sourceUnitId ?: null,
-            'source_unit_name' => $product->packagingSourceUnit?->name,
-            'max_units' => $limits ? max(0, min($limits)) : null,
-            'max_units_by_source' => $maxBySource,
-            'materials' => $materials,
-        ];
-    }
-
-    /**
-     * Empaques ya registrados, con su material.
-     */
-    private function describeRegistered(ProductionOrder $order): array
-    {
-        $order->loadMissing([
-            'packagings.product',
-            'packagings.unit',
-            'packagings.sourceProduct',
-            'packagings.sourceUnit',
-            'packagings.materials.product',
-            'packagings.materials.unit',
-        ]);
-
-        return $order->packagings->map(fn(ProductionOrderPackaging $p) => [
-            'id' => $p->id,
-            'product_id' => $p->product_id,
-            'product_name' => $p->product?->name,
-            'unit_id' => $p->unit_id,
-            'unit_name' => $p->unit?->name,
-            'quantity' => (float) $p->quantity,
-            'source_product_id' => $p->source_product_id,
-            'source_product_name' => $p->sourceProduct?->name,
-            'source_unit_id' => $p->source_unit_id,
-            'source_unit_name' => $p->sourceUnit?->name,
-            'source_quantity' => $p->source_quantity !== null ? (float) $p->source_quantity : null,
-            'packed_at' => optional($p->packed_at)->toISOString(),
-            'notes' => $p->notes,
-            'materials' => $p->materials->map(fn($m) => [
-                'id' => $m->id,
-                'product_id' => $m->product_id,
-                'product_name' => $m->product?->name,
-                'unit_id' => $m->unit_id,
-                'unit_name' => $m->unit?->name,
-                'quantity' => (float) $m->quantity,
-            ])->values()->all(),
-        ])->values()->all();
-    }
-
-    /**
-     * Granel de un producto ya consumido por los empaques de esta orden,
-     * en la unidad base del producto.
-     */
-    private function packedSourceBaseQuantity(ProductionOrder $order, int $sourceProductId): float
-    {
-        return (float) $order->packagings
-            ->where('source_product_id', $sourceProductId)
-            ->sum(fn(ProductionOrderPackaging $p) => $this->toBaseUnit(
-                $sourceProductId,
-                (int) $p->source_unit_id,
-                (float) $p->source_quantity
-            ));
-    }
-
-    private function currentStock(int $locationId, int $productId): float
-    {
-        return (float) (DB::table('product_location')
-            ->where('location_id', $locationId)
-            ->where('product_id', $productId)
-            ->value('current_stock') ?? 0);
-    }
-
-    /**
-     * Convierte a la unidad base del producto. Las cantidades del plan se
-     * comparan siempre en unidad base, porque el granel puede capturarse en
-     * litros y consumirse en mililitros.
-     */
-    private function toBaseUnit(int $productId, int $unitId, float $quantity): float
-    {
-        if ($quantity <= 0 || !$productId || !$unitId) {
-            return 0.0;
-        }
-
-        try {
-            return $this->movementService->quantityInProductUnit($productId, $unitId, $quantity);
-        } catch (\Throwable) {
-            // Producto sin unidad base o unidad incompatible: se usa tal cual
-            // para no tumbar el plan completo por una receta mal capturada.
-            return $quantity;
-        }
-    }
-
-    private function status(ProductionOrder $order): ProductionOrderStatus
-    {
-        return $order->status instanceof ProductionOrderStatus
-            ? $order->status
-            : ProductionOrderStatus::from((string) $order->status);
-    }
-
-    /**
-     * Relee la orden bloqueando su fila hasta que termine la transacción. El
-     * modelo que llega se cargó antes y su estado puede ya no ser el real.
-     */
-    private function lockOrder(ProductionOrder $order): ProductionOrder
-    {
-        return ProductionOrder::query()->lockForUpdate()->findOrFail($order->getKey());
-    }
-
-    private function assertAllowsPackaging(ProductionOrder $order): void
-    {
-        $status = $this->status($order);
-
-        if (!$status->allowsPackaging()) {
-            throw new BusinessRuleException(
-                $status === ProductionOrderStatus::DRAFT
-                    ? 'La producción debe completarse antes de poder empacar.'
-                    : "No se puede empacar una orden en estado {$status->label()}.",
-                'invalid_status'
-            );
-        }
-    }
-
-    /**
-     * Granel de un producto que esta orden produjo y aún no se ha empacado, en
+     * Granel de un producto que esta orden produjo y aún no se ha envasado, en
      * la unidad base del granel. Null si el producto no es salida de la orden.
-     * Usa las relaciones `outputs` y `packagings` ya cargadas.
      */
     private function remainingSourceBaseQuantity(ProductionOrder $order, int $sourceProductId): ?float
     {
@@ -588,7 +520,40 @@ class ProductionPackagingService
             (float) $output->quantity
         ));
 
-        return max(0.0, round($produced - $this->packedSourceBaseQuantity($order, $sourceProductId), 4));
+        $packed = (float) $order->packagings
+            ->where('source_product_id', $sourceProductId)
+            ->sum(fn(ProductionOrderPackaging $p) => $this->toBaseUnit(
+                $sourceProductId,
+                (int) $p->source_unit_id,
+                (float) $p->source_quantity
+            ));
+
+        return max(0.0, round($produced - $packed, 4));
+    }
+
+    private function currentStock(int $locationId, int $productId): float
+    {
+        return (float) (DB::table('product_location')
+            ->where('location_id', $locationId)
+            ->where('product_id', $productId)
+            ->value('current_stock') ?? 0);
+    }
+
+    /**
+     * Convierte a la unidad base del producto. Con una receta mal capturada
+     * (unidad incompatible) se usa tal cual para no tumbar el catálogo.
+     */
+    private function toBaseUnit(int $productId, int $unitId, float $quantity): float
+    {
+        if ($quantity <= 0 || !$productId || !$unitId) {
+            return 0.0;
+        }
+
+        try {
+            return $this->movementService->quantityInProductUnit($productId, $unitId, $quantity);
+        } catch (\Throwable) {
+            return $quantity;
+        }
     }
 
     private function formatQuantity(float $quantity): string

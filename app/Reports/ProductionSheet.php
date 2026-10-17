@@ -7,16 +7,18 @@ use App\Models\Admin\Company;
 use App\Models\Operations\ProductionOrder;
 use App\Models\Product;
 use App\Models\Unit;
+use App\Reports\Format as F;
 use App\Services\ProductionOrderService;
 use Illuminate\Support\Facades\DB;
 
 /**
  * Hoja de producción para la planta, que no trabaja frente a la app.
  *
- * Mientras la orden es borrador dice qué producir y qué insumos sacar del
- * almacén, con la existencia de la sucursal al imprimir, y deja los espacios
- * para anotar a mano lo real y la merma. Ya cerrada, compara lo producido
- * contra lo esperado de la fórmula y muestra la merma registrada.
+ * Mientras la orden está pendiente dice qué producir, qué insumos sacar del
+ * almacén (con la existencia de la sucursal al imprimir) y qué envasar, y deja
+ * los espacios para anotar a mano lo real y la merma. Ya registrada, compara
+ * lo producido contra lo esperado del proceso, da el rendimiento por insumo
+ * principal (litros de agua por coco) y muestra el envasado y la merma.
  */
 final class ProductionSheet
 {
@@ -25,11 +27,12 @@ final class ProductionSheet
     public static function load(int $companyId, int $orderId): self
     {
         $order = ProductionOrder::with([
-            'location', 'responsible', 'formula', 'createdBy',
+            'location', 'responsible', 'formula.items', 'formula.outputs', 'createdBy',
             'consumptions.product.unit', 'consumptions.unit',
             'outputs.product.unit', 'outputs.unit',
             'wastes.product', 'wastes.unit',
             'packagings.product', 'packagings.unit', 'packagings.sourceProduct', 'packagings.sourceUnit',
+            'packagings.materials.product', 'packagings.materials.unit',
         ])->where('company_id', $companyId)->findOrFail($orderId);
 
         return new self($order);
@@ -98,8 +101,14 @@ final class ProductionSheet
                 'source' => $p->sourceProduct?->name,
                 'source_quantity' => $p->source_quantity !== null ? (float) $p->source_quantity : null,
                 'source_unit' => $p->sourceUnit?->abbreviation,
+                'materials' => $p->materials
+                    ->map(fn($m) => F::qty((float) $m->quantity) . ' ' . ($m->product?->name ?? 'material'))
+                    ->implode(', '),
                 'packed_at' => $p->packed_at,
             ])->all(),
+            'planned_packagings' => $this->plannedPackagings(),
+            'is_packaging' => $order->isPackaging(),
+            'yields' => $closed ? app(ProductionOrderService::class)->yields($order) : [],
             'short_count' => count(array_filter($consumptions, fn($c) => $c['short'])),
         ];
     }
@@ -108,6 +117,33 @@ final class ProductionSheet
     private function variance(float $actual, mixed $expected): ?float
     {
         return $expected !== null && (float) $expected > 0 ? ($actual - (float) $expected) / (float) $expected : null;
+    }
+
+    /** Lo que se va a envasar al registrar el pendiente. */
+    private function plannedPackagings(): array
+    {
+        $lines = $this->order->planned_packagings ?? [];
+        if (!$lines) {
+            return [];
+        }
+
+        $products = Product::with(['unit', 'packagingSourceProduct', 'packagingSourceUnit'])
+            ->whereIn('id', array_column($lines, 'product_id'))
+            ->get()
+            ->keyBy('id');
+
+        return array_map(function ($line) use ($products) {
+            $product = $products->get($line['product_id']);
+
+            return [
+                'name' => $product?->name ?? 'Producto',
+                'quantity' => (float) $line['quantity'],
+                'unit' => $product?->unit?->abbreviation,
+                'source' => $product?->packagingSourceProduct?->name,
+                'source_quantity' => $product ? (float) $product->packaging_source_quantity * (float) $line['quantity'] : null,
+                'source_unit' => $product?->packagingSourceUnit?->abbreviation,
+            ];
+        }, $lines);
     }
 
     /** Las mermas que se capturaron en el borrador (todavía no afectan stock). */
