@@ -490,8 +490,14 @@ class PurchaseV2Controller extends Controller
             'supplier_id' => ['nullable', $this->companyRule('suppliers')],
             // Lo que ya llegó no puede tener fecha posterior a hoy: el stock
             // entraba hoy y el egreso de caja quedaba fechado en el futuro,
-            // fuera de los totales del día en que salió el dinero.
-            'purchase_date' => ['nullable', 'date', ...($receiveNow ? ['before:tomorrow'] : [])],
+            // fuera de los totales del día en que salió el dinero. Mañana sí
+            // pasa (abajo se toma como hoy): un celular con la zona horaria
+            // vieja, que aún adelanta la hora en verano, ya está en el día
+            // siguiente entre las 11 y las 12 de la noche y no podía registrar.
+            'purchase_date' => [
+                'nullable', 'date',
+                ...($receiveNow ? ['before:' . today()->addDays(2)->toDateString()] : []),
+            ],
             // El formulario de la app manda las notas al confirmar (el
             // borrador nace con el primer producto, sin encabezado).
             'notes' => 'nullable|string|max:2000',
@@ -503,6 +509,12 @@ class PurchaseV2Controller extends Controller
         ], [
             'purchase_date.before' => 'Una compra que ya llegó no puede tener fecha posterior a hoy.',
         ]);
+
+        // El día siguiente por el reloj del celular es hoy.
+        if ($receiveNow && !empty($validated['purchase_date'])
+            && \Illuminate\Support\Carbon::parse($validated['purchase_date'])->isAfter(today())) {
+            $validated['purchase_date'] = today()->toDateString();
+        }
 
         try {
             $result = DB::transaction(function () use ($id, $validated, $receiveNow) {

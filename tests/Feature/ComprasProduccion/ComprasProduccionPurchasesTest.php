@@ -765,7 +765,7 @@ class ComprasProduccionPurchasesTest extends TestCase
         $buyer = $this->buyer();
         $purchase = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[10, 15]]);
 
-        $this->confirmAsReceived($purchase, $buyer, ['purchase_date' => now()->addDay()->toDateString()])
+        $this->confirmAsReceived($purchase, $buyer, ['purchase_date' => now()->addDays(2)->toDateString()])
             ->assertStatus(422)
             ->assertJsonValidationErrors('purchase_date')
             ->assertJsonPath('errors.purchase_date.0', 'Una compra que ya llegó no puede tener fecha posterior a hoy.');
@@ -776,6 +776,21 @@ class ComprasProduccionPurchasesTest extends TestCase
 
         // Con la fecha de hoy sí, y el egreso queda en hoy.
         $this->confirmAsReceived($purchase, $buyer, ['purchase_date' => now()->toDateString()])->assertOk();
+        $this->assertSame(now()->toDateString(), $this->cashOutDate($purchase));
+    }
+
+    public function test_tomorrow_by_the_phone_clock_is_registered_as_today(): void
+    {
+        $buyer = $this->buyer();
+        $purchase = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[10, 15]]);
+
+        // Un celular con la zona horaria vieja (aún adelanta la hora en
+        // verano) ya está en mañana entre las 11 y las 12 de la noche.
+        $this->confirmAsReceived($purchase, $buyer, ['purchase_date' => now()->addDay()->toDateString()])
+            ->assertOk();
+
+        $this->assertSame(PurchaseV2::STATUS_RECEIVED, $purchase->fresh()->status);
+        $this->assertSame(now()->toDateString(), $purchase->fresh()->purchase_date->toDateString());
         $this->assertSame(now()->toDateString(), $this->cashOutDate($purchase));
     }
 
