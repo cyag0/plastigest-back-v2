@@ -152,6 +152,9 @@ class DemoDataSeeder extends Seeder
         config([
             'services.whatsapp.access_token' => null,
             'services.whatsapp.phone_number_id' => null,
+            // Los tokens se crean el primer día simulado; con la caducidad de
+            // Sanctum (30 días) vencerían a mitad de la historia (DEMO_DAYS=45).
+            'sanctum.expiration' => null,
         ]);
         Bus::fake();
         Queue::fake();
