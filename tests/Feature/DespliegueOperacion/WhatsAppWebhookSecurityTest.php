@@ -20,6 +20,13 @@ class WhatsAppWebhookSecurityTest extends TestCase
 
     private const APP_SECRET = 'test-whatsapp-app-secret';
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Está apagado por omisión (WHATSAPP_ENABLED): estas pruebas lo prenden.
+        config(['services.whatsapp.enabled' => true]);
+    }
+
     private function verify(?string $token): \Illuminate\Testing\TestResponse
     {
         return $this->get('/api/webhooks/whatsapp?' . http_build_query([

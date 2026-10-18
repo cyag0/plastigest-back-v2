@@ -27,8 +27,9 @@ class WhatsAppPurchaseTest extends TestCase
         parent::setUp();
         $this->createTenant();
 
+        // Está apagado por omisión (WHATSAPP_ENABLED): estas pruebas lo prenden.
         // Con app_secret configurado, el webhook exige firma válida.
-        config(['services.whatsapp.app_secret' => self::APP_SECRET]);
+        config(['services.whatsapp.enabled' => true, 'services.whatsapp.app_secret' => self::APP_SECRET]);
     }
 
     private function message(string $from, string $text): array
@@ -155,6 +156,35 @@ class WhatsAppPurchaseTest extends TestCase
             ->assertOk()
             ->assertJsonPath('whatsapp_sent', true);
 
+        $this->assertSame(PurchaseV2::STATUS_ORDERED, $purchase->fresh()->status);
+    }
+
+    public function test_when_it_is_off_nothing_is_sent_and_the_webhook_does_not_exist(): void
+    {
+        // Así viene por omisión (WHATSAPP_ENABLED=false), aunque haya credenciales.
+        config([
+            'services.whatsapp.enabled' => false,
+            'services.whatsapp.access_token' => 'token',
+            'services.whatsapp.phone_number_id' => '123',
+            'services.whatsapp.verify_token' => 'token-de-meta',
+        ]);
+        $purchase = $this->draftWithProduct();
+
+        $this->mock(\App\Services\WhatsAppService::class, function ($mock) {
+            $mock->shouldReceive('sendPurchaseOrder')->never();
+        });
+
+        $this->withHeaders($this->tenantHeaders())
+            ->postJson("/api/auth/admin/purchases-v2/{$purchase->id}/confirm")
+            ->assertOk()
+            ->assertJsonPath('whatsapp_sent', false);
+
+        $this->get('/api/webhooks/whatsapp?' . http_build_query([
+            'hub_mode' => 'subscribe', 'hub_challenge' => '42', 'hub_verify_token' => 'token-de-meta',
+        ]))->assertNotFound();
+
+        // La compra quedó pedida; la respuesta del proveedor no la mueve.
+        $this->postSignedWebhook($this->message('5213221234567', 'Ya lo envié, va en camino'))->assertNotFound();
         $this->assertSame(PurchaseV2::STATUS_ORDERED, $purchase->fresh()->status);
     }
 

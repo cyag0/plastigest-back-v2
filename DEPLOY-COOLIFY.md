@@ -237,7 +237,9 @@ El instalador pone Docker, Traefik (proxy + SSL) y Coolify. Tarda unos minutos.
    MIN_NATIVE_APP_VERSION=
    LATEST_NATIVE_APP_VERSION=
 
-   # WhatsApp: órdenes de compra al proveedor y webhook. El token es el NUEVO (pendiente 1)
+   # WhatsApp: APAGADO hasta rehacerlo como bot (WhatsAppService). Déjalo en
+   # false y las demás vacías; el token filtrado igual se revoca (pendiente 1).
+   WHATSAPP_ENABLED=false
    WHATSAPP_CLOUD_API_TOKEN=
    WHATSAPP_PHONE_NUMBER_ID=
    WHATSAPP_APP_SECRET=               # firma de Meta del webhook

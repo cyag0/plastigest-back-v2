@@ -212,7 +212,7 @@ class SettingsController extends Controller
             ],
             'features' => [
                 'enable_barcode_scanner' => true,
-                'enable_whatsapp_orders' => true,
+                'enable_whatsapp_orders' => \App\Services\WhatsAppService::isEnabled(),
                 'enable_pos_mode' => false,
             ],
         ];

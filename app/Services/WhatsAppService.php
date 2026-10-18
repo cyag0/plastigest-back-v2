@@ -5,16 +5,39 @@ namespace App\Services;
 use Netflie\WhatsAppCloudApi\WhatsAppCloudApi;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Pedido al proveedor por WhatsApp Cloud API.
+ *
+ * APAGADO (WHATSAPP_ENABLED=false) hasta rehacerlo como bot. Lo que hay que
+ * resolver antes de prenderlo:
+ * - WhatsApp solo deja mandar texto libre dentro de las 24 h siguientes al
+ *   último mensaje del proveedor; para iniciar la conversación (un pedido
+ *   nuevo) exige una plantilla aprobada por Meta. sendTextMessage() fallaba
+ *   en la práctica y el pedido quedaba "guardado" sin que nadie lo notara.
+ * - El webhook adivina "ya lo envié" buscando palabras en el texto: «no lo voy
+ *   a mandar» contiene «lo voy a mandar» y marcaba la compra en tránsito.
+ *   Mejor botones (plantilla con respuestas rápidas) que traigan el id del
+ *   pedido.
+ * - El webhook busca la compra por el teléfono en todas las empresas.
+ * - Teléfonos de México: el envío antepone 521 y algunos números ya van con 52.
+ */
 class WhatsAppService
 {
     protected $whatsapp;
     protected $fromPhoneNumberId;
 
-    /** Hay credenciales de WhatsApp Cloud API configuradas. */
+    /** Está prendido y hay credenciales de WhatsApp Cloud API. */
     public static function isConfigured(): bool
     {
-        return filled(config('services.whatsapp.access_token'))
+        return self::isEnabled()
+            && filled(config('services.whatsapp.access_token'))
             && filled(config('services.whatsapp.phone_number_id'));
+    }
+
+    /** WHATSAPP_ENABLED (apagado por omisión, ver arriba). */
+    public static function isEnabled(): bool
+    {
+        return (bool) config('services.whatsapp.enabled', false);
     }
 
     /**

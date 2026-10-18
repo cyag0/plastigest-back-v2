@@ -40,6 +40,10 @@ return [
     ],
 
     'whatsapp' => [
+        // Apagado mientras se rehace como bot (ver WhatsAppService). Con false
+        // no se manda ningún pedido y el webhook responde 404, aunque estén
+        // las demás variables.
+        'enabled' => (bool) env('WHATSAPP_ENABLED', false),
         'access_token' => env('WHATSAPP_CLOUD_API_TOKEN'),
         'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
         // Token que Meta manda al verificar el webhook. Sin valor por defecto:

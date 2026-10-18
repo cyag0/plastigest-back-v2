@@ -17,6 +17,11 @@ class WhatsAppWebhookController extends Controller
      */
     public function verify(Request $request)
     {
+        // Apagado (WHATSAPP_ENABLED=false): como si la ruta no existiera.
+        if (!WhatsAppService::isEnabled()) {
+            return response()->json(['message' => 'No encontrado'], 404);
+        }
+
         $mode = $request->query('hub_mode');
         $token = $request->query('hub_verify_token');
         $challenge = $request->query('hub_challenge');
@@ -47,6 +52,10 @@ class WhatsAppWebhookController extends Controller
      */
     public function handle(Request $request)
     {
+        if (!WhatsAppService::isEnabled()) {
+            return response()->json(['message' => 'No encontrado'], 404);
+        }
+
         if (!$this->signatureIsValid($request)) {
             Log::warning('WhatsApp webhook con firma inválida o ausente');
             return response()->json(['error' => 'Invalid signature'], 403);
