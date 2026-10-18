@@ -682,7 +682,7 @@ class ReportController extends Controller
                 'products.id',
                 'products.name',
                 'products.code',
-                DB::raw('SUM(COALESCE(inventory_transfer_details.quantity_shipped, inventory_transfer_details.quantity_requested, 0)) as total_quantity'),
+                DB::raw('SUM(COALESCE(inventory_transfer_details.quantity_shipped, inventory_transfer_details.quantity_approved, inventory_transfer_details.quantity_requested, 0)) as total_quantity'),
                 DB::raw('COUNT(DISTINCT inventory_transfers.id) as transfer_count')
             )
             ->groupBy('products.id', 'products.name', 'products.code')

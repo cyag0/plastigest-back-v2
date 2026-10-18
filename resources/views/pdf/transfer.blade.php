@@ -79,7 +79,8 @@
                 <th style="width: 14%">Código</th>
                 <th>Producto</th>
                 <th style="width: 9%">Unidad</th>
-                <th class="text-right" style="width: 10%">Solicitado</th>
+                {{-- Ya aprobada: lo que se va a mandar; si no, lo que se pidió. --}}
+                <th class="text-right" style="width: 10%">{{ $transfer->details->contains(fn($d) => $d->quantity_approved !== null) ? 'Aprobado' : 'Solicitado' }}</th>
                 <th class="text-right" style="width: 10%">Enviado</th>
                 <th class="text-right" style="width: 10%">Recibido</th>
                 <th class="text-right" style="width: 10%">Diferencia</th>
@@ -102,7 +103,8 @@
                         @if($d->notes)<br><span style="font-size:8pt">{{ $d->notes }}</span>@endif
                     </td>
                     <td>{{ $d->unit?->abbreviation ?? $d->product?->unit?->abbreviation }}</td>
-                    <td class="text-right">{{ $qty($d->quantity_requested) }}</td>
+                    {{-- Lo que se va a mandar: lo aprobado (o lo pedido si aún no se aprueba). --}}
+                    <td class="text-right">{{ $qty($d->quantity_approved ?? $d->quantity_requested) }}</td>
                     {{-- Sin enviar todavía: la columna queda para llenarse a mano al cargar. --}}
                     <td class="text-right">{!! $shipped ? e($qty($d->quantity_shipped)) : '<span class="blank">______</span>' !!}</td>
                     <td class="text-right">{!! $received ? e($qty($d->quantity_received)) : '<span class="blank">______</span>' !!}</td>

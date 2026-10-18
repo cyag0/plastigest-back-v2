@@ -284,7 +284,7 @@ final class ReplenishmentPlanner
             ->join('inventory_transfers as t', 't.id', '=', 'd.transfer_id')
             ->where('t.company_id', $this->companyId)
             ->whereIn('t.status', self::OPEN_TRANSFER_STATUSES)
-            ->get(['t.status', 't.from_location_id', 't.to_location_id', 'd.product_id', 'd.unit_id', 'd.package_id', 'd.quantity_requested', 'd.quantity_shipped']);
+            ->get(['t.status', 't.from_location_id', 't.to_location_id', 'd.product_id', 'd.unit_id', 'd.package_id', 'd.quantity_requested', 'd.quantity_approved', 'd.quantity_shipped']);
 
         foreach ($transferLines as $line) {
             $product = (int) $line->product_id;
@@ -294,7 +294,7 @@ final class ReplenishmentPlanner
             $quantity = $this->converter->toProductUnit(
                 $product,
                 $line->unit_id ? (int) $line->unit_id : null,
-                (float) ($shipped ? $line->quantity_shipped : $line->quantity_requested),
+                (float) ($shipped ? $line->quantity_shipped : ($line->quantity_approved ?? $line->quantity_requested)),
                 $line->package_id ? (int) $line->package_id : null,
             ) ?? 0.0;
 

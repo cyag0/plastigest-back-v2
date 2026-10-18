@@ -68,7 +68,10 @@ class InventoryTransferDetailResource extends JsonResource
             }),
             'unit_id' => $this->unit_id,
             'unit' => $this->when((bool) $this->unit_id && $unit !== null, fn() => $unit),
+            // Lo pedido se queda como se pidió; lo aprobado va aparte (null
+            // mientras no se aprueba).
             'quantity_requested' => (float) ($raw['quantity_requested'] ?? 0),
+            'quantity_approved' => isset($raw['quantity_approved']) ? (float) $raw['quantity_approved'] : null,
             'quantity_shipped' => $shipped,
             'quantity_received' => $received,
             'available_stock' => $availableStock,

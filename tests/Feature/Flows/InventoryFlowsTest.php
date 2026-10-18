@@ -193,7 +193,18 @@ class InventoryFlowsTest extends TestCase
                 'items' => [['detail_id' => $transfer->details->first()->id, 'quantity_requested' => 5]],
             ])->assertOk();
 
-        $this->assertEquals(5, (float) $transfer->details->first()->fresh()->quantity_requested);
+        // Lo aprobado va aparte; lo pedido se queda como se pidió.
+        $detail = $transfer->details->first()->fresh();
+        $this->assertEquals(5, (float) $detail->quantity_approved);
+        $this->assertEquals(10, (float) $detail->quantity_requested);
+
+        // No se puede mandar más de lo aprobado.
+        $this->withHeaders($this->tenantHeaders($origin))
+            ->post("/api/auth/admin/inventory-transfers/{$transfer->id}/ship", [
+                'items' => [['detail_id' => $detail->id, 'quantity_shipped' => 6]],
+                'evidence' => [UploadedFile::fake()->image('camion.jpg')],
+            ])->assertStatus(422)
+            ->assertJsonPath('message', "La cantidad enviada no puede superar la aprobada en el detalle {$detail->id}");
 
         $this->ship($transfer->fresh('details'), $origin, 5);
         $this->assertEquals(31, $this->stockOf($coco, $origin));

@@ -613,12 +613,13 @@ class InventoryTransferController extends Controller
                     ], 422);
                 }
 
-                $requested = (float) $detail->quantity_requested;
+                // Lo aprobado (o lo pedido, si no pasó por la aprobación).
+                $requested = $detail->approvedQuantity();
                 $toShip = (float) $item['quantity_shipped'];
 
                 if ($toShip > $requested) {
                     return response()->json([
-                        'message' => "La cantidad enviada no puede superar la solicitada en el detalle {$detailId}",
+                        'message' => "La cantidad enviada no puede superar la aprobada en el detalle {$detailId}",
                     ], 422);
                 }
 

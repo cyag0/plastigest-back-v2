@@ -19,6 +19,7 @@ class InventoryTransferDetail extends Model
         'package_id',
         'unit_id',
         'quantity_requested',
+        'quantity_approved',
         'quantity_shipped',
         'quantity_received',
         'unit_cost',
@@ -33,6 +34,7 @@ class InventoryTransferDetail extends Model
 
     protected $casts = [
         'quantity_requested' => 'decimal:3',
+        'quantity_approved' => 'decimal:3',
         'quantity_shipped' => 'decimal:3',
         'quantity_received' => 'decimal:3',
         'unit_cost' => 'decimal:2',
@@ -88,11 +90,19 @@ class InventoryTransferDetail extends Model
     }
 
     /**
-     * Calcular el total basado en cantidad solicitada
+     * Lo que se va a mandar: lo aprobado, o lo pedido si todavía no se aprueba.
+     */
+    public function approvedQuantity(): float
+    {
+        return (float) ($this->quantity_approved ?? $this->quantity_requested);
+    }
+
+    /**
+     * Total con lo aprobado (o lo pedido mientras no se aprueba).
      */
     public function calculateTotal(): void
     {
-        $this->total_cost = $this->quantity_requested * $this->unit_cost;
+        $this->total_cost = $this->approvedQuantity() * $this->unit_cost;
     }
 
     /**
@@ -101,8 +111,8 @@ class InventoryTransferDetail extends Model
     protected static function booted()
     {
         static::saving(function ($model) {
-            // Calcular total automáticamente si cambia quantity_requested o unit_cost
-            if ($model->isDirty(['quantity_requested', 'unit_cost'])) {
+            // Calcular total automáticamente si cambia la cantidad o unit_cost
+            if ($model->isDirty(['quantity_requested', 'quantity_approved', 'unit_cost'])) {
                 $model->calculateTotal();
             }
         });

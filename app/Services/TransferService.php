@@ -58,20 +58,29 @@ class TransferService
             }
             $content = $this->normalizeWorkflowProgress($content);
 
-            // Las cantidades que ajusta quien aprueba se aplican al detalle.
-            // Antes solo quedaban en content.step_1.items y el paso de envío
-            // seguía proponiendo la cantidad original solicitada.
+            // Lo que aprueba quien surte va en quantity_approved; lo pedido se
+            // queda como se pidió (antes se reescribía y ya no se sabía cuánto
+            // se había pedido). La app manda la cantidad aprobada en
+            // items[].quantity_requested (o quantity_approved).
+            $approved = [];
             foreach ($data['items'] ?? [] as $item) {
-                if (!isset($item['detail_id'], $item['quantity_requested'])) {
+                $quantity = $item['quantity_approved'] ?? $item['quantity_requested'] ?? null;
+                if (!isset($item['detail_id']) || $quantity === null) {
                     continue;
                 }
+                $approved[(int) $item['detail_id']] = (float) $quantity;
+            }
 
-                $detail = $transfer->details()->find((int) $item['detail_id']);
-                if (!$detail) {
+            $details = $transfer->details()->get()->keyBy('id');
+            foreach (array_keys($approved) as $detailId) {
+                if (!$details->has($detailId)) {
                     throw new BusinessRuleException('Detalle de transferencia no encontrado', 'invalid_detail');
                 }
+            }
 
-                $detail->quantity_requested = (float) $item['quantity_requested'];
+            // Lo que no se ajustó se aprueba como se pidió.
+            foreach ($details as $detail) {
+                $detail->quantity_approved = $approved[(int) $detail->id] ?? (float) $detail->quantity_requested;
                 $detail->save();
             }
 
@@ -270,10 +279,11 @@ class TransferService
                     throw new BusinessRuleException('Detalle de transferencia no encontrado', 'invalid_detail');
                 }
 
-                // Validar que no se envíe más de lo solicitado
-                if ($shipmentData['quantity_shipped'] > $detail->quantity_requested) {
+                // No se envía más de lo aprobado (o lo pedido, si no pasó por
+                // la aprobación).
+                if ($shipmentData['quantity_shipped'] > $detail->approvedQuantity()) {
                     throw new BusinessRuleException(
-                        "No se puede enviar más de lo solicitado. Solicitado: {$detail->quantity_requested}, Intentando enviar: {$shipmentData['quantity_shipped']}",
+                        "No se puede enviar más de lo aprobado. Aprobado: {$detail->approvedQuantity()}, intentando enviar: {$shipmentData['quantity_shipped']}",
                         'quantity_exceeded'
                     );
                 }
