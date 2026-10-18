@@ -39,7 +39,9 @@ class ProductPackageController extends Controller
             return $this->forbidden();
         }
 
-        $query = $this->scoped()->with(['product', 'unit']);
+        // La cantidad del paquete va en la unidad del producto: la lista la
+        // muestra con esa abreviatura (la unidad propia del paquete ya no se usa).
+        $query = $this->scoped()->with(['product.unit', 'unit']);
 
         // Filtrar por producto. filled y no has: un product_id vacío llega
         // como null y filtraba por "product_id IS NULL" (lista vacía).
@@ -130,7 +132,7 @@ class ProductPackageController extends Controller
             $package = ProductPackage::create($validated);
 
             DB::commit();
-            return response()->json($package->load(['product', 'unit']), 201);
+            return response()->json($package->load(['product.unit', 'unit']), 201);
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
@@ -149,7 +151,7 @@ class ProductPackageController extends Controller
             return $this->forbidden();
         }
 
-        $package = $this->scoped()->with(['product', 'unit'])->findOrFail($id);
+        $package = $this->scoped()->with(['product.unit', 'unit'])->findOrFail($id);
         return response()->json([
             'data' => $package
         ]);
@@ -209,7 +211,7 @@ class ProductPackageController extends Controller
             $package->update($validated);
 
             DB::commit();
-            return response()->json($package->load(['product', 'unit']));
+            return response()->json($package->load(['product.unit', 'unit']));
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
@@ -245,7 +247,7 @@ class ProductPackageController extends Controller
             'barcode' => 'required|string'
         ]);
 
-        $package = ProductPackage::with(['product', 'unit'])
+        $package = ProductPackage::with(['product.unit', 'unit'])
             ->byBarcode($request->barcode)
             ->active()
             ->first();
