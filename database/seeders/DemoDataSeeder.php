@@ -208,8 +208,8 @@ class DemoDataSeeder extends Seeder
         $cashierPerms = ['sales_pos', 'sales_list', 'sales_read', 'sales_create', 'customers_list', 'customers_read', 'customers_create',
             'products_list', 'products_read', 'inventory_list', 'inventory_read', 'cash_registers_list', 'dashboard_view'];
         $managerPerms = $all->keys()->reject(fn($p) => in_array($p, [
-            'system_admin', 'companies_create', 'companies_delete', 'companies_manage', 'roles_create', 'roles_delete', 'roles_update',
-            'locations_create', 'locations_delete', 'locations_all', 'users_delete', 'settings_manage',
+            'system_admin', 'companies_create', 'companies_delete', 'roles_create', 'roles_delete', 'roles_update',
+            'locations_create', 'locations_delete', 'locations_all', 'users_delete',
         ]))->all();
 
         $cashierRole = $this->role('Cajero', $cashierPerms, $all);

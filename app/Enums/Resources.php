@@ -233,7 +233,6 @@ enum Resources: string
         $specialPermissions = [
             'dashboard_view' => 'Ver Dashboard',
             'reports_export' => 'Exportar Reportes',
-            'settings_manage' => 'Gestionar Configuración',
             'system_admin' => 'Administrador del Sistema',
         ];
 

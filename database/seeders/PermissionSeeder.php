@@ -21,9 +21,11 @@ class PermissionSeeder extends Seeder
 
         // Definir permisos por recurso
         $resourcesWithActions = [
-            // Sistema (solo para super admins)
-            [Resources::USERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
-            [Resources::COMPANIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST, Actions::MANAGE]],
+            // Sistema (solo para super admins). Sin "manage": users_manage y
+            // companies_manage no los revisaba nada (ver la migración
+            // remove_unused_manage_permissions).
+            [Resources::USERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
+            [Resources::COMPANIES, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
 
             // Empresa (para admins de empresa)
             // [Resources::WORKERS, [Actions::CREATE, Actions::READ, Actions::UPDATE, Actions::DELETE, Actions::LIST]],
@@ -63,7 +65,8 @@ class PermissionSeeder extends Seeder
             // se retiró (el corte es el del turno de caja).
             [Resources::REPORTS, [Actions::VIEW, Actions::EXPORT]],
             [Resources::DASHBOARD, [Actions::VIEW]],
-            [Resources::SETTINGS, [Actions::READ, Actions::UPDATE, Actions::MANAGE]],
+            // Sin settings_manage: tampoco lo revisaba nada.
+            [Resources::SETTINGS, [Actions::READ, Actions::UPDATE]],
         ];
 
         // Generar permisos basados en recursos y acciones
