@@ -34,7 +34,7 @@ class ReportsAndCatalogFixesTest extends TestCase
 
     // ─── Dashboard ───────────────────────────────────────────────────────────
 
-    private function sale(float $total, string $status, int $productId): void
+    private function sale(float $total, string $status, int $productId): Sale
     {
         $sale = Sale::create([
             'company_id' => $this->company->id, 'location_id' => $this->location->id, 'user_id' => $this->user->id,
@@ -46,6 +46,8 @@ class ReportsAndCatalogFixesTest extends TestCase
             'sale_id' => $sale->id, 'product_id' => $productId, 'unit_id' => $this->unitId('Pieza'),
             'quantity' => 1, 'unit_price' => $total, 'subtotal' => $total, 'tax' => 0, 'discount' => 0, 'total' => $total,
         ]);
+
+        return $sale;
     }
 
     private function purchase(float $total, string $status): void
@@ -81,6 +83,30 @@ class ReportsAndCatalogFixesTest extends TestCase
 
         $amounts = collect($data['recent_activity'])->whereIn('type', ['sale', 'purchase'])->pluck('amount')->sort()->values()->all();
         $this->assertEquals([100, 300], $amounts, 'la actividad reciente no muestra canceladas ni compras sin recibir');
+    }
+
+    public function test_dashboard_payment_methods_use_the_sale_method_and_split_mixed_payments(): void
+    {
+        $coco = $this->createProduct([], 10);
+        $this->sale(100, 'closed', $coco->id);
+        $card = $this->sale(60, 'closed', $coco->id);
+        $card->update(['payment_method' => 'card', 'content' => ['payment_method' => 'card']]);
+        $card->payments()->create(['method' => 'card', 'amount' => 60]);
+        $mixed = $this->sale(50, 'closed', $coco->id);
+        $mixed->update(['payment_method' => 'mixed', 'content' => ['payment_method' => 'mixed']]);
+        $mixed->payments()->create(['method' => 'cash', 'amount' => 30, 'tendered' => 30, 'change' => 0]);
+        $mixed->payments()->create(['method' => 'card', 'amount' => 20]);
+
+        $data = $this->withHeaders($this->tenantHeaders())
+            ->getJson('/api/auth/admin/reports-v2/dashboard?period=month&scope=location')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertEquals(
+            ['Efectivo' => 130, 'Tarjeta' => 80],
+            collect($data['payment_methods'])->pluck('value', 'name')->all(),
+            'cada venta cuenta en su método (no "Sin especificar") y la mixta se reparte',
+        );
     }
 
     // ─── Unidades ────────────────────────────────────────────────────────────

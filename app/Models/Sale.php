@@ -224,14 +224,6 @@ class Sale extends Model
     }
 
     /**
-     * Accessor para obtener método de pago
-     */
-    public function getPaymentMethodAttribute(): ?string
-    {
-        return $this->content['payment_method'] ?? null;
-    }
-
-    /**
      * Accessor para obtener información del cliente
      */
     public function getCustomerInfoAttribute(): ?array

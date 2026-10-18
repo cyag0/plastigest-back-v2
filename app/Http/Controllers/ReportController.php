@@ -194,43 +194,52 @@ class ReportController extends Controller
             'card' => 'Tarjeta',
             'transfer' => 'Transferencia',
             'credit' => 'Crédito',
-            'other' => 'Otro',
-            'efectivo' => 'Efectivo',
-            'tarjeta' => 'Tarjeta',
-            'transferencia' => 'Transferencia',
             'sin_especificar' => 'Sin especificar',
         ];
 
         $paymentColor = [
             'cash' => '#809671',
-            'efectivo' => '#809671',
             'card' => '#8B9FA8',
-            'tarjeta' => '#8B9FA8',
             'transfer' => '#725C3A',
-            'transferencia' => '#725C3A',
             'credit' => '#A65A4D',
-            'other' => '#A65A4D',
             'sin_especificar' => '#A65A4D',
         ];
 
-        $paymentMethods = Sale::query()
-            ->select('payment_method', DB::raw('SUM(total) as value'))
-            ->where('company_id', $companyId)
-            ->where('status', '!=', SaleStatus::CANCELLED->value)
-            ->whereBetween('sale_date', $dateRange)
+        // Por método de pago. Una venta con pago mixto se reparte entre lo que
+        // se cobró con cada método (el POS exige que los pagos sumen el total);
+        // las demás cuentan su total en su método, porque las anteriores al POS
+        // no tienen filas en sale_payments.
+        $salesInPeriod = fn() => Sale::query()
+            ->where('sales.company_id', $companyId)
+            ->where('sales.status', '!=', SaleStatus::CANCELLED->value)
+            ->whereBetween('sales.sale_date', $dateRange)
             ->when($scope === 'location' && $locationId, function ($query) use ($locationId) {
-                $query->where('location_id', $locationId);
-            })
-            ->groupBy('payment_method')
+                $query->where('sales.location_id', $locationId);
+            });
+
+        // toBase(): filas simples, sin pasar por los accessors del modelo.
+        $byMethod = $salesInPeriod()
+            ->where('sales.payment_method', '!=', 'mixed')
+            ->groupBy('sales.payment_method')
+            ->toBase()
+            ->selectRaw('sales.payment_method AS method, SUM(sales.total) AS value')
             ->get()
-            ->map(function ($row) use ($paymentLabel, $paymentColor) {
-                $key = strtolower((string) ($row->payment_method ?? 'sin_especificar'));
-                return [
-                    'name' => $paymentLabel[$key] ?? ucfirst($key),
-                    'value' => (float) ($row->value ?? 0),
-                    'color' => $paymentColor[$key] ?? '#A65A4D',
-                ];
-            })
+            ->concat($salesInPeriod()
+                ->where('sales.payment_method', 'mixed')
+                ->join('sale_payments', 'sale_payments.sale_id', '=', 'sales.id')
+                ->groupBy('sale_payments.method')
+                ->toBase()
+                ->selectRaw('sale_payments.method AS method, SUM(sale_payments.amount) AS value')
+                ->get());
+
+        $paymentMethods = $byMethod
+            ->groupBy(fn($row) => $row->method ?: 'sin_especificar')
+            ->map(fn($rows, $key) => [
+                'name' => $paymentLabel[$key] ?? ucfirst($key),
+                'value' => round($rows->sum(fn($row) => (float) $row->value), 2),
+                'color' => $paymentColor[$key] ?? '#A65A4D',
+            ])
+            ->sortByDesc('value')
             ->values();
 
         // La actividad reciente muestra montos como ingreso o egreso: se toman

@@ -435,6 +435,7 @@ class SaleController extends CrudController
                         'card' => 'Tarjeta',
                         'transfer' => 'Transferencia',
                         'credit' => 'Crédito',
+                        'mixed' => 'Mixto',
                         default => $item->payment_method ?? 'Sin especificar'
                     };
 
