@@ -4,9 +4,11 @@ namespace App\Http\Resources;
 
 use App\Constants\Files;
 use App\Models\InventoryAdjustmentDetail;
+use App\Models\User;
 use App\Utils\AppUploadUtil;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\Cache;
 
 class InventoryTransferResource extends JsonResource
 {
@@ -75,14 +77,23 @@ class InventoryTransferResource extends JsonResource
                 'name' => $this->requestedByUser->name,
             ] : null,
 
+            // Quién hizo cada paso se guarda por id en `content`: antes los
+            // *_by_user llegaban siempre en null y el historial no tenía nombres.
             'approved_by' => data_get($this->content, 'step_1.approved_by'),
-            'approved_by_user' => null,
+            'approved_by_user' => $this->userRef(data_get($this->content, 'step_1.approved_by')),
 
             'shipped_by' => data_get($this->content, 'step_2.shipped_by'),
-            'shipped_by_user' => null,
+            'shipped_by_user' => $this->userRef(data_get($this->content, 'step_2.shipped_by')),
 
             'received_by' => data_get($this->content, 'step_3.received_by'),
-            'received_by_user' => null,
+            'received_by_user' => $this->userRef(data_get($this->content, 'step_3.received_by')),
+
+            'rejected_by' => data_get($this->content, 'step_1.rejected_by'),
+            'rejected_by_user' => $this->userRef(data_get($this->content, 'step_1.rejected_by')),
+            'rejected_at' => data_get($this->content, 'step_1.rejected_at'),
+
+            'cancelled_by' => data_get($this->content, 'cancellation.cancelled_by'),
+            'cancelled_by_user' => $this->userRef(data_get($this->content, 'cancellation.cancelled_by')),
 
             // Fechas
             'requested_at' => data_get($this->content, 'step_1.created_at') ?? $this->created_at?->toISOString(),
@@ -193,5 +204,25 @@ class InventoryTransferResource extends JsonResource
         }
 
         return $formatted;
+    }
+
+    /**
+     * {id, name} de un usuario guardado por id en `content`. Una consulta por
+     * usuario en toda la petición (el store "array" dura lo que la petición),
+     * no una por transferencia de la lista.
+     */
+    private function userRef(mixed $id): ?array
+    {
+        $id = (int) $id;
+        if ($id <= 0) {
+            return null;
+        }
+
+        $name = Cache::store('array')->rememberForever(
+            "transfer-user:{$id}",
+            fn() => (string) (User::whereKey($id)->value('name') ?? '')
+        );
+
+        return $name === '' ? null : ['id' => $id, 'name' => $name];
     }
 }
