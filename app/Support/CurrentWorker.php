@@ -96,7 +96,8 @@ class CurrentWorker
             return null;
         }
 
-        return self::remember("role-model:{$roleId}", fn() => Role::find($roleId));
+        // Un rol desactivado cuenta como si no tuviera rol (Role::grantsAccess()).
+        return self::remember("role-model:{$roleId}", fn() => Role::query()->grantingAccess()->find($roleId));
     }
 
     /**
@@ -604,8 +605,12 @@ class CurrentWorker
     }
 
     /**
-     * Empresa y permisos de cada rol, consultando solo los que aún no se
-     * conocen en esta petición.
+     * Empresa y permisos de cada rol que da acceso, consultando solo los que
+     * aún no se conocen en esta petición.
+     *
+     * Un rol borrado o desactivado no da nada: no aparece en el resultado, así
+     * que tampoco cuenta para todas las sucursales ni para administrador del
+     * sistema. El rol del sistema siempre cuenta (Role::grantsAccess()).
      *
      * @param int[] $roleIds
      * @return array<int, array{company_id: int|null, permissions: string[]}>
@@ -617,43 +622,46 @@ class CurrentWorker
             return [];
         }
 
-        $known = [];
+        $resolved = [];
         $missing = [];
         foreach ($roleIds as $roleId) {
             if (self::$cache !== null && array_key_exists("role:{$roleId}", self::$cache)) {
-                $known[$roleId] = self::$cache["role:{$roleId}"];
+                $resolved[$roleId] = self::$cache["role:{$roleId}"];
             } else {
                 $missing[] = $roleId;
             }
         }
 
         if ($missing !== []) {
-            $companies = DB::table('roles')->whereIn('id', $missing)->pluck('company_id', 'id');
-            $permissions = DB::table('rol_permission')
+            $companies = DB::table('roles')
+                ->whereIn('id', $missing)
+                ->where(Role::grantsAccessCondition())
+                ->pluck('company_id', 'id');
+            $permissions = $companies->isEmpty() ? collect() : DB::table('rol_permission')
                 ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
-                ->whereIn('rol_permission.role_id', $missing)
+                ->whereIn('rol_permission.role_id', $companies->keys()->all())
                 ->get(['rol_permission.role_id', 'permissions.name'])
                 ->groupBy('role_id');
 
             foreach ($missing as $roleId) {
-                // Un rol borrado ya no da nada.
-                if (!$companies->has($roleId)) {
-                    continue;
+                // null = borrado o desactivado: se recuerda igual, para no
+                // volver a consultarlo en cada revisión de permisos.
+                $role = null;
+                if ($companies->has($roleId)) {
+                    $companyId = $companies[$roleId];
+                    $role = [
+                        'company_id' => $companyId === null ? null : (int) $companyId,
+                        'permissions' => collect($permissions->get($roleId, []))->pluck('name')->unique()->values()->all(),
+                    ];
                 }
 
-                $companyId = $companies[$roleId];
-                $role = [
-                    'company_id' => $companyId === null ? null : (int) $companyId,
-                    'permissions' => collect($permissions->get($roleId, []))->pluck('name')->unique()->values()->all(),
-                ];
-
-                $known[$roleId] = $role;
+                $resolved[$roleId] = $role;
                 if (self::$cache !== null) {
                     self::$cache["role:{$roleId}"] = $role;
                 }
             }
         }
 
-        return $known;
+        return array_filter($resolved, fn($role) => $role !== null);
     }
 }

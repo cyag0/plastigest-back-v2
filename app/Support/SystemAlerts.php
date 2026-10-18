@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Mail\SystemAlertMail;
+use App\Models\Admin\Role;
 use App\Models\Notification;
 use App\Models\User;
 use Illuminate\Console\Events\ScheduledTaskFailed;
@@ -118,7 +119,8 @@ class SystemAlerts
 
     /**
      * Usuarios activos con un rol que tiene system_admin (directo o por
-     * sucursal), como el Super Admin de la primera instalación.
+     * sucursal), como el Super Admin de la primera instalación. Un rol
+     * desactivado no cuenta (Role::grantsAccess()).
      *
      * @return Collection<int, User>
      */
@@ -126,7 +128,9 @@ class SystemAlerts
     {
         $roleIds = DB::table('rol_permission')
             ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
+            ->join('roles', 'roles.id', '=', 'rol_permission.role_id')
             ->where('permissions.name', 'system_admin')
+            ->where(Role::grantsAccessCondition())
             ->pluck('rol_permission.role_id');
 
         if ($roleIds->isEmpty()) {

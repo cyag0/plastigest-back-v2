@@ -176,7 +176,9 @@ class AuthController extends Controller
                 'is_system'   => $role->is_system ?? false,
             ])->values()->toArray();
 
-            $permissions = $user->roles->flatMap(fn($role) => $role->permissions)
+            // Un rol desactivado no da permisos (Role::grantsAccess()).
+            $permissions = $user->roles->filter(fn(Role $role) => $role->grantsAccess())
+                ->flatMap(fn($role) => $role->permissions)
                 ->unique('id')
                 ->map(fn($p) => [
                     'id'          => $p->id,

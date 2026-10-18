@@ -14,6 +14,7 @@ use App\Support\CurrentWorker;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 class RolesController extends CrudController
@@ -59,6 +60,9 @@ class RolesController extends CrudController
         if ($company) {
             $query->where('company_id', $company->id);
         }
+
+        // Cuántas personas tienen cada rol (users_count), en la misma consulta.
+        $query->addSelect(['users_count' => Role::usersCountSubquery()]);
     }
 
     /**
@@ -155,6 +159,7 @@ class RolesController extends CrudController
 
         $this->guardGrantedPermissions($request);
         $this->guardRoleChanges($request, $model);
+        $this->guardActivation($request, $model);
 
         // Para la bitácora: los permisos no son atributos del modelo y el
         // observer no los ve.
@@ -212,17 +217,61 @@ class RolesController extends CrudController
             }
         }
 
-        $holderIds = DB::table('user_location_roles')->where('role_id', $role->id)->pluck('user_id')
-            ->merge(DB::table('users_roles')->where('role_id', $role->id)->pluck('user_id'))
-            ->unique();
+        $holderIds = $role->holderIds();
 
-        CurrentWorker::preloadRoles($holderIds->all());
+        CurrentWorker::preloadRoles($holderIds);
         foreach (User::whereIn('id', $holderIds)->get() as $holder) {
             if (!CurrentWorker::canManageUser($holder)) {
                 abort(response()->json([
                     'message' => 'No puedes editar un rol que tiene un usuario con permisos que tú no tienes.',
                 ], 403));
             }
+        }
+    }
+
+    /**
+     * Desactivar un rol le quita sus permisos a quienes lo tienen
+     * (Role::grantsAccess()), y activarlo se los devuelve:
+     * - nadie desactiva un rol que él mismo tiene (directo o en alguna
+     *   sucursal): se quedaría sin esos permisos, quizá sin poder volver a
+     *   activarlo;
+     * - salvo el administrador del sistema, nadie activa un rol con permisos
+     *   que él no tiene: es lo mismo que darlos (guardGrantedPermissions), y
+     *   sin esto quien tenía un rol desactivado por el dueño podía volver a
+     *   activarlo con roles_update de otro rol.
+     * El rol del sistema ni llega aquí: no se modifica (validateUpdateData).
+     */
+    private function guardActivation(Request $request, Role $role): void
+    {
+        if (!$request->has('is_active')) {
+            return;
+        }
+
+        $active = filter_var($request->input('is_active'), FILTER_VALIDATE_BOOLEAN);
+        if ($active === (bool) $role->is_active) {
+            return;
+        }
+
+        if (!$active) {
+            if (in_array((int) Auth::id(), $role->holderIds(), true)) {
+                abort(response()->json([
+                    'message' => 'No puedes desactivar un rol que tú tienes: te quedarías sin sus permisos.',
+                ], 422));
+            }
+
+            return;
+        }
+
+        if (CurrentWorker::isSystemAdmin()) {
+            return;
+        }
+
+        $permissions = $request->has('permissions')
+            ? Permission::whereIn('id', array_keys(array_filter((array) $request->input('permissions'))))->pluck('name')
+            : $role->permissions()->pluck('permissions.name');
+
+        if ($permissions->diff(CurrentWorker::permissions())->isNotEmpty()) {
+            abort(response()->json(['message' => 'No puedes activar un rol con permisos que tú no tienes.'], 403));
         }
     }
 
@@ -368,9 +417,9 @@ class RolesController extends CrudController
         }
 
         // Al borrar el rol, sus usuarios se quedaban sin permisos en la
-        // sucursal sin ningún aviso (la FK lo pone en null).
-        $users = DB::table('user_location_roles')->where('role_id', $model->id)->distinct()->count('user_id')
-            + DB::table('users_roles')->where('role_id', $model->id)->count();
+        // sucursal sin ningún aviso (la FK lo pone en null). Cada persona una
+        // vez, aunque lo tenga directo y en una sucursal.
+        $users = count($model->holderIds());
         if ($users > 0) {
             return [
                 'can_delete' => false,
@@ -415,6 +464,10 @@ class RolesController extends CrudController
 
             // Confirmar la transacción
             DB::commit();
+
+            // Los permisos o el estado del rol pudieron cambiar: lo que
+            // CurrentWorker ya sabía de él en esta petición quedó viejo.
+            CurrentWorker::flush();
 
             return $model;
         } catch (\Exception $e) {

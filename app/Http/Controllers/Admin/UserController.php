@@ -152,15 +152,18 @@ class UserController extends CrudController
 
     /**
      * Roles con system_admin del usuario del renglón en $pivot (users_roles o
-     * user_location_roles), para usar dentro de un EXISTS.
+     * user_location_roles), para usar dentro de un EXISTS. Un rol desactivado
+     * no cuenta, igual que en CurrentWorker::isSystemAdmin().
      */
     private function systemAdminRoleQuery(string $pivot)
     {
         return DB::table($pivot)
             ->selectRaw('1')
+            ->join('roles', 'roles.id', '=', "{$pivot}.role_id")
             ->join('rol_permission', 'rol_permission.role_id', '=', "{$pivot}.role_id")
             ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
             ->whereColumn("{$pivot}.user_id", 'users.id')
+            ->where(Role::grantsAccessCondition())
             ->where('permissions.name', 'system_admin');
     }
 

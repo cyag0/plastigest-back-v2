@@ -2,6 +2,7 @@
 
 namespace App\Notifications\Services;
 
+use App\Models\Admin\Role;
 use App\Models\NotificationPreference;
 use App\Models\User;
 use Illuminate\Support\Collection;
@@ -46,17 +47,22 @@ class RecipientResolver
             return collect();
         }
 
+        // Solo cuentan los roles que dan sus permisos: a quien tiene un rol
+        // desactivado ya no le llegan sus avisos (Role::grantsAccess()).
         $users = User::where('is_active', true)
             ->whereHas('companies', fn($q) => $q->where('companies.id', $companyId))
             ->when($locationId, fn($q) => $q->whereHas('locationRoles', fn($locationQuery) => $locationQuery->where('locations.id', $locationId)))
             ->where(function ($q) use ($permissionName, $locationId) {
-                $q->whereHas('roles.permissions', fn($roleQuery) => $roleQuery->where('name', $permissionName))
+                $q->whereHas('roles', fn($roleQuery) => $roleQuery->grantingAccess()
+                    ->whereHas('permissions', fn($permissionQuery) => $permissionQuery->where('name', $permissionName)))
                     ->orWhereExists(function ($subquery) use ($permissionName, $locationId) {
                         $subquery->selectRaw('1')
                             ->from('user_location_roles')
+                            ->join('roles', 'roles.id', '=', 'user_location_roles.role_id')
                             ->join('rol_permission', 'user_location_roles.role_id', '=', 'rol_permission.role_id')
                             ->join('permissions', 'rol_permission.permission_id', '=', 'permissions.id')
                             ->whereColumn('user_location_roles.user_id', 'users.id')
+                            ->where(Role::grantsAccessCondition())
                             ->where('permissions.name', $permissionName);
 
                         if ($locationId) {

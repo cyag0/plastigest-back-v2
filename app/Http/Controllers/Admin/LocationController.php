@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\CrudController;
 use App\Http\Resources\Admin\LocationResource;
 use App\Models\Admin\Location;
+use App\Models\Admin\Role;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use App\Support\CurrentWorker;
@@ -302,11 +303,14 @@ class LocationController extends CrudController
         // Los administradores del sistema de la empresa están en todas las
         // sucursales con su rol de sistema (UserSeeder): así les llegan los
         // avisos de cada una. Sin esto, la sucursal nueva no les avisaba nada.
+        // Un rol desactivado no los hace administradores (Role::grantsAccess()).
         $admins = DB::table('users_roles')
+            ->join('roles', 'roles.id', '=', 'users_roles.role_id')
             ->join('rol_permission', 'rol_permission.role_id', '=', 'users_roles.role_id')
             ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
             ->join('user_company', 'user_company.user_id', '=', 'users_roles.user_id')
             ->where('permissions.name', 'system_admin')
+            ->where(Role::grantsAccessCondition())
             ->where('user_company.company_id', $model->company_id)
             ->pluck('users_roles.role_id', 'users_roles.user_id');
 

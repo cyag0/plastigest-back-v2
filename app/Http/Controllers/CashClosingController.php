@@ -214,8 +214,10 @@ class CashClosingController extends CrudController
                 ->unique();
 
             // De esos roles, los que pueden cerrar caja. Se usa la relación de
-            // Eloquent para no depender del nombre de la tabla pivote.
+            // Eloquent para no depender del nombre de la tabla pivote. Un rol
+            // desactivado no da el permiso (Role::grantsAccess()).
             $allowedRoleIds = Role::whereIn('id', $locationRoleIds)
+                ->grantingAccess()
                 ->whereHas('permissions', fn ($q) => $q->where('name', 'cash_movements_create'))
                 ->pluck('id');
 

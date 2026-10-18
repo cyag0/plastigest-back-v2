@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Admin\Role;
 use App\Models\NotificationPreference;
 use App\Models\User;
 use App\Notifications\Services\TemplateResolver;
@@ -309,15 +310,20 @@ class NotificationPreferenceController extends Controller
             $query->whereHas('locationRoles', fn($q) => $q->where('locations.id', $locationId));
         }
 
+        // Mismos destinatarios que RecipientResolver: un rol desactivado no
+        // da el permiso, así que quien solo lo tiene por él no se ofrece.
         if (!empty($permission)) {
             $query->where(function ($q) use ($permission, $locationId) {
-                $q->whereHas('roles.permissions', fn($roleQuery) => $roleQuery->where('name', $permission))
+                $q->whereHas('roles', fn($roleQuery) => $roleQuery->grantingAccess()
+                    ->whereHas('permissions', fn($permissionQuery) => $permissionQuery->where('name', $permission)))
                     ->orWhereExists(function ($subquery) use ($permission, $locationId) {
                         $subquery->selectRaw('1')
                             ->from('user_location_roles')
+                            ->join('roles', 'roles.id', '=', 'user_location_roles.role_id')
                             ->join('rol_permission', 'user_location_roles.role_id', '=', 'rol_permission.role_id')
                             ->join('permissions', 'rol_permission.permission_id', '=', 'permissions.id')
                             ->whereColumn('user_location_roles.user_id', 'users.id')
+                            ->where(Role::grantsAccessCondition())
                             ->where('permissions.name', $permission);
 
                         if ($locationId) {

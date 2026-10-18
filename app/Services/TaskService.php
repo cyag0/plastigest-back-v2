@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Admin\Role;
 use App\Models\Task;
 use App\Models\User;
 use App\Models\PurchaseV2;
@@ -502,12 +503,15 @@ class TaskService
             ->where('users.is_active', true)
             ->whereHas('companies', fn($q) => $q->where('companies.id', $task->company_id))
             ->whereExists(function ($sub) use ($permission, $locationId, $branchRolesOnly) {
+                // Un rol desactivado no da el permiso: no se le asignan
+                // tareas por él (Role::grantsAccess()).
                 $sub->selectRaw('1')
                     ->from('user_location_roles')
                     ->join('roles', 'roles.id', '=', 'user_location_roles.role_id')
                     ->join('rol_permission', 'rol_permission.role_id', '=', 'roles.id')
                     ->join('permissions', 'permissions.id', '=', 'rol_permission.permission_id')
                     ->whereColumn('user_location_roles.user_id', 'users.id')
+                    ->where(Role::grantsAccessCondition())
                     ->where('permissions.name', $permission);
 
                 if ($locationId) {
