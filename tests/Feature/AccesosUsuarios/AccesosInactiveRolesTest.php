@@ -401,4 +401,25 @@ class AccesosInactiveRolesTest extends TestCase
             ->assertStatus(422)
             ->assertJsonPath('message', 'No se puede eliminar: 3 usuarios tienen este rol. Asígnales otro rol primero.');
     }
+
+    public function test_an_inactive_role_is_not_assigned_but_a_held_one_does_not_block_saving(): void
+    {
+        $inactive = $this->role('Temporada', ['sales_pos'], active: false);
+        $user = $this->createBranchUser($this->location, ['sales_pos']);
+
+        // Asignarlo dejaba a la persona sin acceso sin que nadie lo notara.
+        $this->actingInBranch($this->user)
+            ->putJson("/api/auth/admin/users/{$user->id}", ['location_role_id' => $inactive])
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'inactive_role')
+            ->assertJsonPath('message', 'El rol «Temporada» está desactivado: actívalo en Roles antes de asignarlo.');
+
+        // Si ya lo tenía (se desactivó después), se puede guardar lo demás.
+        DB::table('user_location_roles')->where('user_id', $user->id)->where('location_id', $this->location->id)
+            ->update(['role_id' => $inactive]);
+        $this->actingInBranch($this->user)
+            ->putJson("/api/auth/admin/users/{$user->id}", ['name' => 'Nombre nuevo', 'location_role_id' => $inactive])
+            ->assertOk();
+        $this->assertSame('Nombre nuevo', $user->fresh()->name);
+    }
 }

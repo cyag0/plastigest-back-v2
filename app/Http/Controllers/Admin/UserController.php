@@ -237,6 +237,10 @@ class UserController extends CrudController
      */
     private function guardAssignment(Request $request, ?Model $target = null): ?JsonResponse
     {
+        if ($denied = $this->guardInactiveRoles($request, $target)) {
+            return $denied;
+        }
+
         $actor = Auth::user();
         if (!$actor || CurrentWorker::isSystemAdmin($actor)) {
             return null; // el administrador del sistema puede asignar todo
@@ -321,6 +325,48 @@ class UserController extends CrudController
      * @param int[] $roleIds
      * @param string $verb "asignar" o "quitar"
      */
+    /**
+     * Un rol desactivado no da permisos, así que no se asigna (tampoco el
+     * administrador del sistema): asignarlo dejaba a la persona sin acceso sin
+     * que nadie lo notara. Los que el usuario ya tiene pueden quedarse tal
+     * cual, para no impedir que se guarde el resto de sus datos.
+     */
+    private function guardInactiveRoles(Request $request, ?Model $target): ?JsonResponse
+    {
+        $requested = collect($request->input('role_ids', []))
+            ->merge(collect($request->input('location_roles', []))->pluck('role_id'))
+            ->push($request->input('location_role_id'))
+            ->filter(fn($id) => $id !== null && $id !== '')
+            ->map(fn($id) => (int) $id)
+            ->unique();
+
+        if ($requested->isEmpty()) {
+            return null;
+        }
+
+        $held = $target
+            ? DB::table('users_roles')->where('user_id', $target->getKey())->pluck('role_id')
+                ->merge(DB::table('user_location_roles')->where('user_id', $target->getKey())->pluck('role_id'))
+                ->filter()
+                ->map(fn($id) => (int) $id)
+            : collect();
+
+        $inactive = Role::whereIn('id', $requested->diff($held)->values()->all())
+            ->where('is_active', false)
+            ->where('is_system', false)
+            ->value('name');
+
+        if ($inactive === null) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => "El rol «{$inactive}» está desactivado: actívalo en Roles antes de asignarlo.",
+            'errors' => ['role_ids' => ["El rol «{$inactive}» está desactivado."]],
+            'code' => 'inactive_role',
+        ], 422);
+    }
+
     private function guardRoles(array $roleIds, string $verb): ?JsonResponse
     {
         if (empty($roleIds)) {
