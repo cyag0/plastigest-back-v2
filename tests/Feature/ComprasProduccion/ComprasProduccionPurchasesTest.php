@@ -92,9 +92,24 @@ class ComprasProduccionPurchasesTest extends TestCase
         return $this->purchase($branch, $status, [[10, 15]], $product);
     }
 
-    private function buyer(?Location $location = null): User
+    /**
+     * Encargado de compras de la sucursal del contexto, con su turno de caja
+     * abierto: las compras de prueba se pagan en efectivo de la caja y ese
+     * efectivo tiene que salir del turno de alguna caja.
+     */
+    private function buyer(bool $withShift = true): User
     {
-        return $this->createBranchUser($location ?? $this->location, self::BUYER)->fresh();
+        $buyer = $this->createBranchUser($this->location, self::BUYER)->fresh();
+        if ($withShift) {
+            $this->openShiftFor($buyer);
+        }
+
+        return $buyer;
+    }
+
+    private function shiftOf(User $user): CashRegisterSession
+    {
+        return CashRegisterSession::where('user_id', $user->id)->where('status', CashRegisterSession::STATUS_OPEN)->firstOrFail();
     }
 
     /**
@@ -495,8 +510,8 @@ class ComprasProduccionPurchasesTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('received', true)
             ->assertJsonPath('whatsapp_sent', false)
-            // Quien la registra no tiene turno: el pago no entra a ningún corte.
-            ->assertJsonPath('cash_out_of_shift', true)
+            // Sale del turno de quien la registra.
+            ->assertJsonPath('cash_out_of_shift', false)
             ->assertJsonPath('data.status', PurchaseV2::STATUS_RECEIVED);
 
         $purchase->refresh();
@@ -590,7 +605,7 @@ class ComprasProduccionPurchasesTest extends TestCase
     public function test_receive_now_books_the_cash_out_in_the_buyer_shift_locking_it_before_the_stock(): void
     {
         $buyer = $this->buyer();
-        $shift = $this->openShiftFor($buyer);
+        $shift = $this->shiftOf($buyer);
         $purchase = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[10, 15]]);
 
         DB::flushQueryLog();
@@ -639,30 +654,104 @@ class ComprasProduccionPurchasesTest extends TestCase
         $this->assertSame([], $this->statusSteps($purchase));
     }
 
-    public function test_the_response_says_when_the_payment_left_the_register_out_of_shift(): void
+    public function test_without_a_shift_of_its_own_the_buyer_chooses_the_register_the_cash_comes_from(): void
     {
-        $buyer = $this->buyer();
-
-        // Sin turno propio, el egreso no entra a ningún corte: la app lo avisa.
+        $buyer = $this->buyer(false);
+        $cashier = $this->createBranchUser($this->location, ['sales_pos'])->fresh();
+        $counter = $this->openShiftFor($cashier);
         $order = $this->purchase($this->location, PurchaseV2::STATUS_ORDERED, [[10, 15]]);
-        $this->receive($order, [['id' => $order->details->first()->id, 'quantity_received' => 10]], $buyer)
-            ->assertOk()
-            ->assertJsonPath('cash_out_of_shift', true);
-        $this->assertNull(CashMovement::where('source_type', 'purchase_v2')->where('source_id', $order->id)->value('cash_register_session_id'));
+        $line = [['id' => $order->details->first()->id, 'quantity_received' => 10]];
 
-        // Si no salió de la caja, no hay egreso que avisar.
-        $paidByOwner = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[10, 15]]);
-        $this->confirmAsReceived($paidByOwner, $buyer, ['paid_from_cash' => false])
+        // Sin elegir: el efectivo no puede quedar fuera de turno (antes el
+        // cajero de cuyo cajón salió cerraba con faltante). Nada se recibe.
+        $this->receive($order, $line, $buyer)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'cash_session_required');
+        $this->assertSame(PurchaseV2::STATUS_ORDERED, $order->fresh()->status);
+        $this->assertEquals(0, $this->stockOf($this->coco));
+        $this->assertNull($this->cashOut($order));
+
+        // Eligiendo la caja del mostrador: sale de ese corte, a nombre de quien la recibió.
+        $this->actingInBranch($buyer)
+            ->postJson("/api/auth/admin/purchases-v2/{$order->id}/receive", ['details' => $line, 'cash_register_session_id' => $counter->id])
+            ->assertOk()
+            ->assertJsonPath('cash_out_of_shift', false);
+        $movement = CashMovement::where('source_type', 'purchase_v2')->where('source_id', $order->id)->firstOrFail();
+        $this->assertSame($counter->id, (int) $movement->cash_register_session_id);
+        $this->assertSame($buyer->id, (int) $movement->user_id);
+        $this->assertEquals(500 - 150, app(CashRegisterSessionService::class)->summary($counter->fresh())['expected_cash']);
+
+        // Registrada recibida, igual.
+        $draft = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[4, 10]]);
+        $this->confirmAsReceived($draft, $buyer, ['cash_register_session_id' => $counter->id])->assertOk();
+        $this->assertSame($counter->id, (int) CashMovement::where('source_type', 'purchase_v2')->where('source_id', $draft->id)->value('cash_register_session_id'));
+    }
+
+    public function test_the_chosen_register_must_be_an_open_shift_of_the_branch(): void
+    {
+        $buyer = $this->buyer(false);
+        $cashier = $this->createBranchUser($this->location, ['sales_pos'])->fresh();
+        $closed = $this->openShiftFor($cashier);
+        $closed->update(['status' => CashRegisterSession::STATUS_CLOSED, 'closed_at' => now()]);
+        $otherBranch = app(CashRegisterSessionService::class)->open(
+            CashRegister::create([
+                'company_id' => $this->company->id, 'location_id' => $this->pitillal->id,
+                'name' => 'Caja Pitillal', 'code' => 'CP', 'is_active' => true,
+            ]),
+            0,
+            $this->createBranchUser($this->pitillal, ['sales_pos'])->fresh(),
+        );
+        $order = $this->purchase($this->location, PurchaseV2::STATUS_ORDERED, [[10, 15]]);
+        $line = [['id' => $order->details->first()->id, 'quantity_received' => 10]];
+
+        foreach ([$closed->id, $otherBranch->id] as $sessionId) {
+            $this->actingInBranch($buyer)
+                ->postJson("/api/auth/admin/purchases-v2/{$order->id}/receive", ['details' => $line, 'cash_register_session_id' => $sessionId])
+                ->assertStatus(422)
+                ->assertJsonPath('code', 'cash_session_closed');
+        }
+
+        $this->assertSame(PurchaseV2::STATUS_ORDERED, $order->fresh()->status);
+        $this->assertNull($this->cashOut($order));
+    }
+
+    public function test_with_nobody_on_shift_a_cash_purchase_from_the_register_is_refused(): void
+    {
+        $buyer = $this->buyer(false);
+        $draft = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[10, 15]]);
+
+        $response = $this->confirmAsReceived($draft, $buyer)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'no_open_session');
+        $this->assertStringContainsString('Pagado con dinero de la caja', $response->json('message'));
+        $this->assertSame(PurchaseV2::STATUS_DRAFT, $draft->fresh()->status, 'ni confirmada ni recibida a medias');
+        $this->assertEquals(0, $this->stockOf($this->coco));
+
+        // Si la pagó el dueño no sale de la caja: no hace falta turno.
+        $this->confirmAsReceived($draft, $buyer, ['paid_from_cash' => false])
+            ->assertOk()
+            ->assertJsonPath('cash_out_of_shift', false);
+        $this->assertNull($this->cashOut($draft));
+
+        // Con tarjeta tampoco sale del cajón.
+        $card = $this->purchase($this->location, PurchaseV2::STATUS_DRAFT, [[10, 15]]);
+        $this->confirmAsReceived($card, $buyer, ['payment_method' => 'card'])
             ->assertOk()
             ->assertJsonPath('cash_out_of_shift', false);
 
-        // Con turno, entra a su corte.
-        $shift = $this->openShiftFor($buyer);
+        // Si no llegó nada no sale dinero: tampoco hace falta turno.
+        $nothing = $this->purchase($this->location, PurchaseV2::STATUS_ORDERED, [[10, 15]]);
+        $this->receive($nothing, [['id' => $nothing->details->first()->id, 'quantity_received' => 0]], $buyer)->assertOk();
+    }
+
+    public function test_with_a_shift_of_its_own_the_cash_comes_out_of_it(): void
+    {
+        $buyer = $this->buyer();
         $inShift = $this->purchase($this->location, PurchaseV2::STATUS_IN_TRANSIT, [[10, 15]]);
         $this->receive($inShift, [['id' => $inShift->details->first()->id, 'quantity_received' => 10]], $buyer)
             ->assertOk()
             ->assertJsonPath('cash_out_of_shift', false);
-        $this->assertSame($shift->id, CashMovement::where('source_type', 'purchase_v2')->where('source_id', $inShift->id)->value('cash_register_session_id'));
+        $this->assertSame($this->shiftOf($buyer)->id, (int) CashMovement::where('source_type', 'purchase_v2')->where('source_id', $inShift->id)->value('cash_register_session_id'));
     }
 
     /** Productos cuya existencia se bloquea (FOR UPDATE) durante $action, en orden. */

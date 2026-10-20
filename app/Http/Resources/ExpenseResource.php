@@ -25,6 +25,13 @@ class ExpenseResource extends JsonResource
             'payment_method' => $this->payment_method,
             'payment_method_label' => $this->payment_method_label,
             'paid_from_cash' => (bool) ($this->paid_from_cash ?? true),
+            // El turno de la caja de donde salió el efectivo (al ver o guardar el gasto).
+            'cash_session' => $this->whenLoaded('cashSession', fn() => $this->cashSession ? [
+                'id' => $this->cashSession->id,
+                'status' => $this->cashSession->status,
+                'cash_register_name' => $this->cashSession->cashRegister?->name,
+                'user_name' => $this->cashSession->user?->name,
+            ] : null),
             'description' => $this->description,
             'expense_date' => $this->expense_date->format('Y-m-d'),
             'receipt_image' => $this->receipt_image ? asset('storage/' . $this->receipt_image) : null,

@@ -54,6 +54,25 @@
         @endforelse
     </table>
 
+    {{-- Gastos, compras, devoluciones y movimientos a mano en efectivo, con
+         quién los registró: el dinero que otro sacó del cajón queda a la vista.
+         Los cortes cerrados antes de esto no lo traen. --}}
+    @if(!empty($summary['cash_movements']))
+        <div class="rule"></div>
+        <div class="bold">OTROS MOVIMIENTOS DE EFECTIVO</div>
+        <table>
+            @foreach($summary['cash_movements'] as $m)
+                <tr>
+                    <td>{{ \Illuminate\Support\Str::limit($m['concept'] ?? '', 40) }}</td>
+                    <td class="right">{{ ($m['type'] ?? '') === 'expense' ? '−' : '' }}{{ $money($m['amount'] ?? 0) }}</td>
+                </tr>
+                @if(!empty($m['user_name']))
+                    <tr><td class="muted" colspan="2">&nbsp;&nbsp;{{ $m['user_name'] }}</td></tr>
+                @endif
+            @endforeach
+        </table>
+    @endif
+
     <div class="rule-solid"></div>
     <div class="bold">EFECTIVO EN CAJA</div>
     <table>

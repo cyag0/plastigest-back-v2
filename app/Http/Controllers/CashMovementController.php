@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Resources\CashMovementResource;
 use App\Models\CashClosing;
 use App\Models\CashMovement;
+use App\Services\CashMovementService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
 use Illuminate\Database\Eloquent\Model;
@@ -89,6 +90,9 @@ class CashMovementController extends CrudController
             'source_id'      => 'nullable|integer',
             'source_url'     => 'nullable|string|max:500',
             'notes'          => 'nullable|string|max:2000',
+            // De qué caja sale (o a cuál entra) el efectivo, si quien lo
+            // registra no tiene turno abierto.
+            'cash_register_session_id' => 'nullable|integer',
         ]);
     }
 
@@ -121,11 +125,17 @@ class CashMovementController extends CrudController
     }
 
     /**
-     * Movimiento manual de quien tiene turno abierto: entra en ese corte. El
-     * turno se bloquea dentro de la transacción del alta, como en una venta:
-     * un cierre simultáneo espera a que el movimiento entre y lo cuenta, o el
-     * movimiento ve el turno ya cerrado y queda fuera de turno. Antes se leía
-     * sin bloqueo y podía caer en un turno recién cerrado.
+     * Movimiento manual: entra en el corte del turno de la caja de donde sale
+     * (o a la que entra) el dinero. En efectivo es el que eligió quien lo
+     * registra o, si no eligió, su propio turno; sin ninguno se rechaza
+     * (CashMovementService::cashSessionFor). Antes quedaba fuera de turno y el
+     * cajero de cuyo cajón salió cerraba con faltante. Con tarjeta,
+     * transferencia u otro medio no toca el cajón: va al turno de quien lo
+     * registra, si tiene.
+     *
+     * El turno se bloquea dentro de la transacción del alta, como en una
+     * venta: un cierre simultáneo espera a que el movimiento entre y lo
+     * cuenta, o el movimiento ve el turno ya cerrado.
      */
     protected function process($callback, array $data, $method): Model
     {
@@ -134,10 +144,12 @@ class CashMovementController extends CrudController
         }
 
         return DB::transaction(function () use ($callback, $data) {
-            $data['cash_register_session_id'] = \App\Services\CashMovementService::lockedOpenSessionIdFor(
-                Auth::id(),
-                $data['location_id'] ?? null,
-            );
+            $chosenId = isset($data['cash_register_session_id']) ? (int) $data['cash_register_session_id'] : null;
+            $locationId = (int) ($data['location_id'] ?? 0);
+
+            $data['cash_register_session_id'] = CashMovementService::isCash($data['payment_method'] ?? null)
+                ? CashMovementService::cashSessionFor($chosenId, $locationId)
+                : CashMovementService::lockedOpenSessionIdFor(Auth::id(), $locationId);
 
             return $callback($data);
         });
@@ -205,6 +217,14 @@ class CashMovementController extends CrudController
 
         if ($this->shiftIsClosed($model)) {
             return response()->json(['message' => 'No se puede editar un movimiento de un turno ya cerrado.'], 422);
+        }
+
+        // Pasarlo a efectivo lo metería al cajón sin estar en ningún corte.
+        if (!$model->cash_register_session_id && $request->input('payment_method') === 'cash' && $model->payment_method !== 'cash') {
+            return response()->json([
+                'message' => 'Este movimiento no está en ningún turno de caja: para registrarlo en efectivo, bórralo y captúralo de nuevo eligiendo la caja.',
+                'code' => 'cash_session_required',
+            ], 422);
         }
 
         return parent::update($request, $id);

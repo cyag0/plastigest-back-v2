@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Resources\CashRegisterSessionResource;
 use App\Models\CashRegister;
 use App\Models\CashRegisterSession;
+use App\Services\CashMovementService;
 use App\Services\CashRegisterSessionService;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -88,6 +89,27 @@ class CashRegisterSessionController extends Controller
             'data' => $session ? new CashRegisterSessionResource($session->load(self::RELATIONS)) : null,
             'summary' => $session ? $this->service->summary($session) : null,
         ]);
+    }
+
+    /**
+     * Turnos abiertos de la sucursal actual, el propio primero. Quien registra
+     * un gasto, una compra o un movimiento en efectivo sin turno propio elige
+     * de cuál caja salió el dinero; no hace falta poder consultar los turnos.
+     */
+    public function openAtLocation(): JsonResponse
+    {
+        if (!CurrentWorker::hasAnyPermission([
+            'expenses_create', 'expenses_update', 'purchases_update',
+            'cash_movements_create', 'sales_pos', 'cash_register_sessions_list',
+        ])) {
+            return response()->json(['message' => 'No tienes permiso para realizar esta acción.'], 403);
+        }
+
+        if (!CurrentLocation::exists()) {
+            return response()->json(['data' => []]);
+        }
+
+        return response()->json(['data' => CashMovementService::openSessionsAt((int) CurrentLocation::id())]);
     }
 
     public function open(Request $request): JsonResponse

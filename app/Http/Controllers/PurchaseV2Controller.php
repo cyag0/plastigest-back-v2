@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\BusinessRuleException;
 use App\Models\CashMovement;
 use App\Models\PurchaseV2;
 use App\Models\PurchaseDetailV2;
@@ -509,6 +510,9 @@ class PurchaseV2Controller extends Controller
             // confirmar. Antes toda compra pasaba por pedida, en tránsito y
             // recibida: tres confirmaciones más después de armarla.
             'receive_now' => 'nullable|boolean',
+            // De qué caja sale el efectivo al registrarla recibida, si quien
+            // la registra no tiene turno abierto (la app muestra los abiertos).
+            'cash_register_session_id' => 'nullable|integer',
         ], [
             'purchase_date.before' => 'Una compra que ya llegó no puede tener fecha posterior a hoy.',
         ]);
@@ -578,7 +582,7 @@ class PurchaseV2Controller extends Controller
                         ])
                         ->all();
 
-                    $this->receiveLockedPurchase($purchase, $lines);
+                    $this->receiveLockedPurchase($purchase, $lines, $validated['cash_register_session_id'] ?? null);
                 }
 
                 return $purchase;
@@ -611,6 +615,9 @@ class PurchaseV2Controller extends Controller
                 'message' => 'Compra confirmada exitosamente',
                 'data' => $purchase,
             ]);
+        } catch (BusinessRuleException $e) {
+            // Sin caja de donde salga el efectivo: 422 con el motivo, no un 500.
+            return $e->render();
         } catch (Exception $e) {
             return response()->json([
                 'success' => false,
@@ -706,6 +713,8 @@ class PurchaseV2Controller extends Controller
             // fijo al confirmar: el egreso de caja y el costo de los reportes
             // (último precio de compra) salían con el precio del pedido.
             'details.*.unit_price' => 'nullable|numeric|min:0',
+            // De qué caja sale el pago, si quien recibe no tiene turno abierto.
+            'cash_register_session_id' => 'nullable|integer',
         ]);
 
         $purchase = $this->purchases()->with('details.product')->find($id);
@@ -738,7 +747,11 @@ class PurchaseV2Controller extends Controller
         }
 
         try {
-            $result = DB::transaction(fn() => $this->receivePurchase($id, $validated['details']));
+            $result = DB::transaction(fn() => $this->receivePurchase(
+                $id,
+                $validated['details'],
+                $validated['cash_register_session_id'] ?? null,
+            ));
 
             if ($result instanceof JsonResponse) {
                 return $result;
@@ -750,6 +763,8 @@ class PurchaseV2Controller extends Controller
                 'cash_out_of_shift' => $this->cashOutOfShift($result),
                 'data' => $result->fresh(['details']),
             ]);
+        } catch (BusinessRuleException $e) {
+            return $e->render();
         } catch (Exception $e) {
             Log::error('Error al recibir la compra', ['exception' => get_class($e), 'message' => $e->getMessage()]);
             return response()->json([
@@ -763,7 +778,7 @@ class PurchaseV2Controller extends Controller
      * Recepción dentro de la transacción de receive(). Devuelve la compra
      * recibida o la respuesta de error (404 / 422).
      */
-    private function receivePurchase($id, array $lines): PurchaseV2|JsonResponse
+    private function receivePurchase($id, array $lines, ?int $chosenSessionId = null): PurchaseV2|JsonResponse
     {
         // Bloqueo de fila + relectura del estado: sin esto, un doble envío
         // (doble clic / dos dispositivos) recibía la compra dos veces y
@@ -784,7 +799,7 @@ class PurchaseV2Controller extends Controller
             ], 422);
         }
 
-        return $this->receiveLockedPurchase($purchase, $lines);
+        return $this->receiveLockedPurchase($purchase, $lines, $chosenSessionId);
     }
 
     /**
@@ -794,17 +809,12 @@ class PurchaseV2Controller extends Controller
      * egreso de caja por lo recibido, discrepancias, tareas y aviso.
      *
      * @param array<int, array{id: int, quantity_received: float|string, unit_price?: float|string|null}> $lines
+     * @param int|null $chosenSessionId El turno de la caja de donde sale el
+     *   pago, si quien recibe no tiene el suyo.
+     * @throws \App\Exceptions\BusinessRuleException Pago en efectivo sin turno de donde salga.
      */
-    private function receiveLockedPurchase(PurchaseV2 $purchase, array $lines): PurchaseV2
+    private function receiveLockedPurchase(PurchaseV2 $purchase, array $lines, ?int $chosenSessionId = null): PurchaseV2
     {
-        // El turno de quien recibe (de donde sale el pago) se bloquea antes que
-        // las existencias: mismo orden que una venta (turno → stock), para que
-        // una venta simultánea en ese turno no se cruce con esta recepción.
-        // fromPurchaseV2 vuelve a leerlo, ya bloqueado.
-        if ($purchase->paid_from_cash !== false) {
-            CashMovementService::lockedOpenSessionIdFor(Auth::id(), $purchase->location_id);
-        }
-
         $movementService = new MovementService();
 
         // Las existencias se bloquean en orden de producto, como en una venta
@@ -813,6 +823,19 @@ class PurchaseV2Controller extends Controller
         // venta simultánea de esos productos, que los toma de menor a mayor,
         // se trababa con la recepción (deadlock) y perdía la venta o la compra.
         $details = $purchase->details()->findOrFail(array_column($lines, 'id'))->keyBy('id');
+
+        // El turno de la caja de donde sale el pago se bloquea antes que las
+        // existencias: mismo orden que una venta (turno → stock), para que una
+        // venta simultánea en ese turno no se cruce con esta recepción. Si
+        // nadie tiene turno de donde salga el efectivo, se rechaza aquí, antes
+        // de mover stock. fromPurchaseV2 vuelve a leerlo, ya bloqueado. Solo
+        // si sale dinero: lo recibido × el precio pagado.
+        $paying = collect($lines)->sum(fn(array $line) => (float) $line['quantity_received']
+            * (float) ($line['unit_price'] ?? $details[(int) $line['id']]->unit_price)) > 0;
+        if ($paying) {
+            CashMovementService::purchaseSessionId($purchase, $chosenSessionId);
+        }
+
         usort($lines, fn(array $a, array $b) => [(int) $details[(int) $a['id']]->product_id, (int) $a['id']]
             <=> [(int) $details[(int) $b['id']]->product_id, (int) $b['id']]);
 
@@ -877,7 +900,7 @@ class PurchaseV2Controller extends Controller
         CashMovementService::fromPurchaseV2((clone $purchase)->forceFill([
             'total' => $receivedTotal,
             'purchase_date' => $cashDate,
-        ]));
+        ]), null, $chosenSessionId);
 
         // Notificar recepción de compra
         $purchase->load(['supplier', 'details.product']);
@@ -931,9 +954,13 @@ class PurchaseV2Controller extends Controller
      */
     private function cashOutOfShift(PurchaseV2 $purchase): bool
     {
+        // Con tarjeta u otro medio no sale del cajón: no hay faltante que avisar.
+        // En efectivo ya no pasa (sin turno se rechaza); queda por las compras
+        // de antes.
         return CashMovement::query()
             ->where('source_type', 'purchase_v2')
             ->where('source_id', $purchase->id)
+            ->where('payment_method', 'cash')
             ->whereNull('cash_register_session_id')
             ->exists();
     }

@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\DB;
 use App\Exceptions\BusinessRuleException;
 use App\Services\CashMovementService;
 use App\Http\Resources\ExpenseResource;
+use App\Models\CashRegisterSession;
 use App\Models\Expense;
 use App\Support\CurrentCompany;
 use App\Support\CurrentLocation;
@@ -104,6 +105,8 @@ class ExpenseController extends Controller
             'description' => 'required|string|max:1000',
             'expense_date' => 'required|date',
             'paid_from_cash' => 'nullable|boolean',
+            // De qué caja sale el efectivo, si quien lo registra no tiene turno.
+            'cash_register_session_id' => 'nullable|integer',
             'receipt_image' => 'nullable|image|max:5120', // 5MB max
         ]);
 
@@ -128,6 +131,7 @@ class ExpenseController extends Controller
         if (array_key_exists('paid_from_cash', $data) && $data['paid_from_cash'] === null) {
             unset($data['paid_from_cash']);
         }
+        $chosenSessionId = $this->pullSessionId($data);
         $data['company_id'] = $companyId;
         $data['location_id'] = $locationId;
         $data['user_id'] = Auth::id();
@@ -138,14 +142,22 @@ class ExpenseController extends Controller
                 ->store('expenses/receipts', 'public');
         }
 
-        $expense = DB::transaction(function () use ($data) {
-            $expense = Expense::create($data);
-            CashMovementService::syncExpense($expense);
-            return $expense;
-        });
+        try {
+            $expense = DB::transaction(function () use ($data, $chosenSessionId) {
+                $expense = Expense::create($data);
+                CashMovementService::syncExpense($expense, $chosenSessionId);
+                return $expense;
+            });
+        } catch (BusinessRuleException $e) {
+            // Sin caja de donde salga el efectivo no hay gasto: tampoco su recibo.
+            if (!empty($data['receipt_image'])) {
+                Storage::disk('public')->delete($data['receipt_image']);
+            }
+            throw $e;
+        }
         $expense->load(['user', 'location']);
 
-        return new ExpenseResource($expense);
+        return new ExpenseResource($this->withCashSession($expense));
     }
 
     /**
@@ -159,7 +171,7 @@ class ExpenseController extends Controller
 
         $expense = $this->branchQuery()->with(['user', 'location', 'company'])->findOrFail($id);
 
-        return new ExpenseResource($expense);
+        return new ExpenseResource($this->withCashSession($expense));
     }
 
     /**
@@ -185,6 +197,7 @@ class ExpenseController extends Controller
             'description' => 'sometimes|string|max:1000',
             'expense_date' => 'sometimes|date',
             'paid_from_cash' => 'nullable|boolean',
+            'cash_register_session_id' => 'nullable|integer',
             'receipt_image' => 'nullable|image|max:5120',
         ]);
 
@@ -199,6 +212,7 @@ class ExpenseController extends Controller
         if (array_key_exists('paid_from_cash', $data) && $data['paid_from_cash'] === null) {
             unset($data['paid_from_cash']);
         }
+        $chosenSessionId = $this->pullSessionId($data);
 
         // Solo el monto, el método, la fecha o "pagado con caja" mueven la caja.
         // La app manda el formulario completo: lo que llega igual a lo guardado
@@ -218,7 +232,7 @@ class ExpenseController extends Controller
                 ->store('expenses/receipts', 'public');
         }
 
-        DB::transaction(function () use ($expense, $data, $moneyChanged) {
+        DB::transaction(function () use ($expense, $data, $moneyChanged, $chosenSessionId) {
             // Se vuelve a revisar con el turno bloqueado: un cierre simultáneo
             // espera, o el cambio ve el turno ya cerrado y se rechaza.
             if ($moneyChanged && CashMovementService::expenseInClosedShift($expense, true)) {
@@ -230,12 +244,12 @@ class ExpenseController extends Controller
             // Antes se borraba y recreaba el egreso en cada edición, aunque solo
             // cambiara la descripción (y aunque su turno ya estuviera cerrado).
             if ($moneyChanged) {
-                CashMovementService::syncExpense($expense->fresh());
+                CashMovementService::syncExpense($expense->fresh(), $chosenSessionId);
             }
         });
         $expense->load(['user', 'location']);
 
-        return new ExpenseResource($expense);
+        return new ExpenseResource($this->withCashSession($expense));
     }
 
     /**
@@ -270,6 +284,29 @@ class ExpenseController extends Controller
         return response()->json([
             'message' => 'Gasto eliminado correctamente'
         ]);
+    }
+
+    /** Saca del formulario el turno elegido: no es una columna del gasto. */
+    private function pullSessionId(array &$data): ?int
+    {
+        $sessionId = $data['cash_register_session_id'] ?? null;
+        unset($data['cash_register_session_id']);
+
+        return $sessionId ? (int) $sessionId : null;
+    }
+
+    /**
+     * El turno de donde salió el efectivo, para que la app diga «Salió de
+     * Caja 1 · turno de Juan» al abrir el gasto.
+     */
+    private function withCashSession(Expense $expense): Expense
+    {
+        $sessionId = CashMovementService::expenseSessionId($expense);
+
+        return $expense->setRelation(
+            'cashSession',
+            $sessionId ? CashRegisterSession::with(['cashRegister:id,name', 'user:id,name'])->find($sessionId) : null,
+        );
     }
 
     /**

@@ -148,8 +148,37 @@ class CashRegisterSessionService
             'sales_total' => round((float) (clone $sales)->where('status', '!=', 'cancelled')->sum('total'), 2),
             'cancelled_count' => (clone $sales)->where('status', 'cancelled')->count(),
             'by_method' => $byMethod,
+            'cash_movements' => $this->otherCashMovements($session),
             'expected_cash' => round((float) $session->opening_amount + $cashNet, 2),
         ];
+    }
+
+    /**
+     * El efectivo que entró o salió del turno sin ser un cobro: gastos,
+     * compras, devoluciones y movimientos a mano, con quién lo registró. Así
+     * el cajero ve en su corte el dinero que otro sacó de su cajón (o metió),
+     * en lugar de solo un efectivo esperado más bajo. Se congela con el corte.
+     *
+     * @return array<int, array{type: string, amount: float, concept: string, user_id: ?int, user_name: ?string, created_at: ?string}>
+     */
+    private function otherCashMovements(CashRegisterSession $session): array
+    {
+        return CashMovement::with('user:id,name')
+            ->where('cash_register_session_id', $session->id)
+            ->where('payment_method', 'cash')
+            ->where(fn($query) => $query->whereNull('source_type')->orWhere('source_type', '!=', 'sale'))
+            ->orderBy('id')
+            ->limit(200)
+            ->get()
+            ->map(fn(CashMovement $movement) => [
+                'type' => $movement->type,
+                'amount' => round((float) $movement->amount, 2),
+                'concept' => (string) $movement->concept,
+                'user_id' => $movement->user_id ? (int) $movement->user_id : null,
+                'user_name' => $movement->user?->name,
+                'created_at' => $movement->created_at?->toISOString(),
+            ])
+            ->all();
     }
 
     public function close(CashRegisterSession $session, float $countedCash, ?string $notes, User $closer): CashRegisterSession

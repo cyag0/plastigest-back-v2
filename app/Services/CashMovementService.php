@@ -20,6 +20,111 @@ class CashMovementService
      */
     public const CASH_REFUND_NEEDS_SHIFT = 'Para devolver efectivo abre un turno de caja en esta sucursal o pide al cajero en turno que cancele la venta.';
 
+    /** Qué hacer con un gasto o una compra si nadie tiene turno abierto. */
+    public const NOT_FROM_REGISTER_HINT = 'si lo pagó el dueño u otra fuente, quita «Pagado con dinero de la caja»';
+
+    /**
+     * Turno de la caja de donde sale (o a la que entra) el efectivo de un
+     * gasto, una compra o un movimiento capturado a mano, con su fila
+     * bloqueada hasta el final de la transacción (como en una venta, antes
+     * que el stock). En orden:
+     *
+     * 1. El que eligió quien lo registra (la app le muestra los turnos
+     *    abiertos de la sucursal cuando no tiene el suyo).
+     * 2. El turno donde ya estaba el movimiento (al editar un gasto), si sigue
+     *    abierto: el dinero salió de esa caja aunque lo corrija otro.
+     * 3. El turno abierto de quien lo registra.
+     *
+     * Sin ninguno se rechaza: cash_session_required si hay turnos abiertos que
+     * elegir, no_open_session si nadie tiene turno. Antes el movimiento
+     * quedaba fuera de turno: ningún corte lo descontaba y el cajero de cuyo
+     * cajón salió el dinero cerraba con faltante.
+     *
+     * @param string|null $noShiftHint Qué más se puede hacer si nadie tiene
+     *   turno (para un gasto: quitar «Pagado con dinero de la caja»).
+     * @throws BusinessRuleException
+     */
+    public static function cashSessionFor(?int $chosenId, int $locationId, ?int $currentId = null, ?string $noShiftHint = null): int
+    {
+        if ($chosenId) {
+            $chosen = CashRegisterSession::query()->with(['cashRegister:id,name', 'user:id,name'])->lockForUpdate()->find($chosenId);
+            if (!$chosen || (int) $chosen->location_id !== $locationId) {
+                throw new BusinessRuleException('Ese turno de caja no es de esta sucursal. Elige otra caja.', 'cash_session_closed');
+            }
+            if (!$chosen->isOpen()) {
+                throw new BusinessRuleException(sprintf(
+                    'El turno de %s ya se cerró. Elige otra caja.',
+                    self::sessionLabel($chosen),
+                ), 'cash_session_closed');
+            }
+
+            return $chosen->id;
+        }
+
+        if ($currentId) {
+            $current = CashRegisterSession::query()->lockForUpdate()->find($currentId);
+            if ($current && $current->isOpen() && (int) $current->location_id === $locationId) {
+                return $current->id;
+            }
+        }
+
+        if ($own = self::lockedOpenSessionIdFor(Auth::id(), $locationId)) {
+            return $own;
+        }
+
+        if (CashRegisterSession::where('location_id', $locationId)->where('status', CashRegisterSession::STATUS_OPEN)->exists()) {
+            throw new BusinessRuleException(
+                'No tienes turno abierto: elige de qué caja sale el efectivo.',
+                'cash_session_required',
+            );
+        }
+
+        throw new BusinessRuleException(
+            'Nadie tiene turno abierto en esta sucursal: el efectivo no puede salir de una caja. Pide que alguien abra su turno'
+                . ($noShiftHint ? ", o {$noShiftHint}" : '') . '.',
+            'no_open_session',
+        );
+    }
+
+    /**
+     * Turnos abiertos de la sucursal, el de quien pregunta primero: de los que
+     * puede salir el efectivo de un gasto, una compra o un movimiento.
+     *
+     * @return array<int, array{id: int, cash_register_name: ?string, user_id: int, user_name: ?string, opened_at: ?string, mine: bool}>
+     */
+    public static function openSessionsAt(int $locationId): array
+    {
+        return CashRegisterSession::with(['cashRegister:id,name', 'user:id,name'])
+            ->where('location_id', $locationId)
+            ->where('status', CashRegisterSession::STATUS_OPEN)
+            ->get()
+            ->sortBy(fn(CashRegisterSession $session) => [(int) $session->user_id !== (int) Auth::id(), (string) $session->cashRegister?->name])
+            ->map(fn(CashRegisterSession $session) => [
+                'id' => $session->id,
+                'cash_register_name' => $session->cashRegister?->name,
+                'user_id' => (int) $session->user_id,
+                'user_name' => $session->user?->name,
+                'opened_at' => $session->opened_at?->toISOString(),
+                'mine' => (int) $session->user_id === (int) Auth::id(),
+            ])
+            ->values()
+            ->all();
+    }
+
+    /** ¿El método mueve el efectivo del cajón? (los de gastos van en español). */
+    public static function isCash(?string $method): bool
+    {
+        return self::mapPaymentMethod($method) === 'cash';
+    }
+
+    /** «Caja 1 (Juan)» */
+    private static function sessionLabel(CashRegisterSession $session): string
+    {
+        $register = $session->cashRegister?->name ?? 'esa caja';
+
+        return $session->user?->name ? "{$register} ({$session->user->name})" : $register;
+    }
+
     /**
      * Mapea métodos de pago a los valores válidos de cash_movements.
      */
@@ -240,8 +345,10 @@ class CashMovementService
      * @param float|null $amount   Lo que salió de la caja; por defecto el total de
      *                             la compra (con recepción parcial, quien llama
      *                             manda lo recibido × costo).
+     * @param int|null $chosenSessionId El turno de la caja de donde salió el
+     *                             efectivo, si quien recibe no tiene el suyo.
      */
-    public static function fromPurchaseV2(PurchaseV2 $purchase, ?float $amount = null): void
+    public static function fromPurchaseV2(PurchaseV2 $purchase, ?float $amount = null, ?int $chosenSessionId = null): void
     {
         $total = $amount ?? (float) ($purchase->total ?? 0);
 
@@ -256,10 +363,7 @@ class CashMovementService
         CashMovement::create([
             'company_id'     => $purchase->company_id,
             'location_id'    => $purchase->location_id,
-            // El dinero sale de la caja de quien recibe, si tiene turno
-            // abierto en esa sucursal. Antes la compra no quedaba en ningún
-            // turno y el efectivo esperado del cajero no la descontaba.
-            'cash_register_session_id' => self::lockedOpenSessionIdFor(Auth::id(), $purchase->location_id),
+            'cash_register_session_id' => self::purchaseSessionId($purchase, $chosenSessionId),
             'user_id'        => Auth::id() ?? $purchase->user_id,
             'type'           => 'expense',
             'amount'         => $total,
@@ -276,20 +380,57 @@ class CashMovementService
     }
 
     /**
+     * Turno del egreso de una compra pagada con la caja, bloqueado. En
+     * efectivo, el de la caja de donde salió (cashSessionFor: el elegido o el
+     * de quien recibe; sin ninguno se rechaza). Con tarjeta u otro medio no
+     * sale del cajón: el turno de quien recibe, si tiene, o ninguno.
+     *
+     * @throws BusinessRuleException
+     */
+    public static function purchaseSessionId(PurchaseV2 $purchase, ?int $chosenSessionId = null): ?int
+    {
+        if ($purchase->paid_from_cash === false) {
+            return null;
+        }
+
+        if (self::isCash($purchase->payment_method)) {
+            return self::cashSessionFor($chosenSessionId, (int) $purchase->location_id, null, self::NOT_FROM_REGISTER_HINT);
+        }
+
+        return self::lockedOpenSessionIdFor(Auth::id(), $purchase->location_id);
+    }
+
+    /**
      * Deja la caja alineada con un gasto: borra su egreso anterior y, si el
      * gasto se pagó con dinero de la caja, registra uno nuevo con el monto,
      * método y fecha actuales. Se llama al crear y al editar.
      *
      * Antes los gastos no tocaban la caja y el corte no los reflejaba.
+     *
+     * @param int|null $chosenSessionId El turno de la caja de donde salió el
+     *   efectivo, si quien lo registra no tiene el suyo (cashSessionFor).
+     * @throws BusinessRuleException Efectivo sin turno de donde salga.
      */
-    public static function syncExpense(Expense $expense): void
+    public static function syncExpense(Expense $expense, ?int $chosenSessionId = null): void
     {
         $paidFromCash = $expense->paid_from_cash && (float) $expense->amount > 0;
 
-        // Si quien lo registra tiene turno abierto en la sucursal del gasto, el
-        // gasto sale de esa caja (nunca de la caja de otra sucursal). El turno
-        // se bloquea antes de escribir, como en una venta.
-        $sessionId = $paidFromCash ? self::lockedOpenSessionIdFor(Auth::id(), $expense->location_id) : null;
+        // El efectivo sale del turno de una caja de la sucursal del gasto
+        // (nunca de la de otra sucursal): el elegido, el que ya tenía o el de
+        // quien lo registra. Con tarjeta o transferencia no sale del cajón y
+        // va al turno de quien lo registra, si tiene. El turno se bloquea
+        // antes de escribir, como en una venta.
+        $sessionId = null;
+        if ($paidFromCash) {
+            $sessionId = self::isCash($expense->payment_method)
+                ? self::cashSessionFor(
+                    $chosenSessionId,
+                    (int) $expense->location_id,
+                    self::expenseSessionId($expense),
+                    self::NOT_FROM_REGISTER_HINT,
+                )
+                : self::lockedOpenSessionIdFor(Auth::id(), $expense->location_id);
+        }
 
         self::removeExpense($expense);
 
@@ -341,6 +482,17 @@ class CashMovementService
             ->when($lock, fn($query) => $query->lockForUpdate())
             ->get(['id', 'status'])
             ->contains(fn(CashRegisterSession $session) => $session->status !== CashRegisterSession::STATUS_OPEN);
+    }
+
+    /** Turno donde está hoy el egreso del gasto, si tiene. */
+    public static function expenseSessionId(Expense $expense): ?int
+    {
+        $sessionId = CashMovement::where('source_type', 'expense')
+            ->where('source_id', $expense->id)
+            ->whereNotNull('cash_register_session_id')
+            ->value('cash_register_session_id');
+
+        return $sessionId ? (int) $sessionId : null;
     }
 
     /**

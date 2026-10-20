@@ -292,6 +292,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::prefix('cash-register-sessions')->controller(\App\Http\Controllers\CashRegisterSessionController::class)->group(function () {
                 Route::get('/', 'index');
                 Route::get('current', 'current');
+                // Turnos abiertos de la sucursal: de qué caja sale el efectivo
+                // de un gasto, una compra o un movimiento sin turno propio.
+                Route::get('open-at-location', 'openAtLocation');
                 Route::post('open', 'open');
                 Route::get('{id}', 'show')->whereNumber('id');
                 Route::post('{id}/close', 'close')->whereNumber('id');

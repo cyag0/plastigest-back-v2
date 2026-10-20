@@ -162,8 +162,14 @@ class SalesAndCashLockingTest extends TestCase
             'category' => array_key_first(Expense::getCategories()), 'amount' => 50, 'payment_method' => 'efectivo',
             'paid_from_cash' => true, 'description' => 'Gas', 'expense_date' => now()->toDateString(),
         ]);
-        CashMovementService::syncExpense($expense);
-        $this->assertNull(CashMovement::where('source_type', 'expense')->where('source_id', $expense->id)->value('cash_register_session_id'));
+        // Su turno es de otra sucursal: de aquí no sale de ninguna caja.
+        try {
+            CashMovementService::syncExpense($expense);
+            $this->fail('Sin turno abierto en la sucursal del gasto, el efectivo no sale de ninguna caja.');
+        } catch (\App\Exceptions\BusinessRuleException $e) {
+            $this->assertSame('no_open_session', $e->errorCode());
+        }
+        $this->assertSame(0, CashMovement::where('cash_register_session_id', $foreignShift->id)->count());
 
         // En su propia sucursal sí sale de esa caja.
         $local = Expense::create([

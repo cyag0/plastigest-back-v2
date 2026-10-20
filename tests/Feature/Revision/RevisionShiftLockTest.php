@@ -98,9 +98,12 @@ class RevisionShiftLockTest extends VentasCajaTestCase
     {
         $this->closeTheShiftRightAfterTheUnlockedLookup();
 
-        $this->expense()->assertCreated();
+        // Sin turno abierto en la sucursal el efectivo no sale de ninguna
+        // caja: se rechaza (antes quedaba fuera de turno).
+        $this->expense()->assertStatus(422)->assertJsonPath('code', 'no_open_session');
 
-        $this->assertNull($this->sessionOf('expense'), 'el gasto cayó en un turno ya cerrado');
+        $this->assertSame(0, CashMovement::where('source_type', 'expense')->where('cash_register_session_id', $this->shift->id)->count(), 'el gasto cayó en un turno ya cerrado');
+        $this->assertSame(0, \App\Models\Expense::count());
     }
 
     public function test_a_purchase_paid_from_the_register_does_not_land_in_a_shift_that_just_closed(): void
@@ -112,9 +115,11 @@ class RevisionShiftLockTest extends VentasCajaTestCase
             ->postJson("/api/auth/admin/purchases-v2/{$purchase->id}/receive", [
                 'details' => [['id' => $purchase->details->first()->id, 'quantity_received' => 10]],
             ])
-            ->assertOk();
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'no_open_session');
 
-        $this->assertNull($this->sessionOf('purchase_v2'), 'la compra cayó en un turno ya cerrado');
+        $this->assertSame(0, CashMovement::where('source_type', 'purchase_v2')->count(), 'la compra cayó en un turno ya cerrado');
+        $this->assertSame(PurchaseV2::STATUS_IN_TRANSIT, $purchase->fresh()->status, 'no se recibe a medias');
     }
 
     public function test_a_purchase_paid_from_the_register_enters_the_open_shift(): void
@@ -137,10 +142,9 @@ class RevisionShiftLockTest extends VentasCajaTestCase
         $this->actingInBranch($this->cashier)->postJson('/api/auth/admin/cash-movements', [
             'type' => 'income', 'amount' => 50, 'concept' => 'Fondo extra', 'payment_method' => 'cash',
             'movement_date' => now()->toDateString(),
-        ])->assertCreated();
+        ])->assertStatus(422)->assertJsonPath('code', 'no_open_session');
 
-        $movement = CashMovement::where('concept', 'Fondo extra')->firstOrFail();
-        $this->assertNull($movement->cash_register_session_id, 'el movimiento cayó en un turno ya cerrado');
+        $this->assertFalse(CashMovement::where('concept', 'Fondo extra')->exists(), 'el movimiento cayó en un turno ya cerrado');
     }
 
     public function test_a_manual_movement_enters_the_open_shift(): void
